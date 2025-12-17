@@ -90,8 +90,10 @@ module GenevaDrive
       #     ExternalApi.call(hero)
       #   end
       def step(name = nil, **options, &block)
-        # Duplicate parent's array to avoid mutation
-        self._step_definitions = _step_definitions.dup
+        # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
+        if _step_definitions.equal?(superclass._step_definitions)
+          self._step_definitions = _step_definitions.dup
+        end
         # Invalidate cached step collection since we're adding a step
         @steps = nil
 

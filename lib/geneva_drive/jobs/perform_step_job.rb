@@ -2,12 +2,13 @@
 
 module GenevaDrive
   # ActiveJob that executes a scheduled step execution.
-  # Receives the step execution ID and delegates to the Executor.
+  # This is a thin wrapper that delegates all logic to the Executor.
   #
-  # This job is designed to be idempotent:
-  # - Uses pessimistic locking when loading the step execution
-  # - Checks if the step is still in 'scheduled' state before executing
-  # - Safe to retry if the job fails or is duplicated
+  # Idempotency is guaranteed by the Executor, which:
+  # - Acquires locks on both workflow and step execution
+  # - Reloads records after acquiring locks to get fresh state
+  # - Only proceeds if state is still "scheduled"
+  # - Transitions state atomically while holding locks
   #
   # @example Manual execution (for testing)
   #   PerformStepJob.perform_now(step_execution.id)
@@ -20,20 +21,10 @@ module GenevaDrive
     # @param step_execution_id [Integer, String] the ID of the step execution
     # @return [void]
     def perform(step_execution_id)
-      # Use lock.find for proper idempotency
-      step_execution = GenevaDrive::StepExecution.lock.find(step_execution_id)
+      step_execution = GenevaDrive::StepExecution.find_by(id: step_execution_id)
+      return unless step_execution
 
-      # Idempotency: if already executed, don't execute again
-      return unless step_execution.state == "scheduled"
-
-      # Don't execute if scheduled for future (job ran early)
-      return if step_execution.scheduled_for > Time.current
-
-      # Execute the step
-      step_execution.execute!
-    rescue ActiveRecord::RecordNotFound
-      # Step execution was deleted, nothing to do
-      Rails.logger.warn("GenevaDrive::StepExecution #{step_execution_id} not found")
+      GenevaDrive::Executor.execute!(step_execution)
     end
   end
 end

@@ -302,7 +302,7 @@ class StepOrderingTest < ActiveSupport::TestCase
     assert_nil collection.next_after("third")
   end
 
-  test "step collection find_by_name works with ordered steps" do
+  test "step collection named works with ordered steps" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       step :first do
       end
@@ -316,9 +316,9 @@ class StepOrderingTest < ActiveSupport::TestCase
 
     collection = workflow_class.steps
 
-    assert_equal "first", collection.find_by_name(:first).name
-    assert_equal "second", collection.find_by_name("second").name
-    assert_equal "third", collection.find_by_name(:third).name
+    assert_equal "first", collection.named(:first).name
+    assert_equal "second", collection.named("second").name
+    assert_equal "third", collection.named(:third).name
   end
 
   # Multiple positioned steps in sequence

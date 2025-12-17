@@ -53,9 +53,17 @@ module GenevaDrive
     #
     # @param name [String, Symbol] the step name
     # @return [StepDefinition, nil] the step definition or nil if not found
-    def find_by_name(name)
+    def named(name)
       name_str = name.to_s
       find { |step| step.name == name_str }
+    end
+
+    # Finds a step by position (0-indexed).
+    #
+    # @param position [Integer] the position index
+    # @return [StepDefinition, nil] the step definition or nil if out of bounds
+    def at(position)
+      ordered_steps[position]
     end
 
     # Returns the next step after the given step name.
@@ -76,7 +84,7 @@ module GenevaDrive
     # @param name [String, Symbol] the step name
     # @return [Boolean] true if step exists
     def include?(name)
-      !find_by_name(name).nil?
+      !named(name).nil?
     end
 
     private

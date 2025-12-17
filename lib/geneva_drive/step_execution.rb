@@ -136,7 +136,7 @@ module GenevaDrive
     #
     # @return [StepDefinition, nil] the step definition
     def step_definition
-      workflow.class.steps.find_by_name(step_name)
+      workflow.class.steps.named(step_name)
     end
 
     # Executes this step using the Executor.

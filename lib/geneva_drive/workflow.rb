@@ -172,8 +172,8 @@ module GenevaDrive
       # Returns the step collection with proper ordering.
       #
       # @return [StepCollection] the ordered step collection
-      def step_collection
-        @step_collection ||= StepCollection.new(_step_definitions)
+      def steps
+        @steps ||= StepCollection.new(_step_definitions)
       end
 
       private
@@ -191,7 +191,7 @@ module GenevaDrive
     # @param wait [ActiveSupport::Duration, nil] override wait time
     # @return [StepExecution, nil] the created step execution or nil if finished
     def schedule_next_step!(wait: nil)
-      next_step = self.class.step_collection.next_after(current_step_name)
+      next_step = self.class.steps.next_after(current_step_name)
       return finish_workflow! unless next_step
 
       create_step_execution(next_step, wait: wait || next_step.wait)
@@ -202,7 +202,7 @@ module GenevaDrive
     # @param wait [ActiveSupport::Duration, nil] delay before retry
     # @return [StepExecution] the created step execution
     def reschedule_current_step!(wait: nil)
-      step_def = self.class.step_collection.find_by_name(current_step_name)
+      step_def = self.class.steps.find_by_name(current_step_name)
       create_step_execution(step_def, wait: wait)
     end
 

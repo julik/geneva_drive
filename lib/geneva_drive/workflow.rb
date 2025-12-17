@@ -172,9 +172,7 @@ module GenevaDrive
       #
       # @return [String] the generated step name
       def generate_step_name
-        @step_counter ||= 0
-        @step_counter += 1
-        "step_#{@step_counter}"
+        "step_#{_step_definitions.size + 1}"
       end
     end
 

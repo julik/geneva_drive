@@ -2,128 +2,129 @@
 
 require "test_helper"
 
-# Test workflow for basic functionality
-class SimpleWorkflow < GenevaDrive::Workflow
-  step :step_one do
-    # Just a simple step
-  end
-
-  step :step_two do
-    # Another simple step
-  end
-end
-
-# Test workflow with wait times
-class WaitingWorkflow < GenevaDrive::Workflow
-  step :immediate_step do
-    # Runs immediately
-  end
-
-  step :delayed_step, wait: 2.days do
-    # Runs after 2 days
-  end
-end
-
-# Test workflow with skip conditions
-class SkippableWorkflow < GenevaDrive::Workflow
-  step :always_runs do
-    # This always runs
-  end
-
-  step :conditionally_skipped, skip_if: -> { hero.active? } do
-    # Skipped if hero is active
-  end
-
-  step :final_step do
-    # Final step
-  end
-end
-
-# Test workflow with cancel_if
-class CancelableWorkflow < GenevaDrive::Workflow
-  cancel_if { hero.deactivated? }
-
-  step :first_step do
-    # First step
-  end
-
-  step :second_step do
-    # Second step
-  end
-end
-
-# Test workflow that can proceed without hero
-class HerolessWorkflow < GenevaDrive::Workflow
-  may_proceed_without_hero!
-
-  step :cleanup do
-    # Can run even without hero
-  end
-end
-
-# Test workflow with flow control
-class FlowControlWorkflow < GenevaDrive::Workflow
-  step :might_cancel do
-    cancel! if hero.name == "Cancel Me"
-  end
-
-  step :might_skip do
-    skip! if hero.name == "Skip Me"
-  end
-
-  step :might_pause do
-    pause! if hero.name == "Pause Me"
-  end
-
-  step :might_reattempt do
-    reattempt!(wait: 1.hour) if hero.name == "Retry Me" && !@retried
-    @retried = true
-  end
-
-  step :final do
-    # Final step
-  end
-end
-
-# Test workflow with exception handling
-class ExceptionWorkflow < GenevaDrive::Workflow
-  step :reattempt_on_error, on_exception: :reattempt! do
-    raise "Temporary error"
-  end
-
-  step :skip_on_error, on_exception: :skip! do
-    raise "Non-critical error"
-  end
-
-  step :cancel_on_error, on_exception: :cancel! do
-    raise "Critical error"
-  end
-
-  step :pause_on_error, on_exception: :pause! do
-    raise "Needs investigation"
-  end
-end
-
-# Test workflow with inheritance
-class BaseWorkflow < GenevaDrive::Workflow
-  cancel_if :hero_inactive?
-  set_step_job_options queue: :base_queue
-
-  def hero_inactive?
-    !hero.active?
-  end
-end
-
-class ChildWorkflow < BaseWorkflow
-  cancel_if { hero.name == "Child Cancel" }
-  set_step_job_options priority: 10
-
-  step :child_step do
-    # Child step
-  end
-end
-
 class WorkflowTest < ActiveSupport::TestCase
+  # Basic workflow for testing
+  class SimpleWorkflow < GenevaDrive::Workflow
+    step :step_one do
+      # Just a simple step
+    end
+
+    step :step_two do
+      # Another simple step
+    end
+  end
+
+  # Workflow with wait times
+  class WaitingWorkflow < GenevaDrive::Workflow
+    step :immediate_step do
+      # Runs immediately
+    end
+
+    step :delayed_step, wait: 2.days do
+      # Runs after 2 days
+    end
+  end
+
+  # Workflow with skip conditions
+  class SkippableWorkflow < GenevaDrive::Workflow
+    step :always_runs do
+      # This always runs
+    end
+
+    step :conditionally_skipped, skip_if: -> { hero.active? } do
+      # Skipped if hero is active
+    end
+
+    step :final_step do
+      # Final step
+    end
+  end
+
+  # Workflow with cancel_if
+  class CancelableWorkflow < GenevaDrive::Workflow
+    cancel_if { hero.deactivated? }
+
+    step :first_step do
+      # First step
+    end
+
+    step :second_step do
+      # Second step
+    end
+  end
+
+  # Workflow that can proceed without hero
+  class HerolessWorkflow < GenevaDrive::Workflow
+    may_proceed_without_hero!
+
+    step :cleanup do
+      # Can run even without hero
+    end
+  end
+
+  # Workflow with flow control
+  class FlowControlWorkflow < GenevaDrive::Workflow
+    step :might_cancel do
+      cancel! if hero.name == "Cancel Me"
+    end
+
+    step :might_skip do
+      skip! if hero.name == "Skip Me"
+    end
+
+    step :might_pause do
+      pause! if hero.name == "Pause Me"
+    end
+
+    step :might_reattempt do
+      reattempt!(wait: 1.hour) if hero.name == "Retry Me" && !@retried
+      @retried = true
+    end
+
+    step :final do
+      # Final step
+    end
+  end
+
+  # Workflow with exception handling
+  class ExceptionWorkflow < GenevaDrive::Workflow
+    step :reattempt_on_error, on_exception: :reattempt! do
+      raise "Temporary error"
+    end
+
+    step :skip_on_error, on_exception: :skip! do
+      raise "Non-critical error"
+    end
+
+    step :cancel_on_error, on_exception: :cancel! do
+      raise "Critical error"
+    end
+
+    step :pause_on_error, on_exception: :pause! do
+      raise "Needs investigation"
+    end
+  end
+
+  # Base workflow for inheritance tests
+  class BaseWorkflow < GenevaDrive::Workflow
+    cancel_if :hero_inactive?
+    set_step_job_options queue: :base_queue
+
+    def hero_inactive?
+      !hero.active?
+    end
+  end
+
+  # Child workflow inheriting from base
+  class ChildWorkflow < BaseWorkflow
+    cancel_if { hero.name == "Child Cancel" }
+    set_step_job_options priority: 10
+
+    step :child_step do
+      # Child step
+    end
+  end
+
   setup do
     @user = create_user
   end
@@ -146,7 +147,6 @@ class WorkflowTest < ActiveSupport::TestCase
   end
 
   test "cancel_if conditions are inherited" do
-    # BaseWorkflow has 1, ChildWorkflow adds 1
     assert_equal 2, ChildWorkflow._cancel_conditions.count
   end
 
@@ -181,16 +181,13 @@ class WorkflowTest < ActiveSupport::TestCase
   test "workflow with wait schedules step for future" do
     workflow = WaitingWorkflow.create!(hero: @user)
 
-    # First step is immediate
     first_execution = workflow.step_executions.first
     assert first_execution.scheduled_for <= Time.current + 1.second
 
-    # Manually complete first step and schedule next
     first_execution.mark_completed!
     workflow.transition_to!("ready")
     workflow.schedule_next_step!
 
-    # Second step should be scheduled for 2 days from now
     second_execution = workflow.step_executions.last
     assert second_execution.scheduled_for > Time.current + 1.day
     assert second_execution.scheduled_for <= Time.current + 2.days + 1.second

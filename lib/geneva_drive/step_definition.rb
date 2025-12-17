@@ -94,9 +94,9 @@ module GenevaDrive
     def evaluate_condition(condition, workflow)
       case condition
       when Symbol
-        workflow.send(condition)
+        !!workflow.send(condition)
       when Proc
-        workflow.instance_exec(&condition)
+        !!workflow.instance_exec(&condition)
       when TrueClass, FalseClass
         condition
       when NilClass

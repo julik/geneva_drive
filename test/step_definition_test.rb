@@ -264,7 +264,7 @@ class StepDefinitionTest < ActiveSupport::TestCase
     end
 
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.step_collection.to_a
+      workflow_class.steps.to_a
     end
 
     assert_match(/references non-existent step/, error.message)
@@ -282,7 +282,7 @@ class StepDefinitionTest < ActiveSupport::TestCase
     end
 
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.step_collection.to_a
+      workflow_class.steps.to_a
     end
 
     assert_match(/references non-existent step/, error.message)

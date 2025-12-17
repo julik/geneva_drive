@@ -16,7 +16,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -32,7 +32,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -49,7 +49,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -65,7 +65,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -82,7 +82,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -99,7 +99,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -119,7 +119,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["step_1", "step_2", "step_3", "step_4"], names
   end
 
@@ -133,10 +133,10 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second"], names
-    assert_equal 5.minutes, workflow_class.step_collection[0].wait
-    assert_equal 10.minutes, workflow_class.step_collection[1].wait
+    assert_equal 5.minutes, workflow_class.steps[0].wait
+    assert_equal 10.minutes, workflow_class.steps[1].wait
   end
 
   test "allows mixing step ordering with timing" do
@@ -151,11 +151,11 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
-    assert_equal 1.minute, workflow_class.step_collection[0].wait
-    assert_equal 2.minutes, workflow_class.step_collection[1].wait
-    assert_nil workflow_class.step_collection[2].wait
+    assert_equal 1.minute, workflow_class.steps[0].wait
+    assert_equal 2.minutes, workflow_class.steps[1].wait
+    assert_nil workflow_class.steps[2].wait
   end
 
   # Test with method name instead of block
@@ -174,7 +174,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
   end
 
@@ -192,7 +192,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "step_3", "third"], names
   end
 
@@ -209,9 +209,9 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "second", "third"], names
-    assert_equal :skip!, workflow_class.step_collection[1].on_exception
+    assert_equal :skip!, workflow_class.steps[1].on_exception
   end
 
   # Inheritance tests
@@ -235,7 +235,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = child_class.step_collection.map(&:name)
+    names = child_class.steps.map(&:name)
     assert_equal ["child_before", "parent_first", "child_middle", "parent_last", "child_after"], names
   end
 
@@ -261,7 +261,7 @@ class StepOrderingTest < ActiveSupport::TestCase
     end
 
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.step_collection.to_a
+      workflow_class.steps.to_a
     end
 
     assert_match(/references non-existent step/, error.message)
@@ -275,7 +275,7 @@ class StepOrderingTest < ActiveSupport::TestCase
     end
 
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.step_collection.to_a
+      workflow_class.steps.to_a
     end
 
     assert_match(/references non-existent step/, error.message)
@@ -295,7 +295,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    collection = workflow_class.step_collection
+    collection = workflow_class.steps
 
     assert_equal "second", collection.next_after("first").name
     assert_equal "third", collection.next_after("second").name
@@ -314,7 +314,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    collection = workflow_class.step_collection
+    collection = workflow_class.steps
 
     assert_equal "first", collection.find_by_name(:first).name
     assert_equal "second", collection.find_by_name("second").name
@@ -334,7 +334,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["first", "middle", "last"], names
   end
 
@@ -351,7 +351,7 @@ class StepOrderingTest < ActiveSupport::TestCase
       end
     end
 
-    names = workflow_class.step_collection.map(&:name)
+    names = workflow_class.steps.map(&:name)
     assert_equal ["alpha", "beta", "gamma"], names
   end
 end

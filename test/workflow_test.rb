@@ -162,7 +162,7 @@ class WorkflowTest < ActiveSupport::TestCase
   end
 
   test "step collection provides ordered steps" do
-    collection = SimpleWorkflow.step_collection
+    collection = SimpleWorkflow.steps
 
     assert_equal 2, collection.size
     assert_equal "step_one", collection.first.name
@@ -170,7 +170,7 @@ class WorkflowTest < ActiveSupport::TestCase
   end
 
   test "step collection finds next step" do
-    collection = SimpleWorkflow.step_collection
+    collection = SimpleWorkflow.steps
 
     next_step = collection.next_after("step_one")
     assert_equal "step_two", next_step.name

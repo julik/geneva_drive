@@ -36,7 +36,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000002) do
     t.index ["workflow_id", "created_at"], name: "idx_on_workflow_id_created_at_af16a14fb2"
     t.index ["workflow_id", "state"], name: "index_geneva_drive_step_executions_on_workflow_id_and_state"
     t.index ["workflow_id"], name: "index_geneva_drive_step_executions_on_workflow_id"
-    t.index ["workflow_id"], name: "index_step_executions_one_active_per_workflow", unique: true, where: "((state)::text = ANY ((ARRAY['scheduled'::character varying, 'executing'::character varying])::text[]))"
+    t.index ["workflow_id"], name: "index_step_executions_one_active_per_workflow", unique: true, where: "((state)::text = ANY (ARRAY[('scheduled'::character varying)::text, ('executing'::character varying)::text]))"
   end
 
   create_table "geneva_drive_workflows", force: :cascade do |t|
@@ -52,7 +52,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000002) do
     t.datetime "updated_at", null: false
     t.index ["hero_type", "hero_id"], name: "index_geneva_drive_workflows_on_hero_type_and_hero_id"
     t.index ["state"], name: "index_geneva_drive_workflows_on_state"
-    t.index ["type", "hero_type", "hero_id"], name: "index_workflows_unique_active", unique: true, where: "(((state)::text <> ALL ((ARRAY['finished'::character varying, 'canceled'::character varying])::text[])) AND (allow_multiple = false))"
+    t.index ["type", "hero_type", "hero_id"], name: "index_workflows_unique_active", unique: true, where: "(((state)::text <> ALL (ARRAY[('finished'::character varying)::text, ('canceled'::character varying)::text])) AND (allow_multiple = false))"
     t.index ["type"], name: "index_geneva_drive_workflows_on_type"
   end
 

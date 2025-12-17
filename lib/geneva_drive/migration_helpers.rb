@@ -2,15 +2,19 @@
 
 module GenevaDrive
   # Helper methods for GenevaDrive migrations.
-  # Provides automatic detection of primary key types based on the existing schema.
+  # Provides runtime detection of database adapter and primary key format,
+  # plus database-specific constraint creation.
   #
   # @example Using in a migration
   #   class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
   #     include GenevaDrive::MigrationHelpers
   #
   #     def change
-  #       key_type = geneva_drive_key_type
-  #       # Use key_type for table creation
+  #       create_table :geneva_drive_workflows, **geneva_drive_table_options do |t|
+  #         t.references :hero, polymorphic: true, type: geneva_drive_key_type
+  #         # ...
+  #       end
+  #       add_workflow_uniqueness_constraint
   #     end
   #   end
   #
@@ -41,6 +45,13 @@ module GenevaDrive
       (uuid_count > other_count) ? :uuid : :bigint
     end
 
+    # Returns options hash for create_table based on detected primary key type.
+    #
+    # @return [Hash] options for create_table (e.g., {id: :uuid} or {})
+    def geneva_drive_table_options
+      (geneva_drive_key_type == :uuid) ? {id: :uuid} : {}
+    end
+
     # Returns the current database adapter name.
     #
     # @return [String] the adapter name (e.g., 'postgresql', 'mysql2', 'sqlite3')
@@ -67,6 +78,79 @@ module GenevaDrive
     # @return [Boolean] true if SQLite
     def sqlite?
       geneva_drive_adapter.include?("sqlite")
+    end
+
+    # Adds the workflow uniqueness constraint.
+    # Uses database-specific strategy (partial index or generated column).
+    # Ensures only one ongoing workflow per hero (unless allow_multiple).
+    #
+    # @return [void]
+    def add_workflow_uniqueness_constraint
+      if postgresql?
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_workflows_unique_ongoing
+          ON geneva_drive_workflows (type, hero_type, hero_id)
+          WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = false;
+        SQL
+      elsif mysql?
+        execute <<-SQL
+          ALTER TABLE geneva_drive_workflows
+          ADD COLUMN ongoing_unique_key VARCHAR(767)
+          AS (
+            CASE
+              WHEN state NOT IN ('finished', 'canceled') AND allow_multiple = 0
+              THEN CONCAT(type, '-', hero_type, '-', hero_id)
+              ELSE NULL
+            END
+          ) STORED;
+        SQL
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_workflows_unique_ongoing
+          ON geneva_drive_workflows (ongoing_unique_key);
+        SQL
+      elsif sqlite?
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_workflows_unique_ongoing
+          ON geneva_drive_workflows (type, hero_type, hero_id)
+          WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = 0;
+        SQL
+      end
+    end
+
+    # Adds the step execution uniqueness constraint.
+    # Ensures only one active (scheduled/executing) step per workflow.
+    #
+    # @return [void]
+    def add_step_execution_uniqueness_constraint
+      if postgresql?
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_step_executions_one_active
+          ON geneva_drive_step_executions (workflow_id)
+          WHERE state IN ('scheduled', 'executing');
+        SQL
+      elsif mysql?
+        execute <<-SQL
+          ALTER TABLE geneva_drive_step_executions
+          ADD COLUMN active_unique_key VARCHAR(767)
+          AS (
+            CASE
+              WHEN state IN ('scheduled', 'executing')
+              THEN CAST(workflow_id AS CHAR)
+              ELSE NULL
+            END
+          ) STORED;
+        SQL
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_step_executions_one_active
+          ON geneva_drive_step_executions (active_unique_key);
+        SQL
+      elsif sqlite?
+        execute <<-SQL
+          CREATE UNIQUE INDEX index_step_executions_one_active
+          ON geneva_drive_step_executions (workflow_id)
+          WHERE state IN ('scheduled', 'executing');
+        SQL
+      end
     end
   end
 end

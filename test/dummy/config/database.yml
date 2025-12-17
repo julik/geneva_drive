@@ -1,0 +1,13 @@
+# PostgreSQL configuration for GenevaDrive test suite
+default: &default
+  adapter: postgresql
+  encoding: unicode
+  pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+
+development:
+  <<: *default
+  database: geneva_drive_development
+
+test:
+  <<: *default
+  database: geneva_drive_test

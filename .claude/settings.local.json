@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(mkdir:*)",
+      "Bash(git add:*)",
+      "Bash(git commit -m \"$(cat <<''EOF''\nAdd GenevaDrive implementation plan\n\nComprehensive design document for GenevaDrive, a Rails library for durable workflows.\n\nKey features:\n- Two-table design: workflows and step_executions\n- Step executions as idempotency keys\n- Database-enforced uniqueness constraints\n- Support for PostgreSQL, MySQL, and SQLite\n- Forward scheduling with ActiveJob\n- Flow control DSL (cancel!, pause!, reattempt!, skip!, finished!)\n- Complete feature parity with stepper_motor\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)\n\nCo-Authored-By: Claude Sonnet 4.5 <noreply@anthropic.com>\nEOF\n)\")",
+      "Bash(git commit:*)",
+      "Bash(rails plugin new:*)",
+      "Bash(rbenv version:*)",
+      "Bash(ruby --version:*)",
+      "Bash(rbenv rehash:*)",
+      "Bash(gem list:*)",
+      "Bash(gem install:*)",
+      "Bash(find:*)",
+      "Bash(bundle install:*)",
+      "Bash(bin/rails:*)",
+      "Bash(bundle exec standardrb:*)"
+    ]
+  }
+}

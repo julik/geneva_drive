@@ -1,0 +1,24 @@
+# frozen_string_literal: true
+
+# GenevaDrive configuration
+#
+# GenevaDrive is a durable workflow library for Rails.
+# For more information, see: https://github.com/julik/geneva_drive
+
+# No configuration required - GenevaDrive works out of the box!
+#
+# To create a workflow:
+#
+#   class SignupWorkflow < GenevaDrive::Workflow
+#     step :send_welcome_email do
+#       WelcomeMailer.welcome(hero).deliver_later
+#     end
+#
+#     step :send_reminder, wait: 2.days do
+#       ReminderMailer.remind(hero).deliver_later
+#     end
+#   end
+#
+# To start a workflow:
+#
+#   SignupWorkflow.create!(hero: current_user)

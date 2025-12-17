@@ -1,0 +1,144 @@
+# frozen_string_literal: true
+
+module GenevaDrive
+  # Manages an ordered collection of step definitions for a workflow.
+  # Handles step ordering based on before_step/after_step positioning
+  # and provides methods for navigating between steps.
+  #
+  # @api private
+  class StepCollection
+    include Enumerable
+
+    # Creates a new step collection from an array of step definitions.
+    #
+    # @param step_definitions [Array<StepDefinition>] the step definitions to manage
+    def initialize(step_definitions)
+      @step_definitions = step_definitions
+      @ordered_steps = nil
+    end
+
+    # Iterates over steps in order.
+    #
+    # @yield [StepDefinition] each step definition in order
+    # @return [Enumerator] if no block given
+    def each(&block)
+      ordered_steps.each(&block)
+    end
+
+    # Returns the number of steps.
+    #
+    # @return [Integer] the step count
+    def size
+      ordered_steps.size
+    end
+    alias_method :length, :size
+
+    # Finds a step by name.
+    #
+    # @param name [String, Symbol] the step name
+    # @return [StepDefinition, nil] the step definition or nil if not found
+    def find_by_name(name)
+      name_str = name.to_s
+      ordered_steps.find { |step| step.name == name_str }
+    end
+
+    # Returns the next step after the given step name.
+    #
+    # @param current_name [String, Symbol, nil] the current step name
+    # @return [StepDefinition, nil] the next step or nil if at end
+    def next_after(current_name)
+      return ordered_steps.first if current_name.nil?
+
+      current_index = ordered_steps.index { |s| s.name == current_name.to_s }
+      return nil unless current_index
+
+      ordered_steps[current_index + 1]
+    end
+
+    # Returns the first step in the workflow.
+    #
+    # @return [StepDefinition, nil] the first step or nil if empty
+    def first
+      ordered_steps.first
+    end
+
+    # Returns the last step in the workflow.
+    #
+    # @return [StepDefinition, nil] the last step or nil if empty
+    def last
+      ordered_steps.last
+    end
+
+    # Checks if a step exists with the given name.
+    #
+    # @param name [String, Symbol] the step name
+    # @return [Boolean] true if step exists
+    def include?(name)
+      !find_by_name(name).nil?
+    end
+
+    private
+
+    # Returns the steps in their proper order, applying before_step/after_step positioning.
+    #
+    # @return [Array<StepDefinition>] ordered step definitions
+    def ordered_steps
+      @ordered_steps ||= compute_order
+    end
+
+    # Computes the step order based on positioning constraints.
+    # Steps without positioning constraints maintain their definition order.
+    # Steps with before_step/after_step are repositioned accordingly.
+    #
+    # @return [Array<StepDefinition>] ordered step definitions
+    def compute_order
+      return [] if @step_definitions.empty?
+
+      # Separate steps with and without positioning
+      positioned = []
+      unpositioned = []
+
+      @step_definitions.each do |step|
+        if step.before_step || step.after_step
+          positioned << step
+        else
+          unpositioned << step
+        end
+      end
+
+      # Start with unpositioned steps in definition order
+      result = unpositioned.dup
+
+      # Insert positioned steps
+      positioned.each do |step|
+        insert_positioned_step(result, step)
+      end
+
+      result
+    end
+
+    # Inserts a positioned step into the result array at the correct location.
+    #
+    # @param result [Array<StepDefinition>] the current ordered steps
+    # @param step [StepDefinition] the step to insert
+    def insert_positioned_step(result, step)
+      if step.before_step
+        target_index = result.index { |s| s.name == step.before_step }
+        if target_index
+          result.insert(target_index, step)
+        else
+          # Target not found, append to end
+          result << step
+        end
+      elsif step.after_step
+        target_index = result.index { |s| s.name == step.after_step }
+        if target_index
+          result.insert(target_index + 1, step)
+        else
+          # Target not found, append to end
+          result << step
+        end
+      end
+    end
+  end
+end

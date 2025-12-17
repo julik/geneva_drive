@@ -80,11 +80,13 @@ module GenevaDrive
     end
 
     # Checks if a step exists with the given name.
+    # Does not trigger ordering computation.
     #
     # @param name [String, Symbol] the step name
     # @return [Boolean] true if step exists
-    def include?(name)
-      !named(name).nil?
+    def key?(name)
+      name_str = name.to_s
+      @step_definitions.any? { |step| step.name == name_str }
     end
 
     private

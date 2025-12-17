@@ -1,0 +1,53 @@
+Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO public /*application='Dummy'*/[0m
+  [1m[35m (197.5ms)[0m  [1m[35mCREATE DATABASE "geneva_drive_development" ENCODING = 'unicode' /*application='Dummy'*/[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO public /*application='Dummy'*/[0m
+  [1m[35m (80.7ms)[0m  [1m[35mCREATE DATABASE "geneva_drive_test" ENCODING = 'unicode' /*application='Dummy'*/[0m
+Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.
+  [1m[35m (15.9ms)[0m  [1m[35mCREATE TABLE "schema_migrations" ("version" character varying NOT NULL PRIMARY KEY) /*application='Dummy'*/[0m
+  [1m[35m (2.4ms)[0m  [1m[35mCREATE TABLE "ar_internal_metadata" ("key" character varying NOT NULL PRIMARY KEY, "value" character varying, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL) /*application='Dummy'*/[0m
+  [1m[35m (0.1ms)[0m  [1m[34mSELECT pg_try_advisory_lock(5953177287330319620) /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::SchemaMigration Load (0.7ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::InternalMetadata Load (2.5ms)[0m  [1m[34mSELECT * FROM "ar_internal_metadata" WHERE "ar_internal_metadata"."key" = 'environment' ORDER BY "ar_internal_metadata"."key" ASC LIMIT 1 /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::InternalMetadata Create (1.6ms)[0m  [1m[32mINSERT INTO "ar_internal_metadata" ("key", "value", "created_at", "updated_at") VALUES ('environment', 'development', '2025-12-17 15:34:10.763995', '2025-12-17 15:34:10.763998') RETURNING "key" /*application='Dummy'*/[0m
+Migrating to CreateUsers (20241217000000)
+  [1m[36mTRANSACTION (0.1ms)[0m  [1m[35mBEGIN /*application='Dummy'*/[0m
+  [1m[35m (6.1ms)[0m  [1m[35mCREATE TABLE "users" ("id" bigserial primary key, "email" character varying NOT NULL, "name" character varying, "active" boolean DEFAULT TRUE, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL) /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.3ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20241217000000') RETURNING "version" /*application='Dummy'*/[0m
+  [1m[36mTRANSACTION (0.2ms)[0m  [1m[35mCOMMIT /*application='Dummy'*/[0m
+Migrating to CreateGenevaDriveWorkflows (20241217000001)
+  [1m[36mTRANSACTION (0.2ms)[0m  [1m[35mBEGIN /*application='Dummy'*/[0m
+  [1m[35m (3.1ms)[0m  [1m[35mCREATE TABLE "geneva_drive_workflows" ("id" bigserial primary key, "type" character varying NOT NULL, "hero_type" character varying NOT NULL, "hero_id" bigint NOT NULL, "state" character varying DEFAULT 'ready' NOT NULL, "current_step_name" character varying, "allow_multiple" boolean DEFAULT FALSE NOT NULL, "started_at" timestamp(6), "transitioned_at" timestamp(6), "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL) /*application='Dummy'*/[0m
+  [1m[35m (0.7ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_type" ON "geneva_drive_workflows" ("type") /*application='Dummy'*/[0m
+  [1m[35m (0.6ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_state" ON "geneva_drive_workflows" ("state") /*application='Dummy'*/[0m
+  [1m[35m (0.8ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_hero_type_and_hero_id" ON "geneva_drive_workflows" ("hero_type", "hero_id") /*application='Dummy'*/[0m
+  [1m[35m (1.7ms)[0m  [1m[35m      CREATE UNIQUE INDEX index_workflows_unique_active
+      ON geneva_drive_workflows (type, hero_type, hero_id)
+      WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = false;
+ /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.1ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20241217000001') RETURNING "version" /*application='Dummy'*/[0m
+  [1m[36mTRANSACTION (0.4ms)[0m  [1m[35mCOMMIT /*application='Dummy'*/[0m
+Migrating to CreateGenevaDriveStepExecutions (20241217000002)
+  [1m[36mTRANSACTION (0.3ms)[0m  [1m[35mBEGIN /*application='Dummy'*/[0m
+  [1m[35m (6.3ms)[0m  [1m[35mCREATE TABLE "geneva_drive_step_executions" ("id" bigserial primary key, "workflow_id" bigint NOT NULL, "step_name" character varying NOT NULL, "state" character varying DEFAULT 'scheduled' NOT NULL, "outcome" character varying, "scheduled_for" timestamp(6) NOT NULL, "started_at" timestamp(6), "completed_at" timestamp(6), "failed_at" timestamp(6), "canceled_at" timestamp(6), "skipped_at" timestamp(6), "error_message" text, "error_backtrace" text, "job_id" character varying, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL, CONSTRAINT "fk_rails_714b91b701"
+FOREIGN KEY ("workflow_id")
+  REFERENCES "geneva_drive_workflows" ("id")
+) /*application='Dummy'*/[0m
+  [1m[35m (1.0ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_workflow_id" ON "geneva_drive_step_executions" ("workflow_id") /*application='Dummy'*/[0m
+  [1m[35m (0.8ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_state" ON "geneva_drive_step_executions" ("state") /*application='Dummy'*/[0m
+  [1m[35m (0.9ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_scheduled_for" ON "geneva_drive_step_executions" ("scheduled_for") /*application='Dummy'*/[0m
+  [1m[35m (0.9ms)[0m  [1m[35mCREATE INDEX "index_step_executions_scheduled" ON "geneva_drive_step_executions" ("state", "scheduled_for") /*application='Dummy'*/[0m
+  [1m[35m (0.7ms)[0m  [1m[35mCREATE INDEX "idx_on_workflow_id_created_at_af16a14fb2" ON "geneva_drive_step_executions" ("workflow_id", "created_at") /*application='Dummy'*/[0m
+  [1m[35m (0.7ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_workflow_id_and_state" ON "geneva_drive_step_executions" ("workflow_id", "state") /*application='Dummy'*/[0m
+  [1m[35m (0.9ms)[0m  [1m[35m      CREATE UNIQUE INDEX index_step_executions_one_active_per_workflow
+      ON geneva_drive_step_executions (workflow_id)
+      WHERE state IN ('scheduled', 'executing');
+ /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.2ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20241217000002') RETURNING "version" /*application='Dummy'*/[0m
+  [1m[36mTRANSACTION (0.4ms)[0m  [1m[35mCOMMIT /*application='Dummy'*/[0m
+  [1m[35m (0.4ms)[0m  [1m[34mSELECT pg_advisory_unlock(5953177287330319620) /*application='Dummy'*/[0m
+  [1m[36mActiveRecord::SchemaMigration Load (0.2ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC /*application='Dummy'*/[0m
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO public /*application='Dummy'*/[0m
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO "$user", public /*application='Dummy'*/[0m
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO public /*application='Dummy'*/[0m
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO "$user", public /*application='Dummy'*/[0m

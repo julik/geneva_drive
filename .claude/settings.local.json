@@ -16,7 +16,18 @@
       "Bash(bin/rails:*)",
       "Bash(bundle exec standardrb:*)",
       "Bash(cat:*)",
-      "Bash(git rm:*)"
+      "Bash(git rm:*)",
+      "Bash(bundle exec rails test:*)",
+      "Bash(for dir in /Users/julik/Code/geneva_drive/geneva_drive/test/*/)",
+      "Bash(do)",
+      "Bash(if [ -d \"$dir\" ])",
+      "Bash(then)",
+      "Bash(echo:*)",
+      "Bash(fi)",
+      "Bash(done)",
+      "Bash(RAILS_ENV=test bin/rails:*)",
+      "Bash(bundle show:*)",
+      "Bash(bundle exec rails runner:*)"
     ]
   }
 }

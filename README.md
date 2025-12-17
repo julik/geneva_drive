@@ -197,7 +197,7 @@ SignupWorkflow.performing
 SignupWorkflow.finished
 SignupWorkflow.canceled
 SignupWorkflow.paused
-SignupWorkflow.active  # Not finished or canceled
+SignupWorkflow.ongoing  # Not finished or canceled
 
 # By hero
 SignupWorkflow.for_hero(user)

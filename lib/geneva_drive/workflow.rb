@@ -52,7 +52,7 @@ module GenevaDrive
     scope :finished, -> { where(state: "finished") }
     scope :canceled, -> { where(state: "canceled") }
     scope :paused, -> { where(state: "paused") }
-    scope :active, -> { where.not(state: %w[finished canceled]) }
+    scope :ongoing, -> { where.not(state: %w[finished canceled]) }
     scope :for_hero, ->(hero) { where(hero: hero) }
 
     # Callbacks

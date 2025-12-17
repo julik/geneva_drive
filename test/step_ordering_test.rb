@@ -255,31 +255,29 @@ class StepOrderingTest < ActiveSupport::TestCase
   end
 
   test "raises error when before_step references non-existent step" do
-    workflow_class = Class.new(GenevaDrive::Workflow) do
-      step :first, before_step: :nonexistent do
-      end
-    end
-
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.steps.to_a
+      Class.new(GenevaDrive::Workflow) do
+        step :first, before_step: :nonexistent do
+        end
+      end
     end
 
     assert_match(/references non-existent step/, error.message)
     assert_match(/nonexistent/, error.message)
+    assert_match(/already been defined/, error.message)
   end
 
   test "raises error when after_step references non-existent step" do
-    workflow_class = Class.new(GenevaDrive::Workflow) do
-      step :first, after_step: :nonexistent do
-      end
-    end
-
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.steps.to_a
+      Class.new(GenevaDrive::Workflow) do
+        step :first, after_step: :nonexistent do
+        end
+      end
     end
 
     assert_match(/references non-existent step/, error.message)
     assert_match(/nonexistent/, error.message)
+    assert_match(/already been defined/, error.message)
   end
 
   # Test step collection navigation

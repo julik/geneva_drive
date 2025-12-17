@@ -101,6 +101,10 @@ module GenevaDrive
             "Step '#{step_name}' is already defined in #{self.name}"
         end
 
+        # Validate positioning references exist
+        validate_step_positioning_reference!(step_name, options[:before_step], :before_step)
+        validate_step_positioning_reference!(step_name, options[:after_step], :after_step)
+
         step_def = StepDefinition.new(
           name: step_name,
           callable: block || name,
@@ -177,6 +181,23 @@ module GenevaDrive
       end
 
       private
+
+      # Validates that a positioning reference (before_step/after_step) exists.
+      #
+      # @param step_name [String] the step being defined
+      # @param reference [String, Symbol, nil] the referenced step name
+      # @param option_name [Symbol] :before_step or :after_step
+      # @raise [StepConfigurationError] if reference doesn't exist
+      def validate_step_positioning_reference!(step_name, reference, option_name)
+        return unless reference
+
+        reference_str = reference.to_s
+        return if _step_definitions.any? { |s| s.name == reference_str }
+
+        raise StepConfigurationError,
+          "Step '#{step_name}' references non-existent step '#{reference}' in #{option_name}:. " \
+          "You can only reference steps that have already been defined."
+      end
 
       # Generates an auto-incrementing step name.
       #

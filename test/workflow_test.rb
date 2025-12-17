@@ -228,8 +228,8 @@ class WorkflowTest < ActiveSupport::TestCase
 
     assert_includes GenevaDrive::Workflow.ready, workflow1
     assert_includes GenevaDrive::Workflow.finished, workflow2
-    assert_includes GenevaDrive::Workflow.active, workflow1
-    assert_not_includes GenevaDrive::Workflow.active, workflow2
+    assert_includes GenevaDrive::Workflow.ongoing, workflow1
+    assert_not_includes GenevaDrive::Workflow.ongoing, workflow2
     assert_equal 2, GenevaDrive::Workflow.for_hero(@user).count
   end
 end

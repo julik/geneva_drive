@@ -1,0 +1,19 @@
+# Bundler
+/.bundle/
+/vendor/bundle
+
+# Test dummy app
+/test/dummy/db/*.sqlite3
+/test/dummy/db/*.sqlite3-*
+/test/dummy/log/*.log
+/test/dummy/storage/
+/test/dummy/tmp/
+
+# IDE
+/.idea/
+*.swp
+*.swo
+*~
+
+# macOS
+.DS_Store

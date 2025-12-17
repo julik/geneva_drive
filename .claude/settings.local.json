@@ -14,7 +14,9 @@
       "Bash(find:*)",
       "Bash(bundle install:*)",
       "Bash(bin/rails:*)",
-      "Bash(bundle exec standardrb:*)"
+      "Bash(bundle exec standardrb:*)",
+      "Bash(cat:*)",
+      "Bash(git rm:*)"
     ]
   }
 }

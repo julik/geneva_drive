@@ -34,7 +34,8 @@ module GenevaDrive
     # Associations
     belongs_to :workflow,
       class_name: "GenevaDrive::Workflow",
-      foreign_key: :workflow_id
+      foreign_key: :workflow_id,
+      inverse_of: :step_executions
 
     # Validations
     validates :state, presence: true, inclusion: {in: STATES}
@@ -141,7 +142,7 @@ module GenevaDrive
     #
     # @return [void]
     def execute!
-      Executor.new(workflow, self).execute!
+      Executor.execute!(self)
     end
   end
 end

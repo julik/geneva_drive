@@ -2,158 +2,158 @@
 
 require "test_helper"
 
-# Simple workflow for executor tests
-class ExecutorTestWorkflow < GenevaDrive::Workflow
-  step :first_step do
-    Thread.current[:executor_test_first_executed] = true
-  end
-
-  step :second_step do
-    Thread.current[:executor_test_second_executed] = true
-  end
-
-  def self.first_executed?
-    Thread.current[:executor_test_first_executed]
-  end
-
-  def self.reset_tracking!
-    Thread.current[:executor_test_first_executed] = nil
-    Thread.current[:executor_test_second_executed] = nil
-  end
-end
-
-# Workflow that tracks before_step_starts
-class HookTestWorkflow < GenevaDrive::Workflow
-  step :tracked_step do
-    # Step body
-  end
-
-  def before_step_starts(step_name)
-    Thread.current[:hook_test_hooks_called] ||= []
-    Thread.current[:hook_test_hooks_called] << step_name
-  end
-
-  def self.hooks_called
-    Thread.current[:hook_test_hooks_called]
-  end
-
-  def self.reset_tracking!
-    Thread.current[:hook_test_hooks_called] = nil
-  end
-end
-
-# Workflow with skip_if condition
-class SkipIfTestWorkflow < GenevaDrive::Workflow
-  step :skippable, skip_if: -> { hero.name == "Skip" } do
-    @ran = true
-  end
-
-  step :final do
-    @final_ran = true
-  end
-
-  attr_accessor :ran, :final_ran
-end
-
-# Workflow with cancel_if condition
-class CancelIfTestWorkflow < GenevaDrive::Workflow
-  cancel_if { hero.name == "Cancel" }
-
-  step :first do
-    @ran = true
-  end
-
-  attr_accessor :ran
-end
-
-# Workflow without hero
-class NoHeroTestWorkflow < GenevaDrive::Workflow
-  step :step_one do
-    @ran = true
-  end
-
-  attr_accessor :ran
-end
-
-class HeroOptionalWorkflow < GenevaDrive::Workflow
-  may_proceed_without_hero!
-
-  step :step_one do
-    Thread.current[:hero_optional_ran] = true
-  end
-
-  def self.ran?
-    Thread.current[:hero_optional_ran]
-  end
-
-  def self.reset_tracking!
-    Thread.current[:hero_optional_ran] = nil
-  end
-end
-
-# Workflow with flow control
-class FlowControlTestWorkflow < GenevaDrive::Workflow
-  step :cancel_step do
-    cancel!
-  end
-
-  step :pause_step do
-    pause!
-  end
-
-  step :skip_step do
-    skip!
-  end
-
-  step :reattempt_step do
-    reattempt!(wait: 1.hour) unless @reattempted
-    @reattempted = true
-  end
-
-  step :finish_step do
-    finished!
-  end
-
-  step :normal_step do
-    # Just completes normally
-  end
-
-  attr_accessor :reattempted
-end
-
-# Workflow with exception handling
-class ExceptionTestWorkflow < GenevaDrive::Workflow
-  step :pause_default, on_exception: :pause! do
-    raise "pause error"
-  end
-
-  step :reattempt_error, on_exception: :reattempt! do
-    raise "retry error"
-  end
-
-  step :skip_error, on_exception: :skip! do
-    raise "skip error"
-  end
-
-  step :cancel_error, on_exception: :cancel! do
-    raise "cancel error"
-  end
-end
-
 class ExecutorTest < ActiveSupport::TestCase
+  # Simple workflow for executor tests
+  class BasicWorkflow < GenevaDrive::Workflow
+    step :first_step do
+      Thread.current[:executor_test_first_executed] = true
+    end
+
+    step :second_step do
+      Thread.current[:executor_test_second_executed] = true
+    end
+
+    def self.first_executed?
+      Thread.current[:executor_test_first_executed]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:executor_test_first_executed] = nil
+      Thread.current[:executor_test_second_executed] = nil
+    end
+  end
+
+  # Workflow that tracks before_step_starts
+  class HookTrackingWorkflow < GenevaDrive::Workflow
+    step :tracked_step do
+      # Step body
+    end
+
+    def before_step_starts(step_name)
+      Thread.current[:hook_test_hooks_called] ||= []
+      Thread.current[:hook_test_hooks_called] << step_name
+    end
+
+    def self.hooks_called
+      Thread.current[:hook_test_hooks_called]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:hook_test_hooks_called] = nil
+    end
+  end
+
+  # Workflow with skip_if condition
+  class SkipIfWorkflow < GenevaDrive::Workflow
+    step :skippable, skip_if: -> { hero.name == "Skip" } do
+      @ran = true
+    end
+
+    step :final do
+      @final_ran = true
+    end
+
+    attr_accessor :ran, :final_ran
+  end
+
+  # Workflow with cancel_if condition
+  class CancelIfWorkflow < GenevaDrive::Workflow
+    cancel_if { hero.name == "Cancel" }
+
+    step :first do
+      @ran = true
+    end
+
+    attr_accessor :ran
+  end
+
+  # Workflow without hero
+  class RequiresHeroWorkflow < GenevaDrive::Workflow
+    step :step_one do
+      @ran = true
+    end
+
+    attr_accessor :ran
+  end
+
+  # Workflow that can proceed without hero
+  class OptionalHeroWorkflow < GenevaDrive::Workflow
+    may_proceed_without_hero!
+
+    step :step_one do
+      Thread.current[:hero_optional_ran] = true
+    end
+
+    def self.ran?
+      Thread.current[:hero_optional_ran]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:hero_optional_ran] = nil
+    end
+  end
+
+  # Workflow with flow control
+  class FlowControlWorkflow < GenevaDrive::Workflow
+    step :cancel_step do
+      cancel!
+    end
+
+    step :pause_step do
+      pause!
+    end
+
+    step :skip_step do
+      skip!
+    end
+
+    step :reattempt_step do
+      reattempt!(wait: 1.hour) unless @reattempted
+      @reattempted = true
+    end
+
+    step :finish_step do
+      finished!
+    end
+
+    step :normal_step do
+      # Just completes normally
+    end
+
+    attr_accessor :reattempted
+  end
+
+  # Workflow with exception handling
+  class ExceptionHandlingWorkflow < GenevaDrive::Workflow
+    step :pause_default, on_exception: :pause! do
+      raise "pause error"
+    end
+
+    step :reattempt_error, on_exception: :reattempt! do
+      raise "retry error"
+    end
+
+    step :skip_error, on_exception: :skip! do
+      raise "skip error"
+    end
+
+    step :cancel_error, on_exception: :cancel! do
+      raise "cancel error"
+    end
+  end
+
   setup do
     @user = create_user
   end
 
   test "executes step and transitions to next" do
-    ExecutorTestWorkflow.reset_tracking!
-    workflow = ExecutorTestWorkflow.create!(hero: @user)
+    BasicWorkflow.reset_tracking!
+    workflow = BasicWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
 
-    # Check class-level tracking
-    assert ExecutorTestWorkflow.first_executed?
+    assert BasicWorkflow.first_executed?
 
     step_execution.reload
     workflow.reload
@@ -166,19 +166,18 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "calls before_step_starts hook" do
-    HookTestWorkflow.reset_tracking!
-    workflow = HookTestWorkflow.create!(hero: @user)
+    HookTrackingWorkflow.reset_tracking!
+    workflow = HookTrackingWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
 
-    # Check class-level tracking
-    assert_equal ["tracked_step"], HookTestWorkflow.hooks_called
+    assert_equal ["tracked_step"], HookTrackingWorkflow.hooks_called
   end
 
   test "skip_if condition evaluated at execution time" do
     user = create_user(name: "Skip", email: "skip@example.com")
-    workflow = SkipIfTestWorkflow.create!(hero: user)
+    workflow = SkipIfWorkflow.create!(hero: user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
@@ -194,7 +193,7 @@ class ExecutorTest < ActiveSupport::TestCase
 
   test "cancel_if condition cancels workflow" do
     user = create_user(name: "Cancel", email: "cancel@example.com")
-    workflow = CancelIfTestWorkflow.create!(hero: user)
+    workflow = CancelIfWorkflow.create!(hero: user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
@@ -208,10 +207,9 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "cancels workflow if hero is deleted" do
-    workflow = NoHeroTestWorkflow.create!(hero: @user)
+    workflow = RequiresHeroWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    # Delete the hero
     @user.destroy!
 
     GenevaDrive::Executor.execute!(step_execution)
@@ -224,17 +222,15 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "proceeds without hero if may_proceed_without_hero! is set" do
-    HeroOptionalWorkflow.reset_tracking!
-    workflow = HeroOptionalWorkflow.create!(hero: @user)
+    OptionalHeroWorkflow.reset_tracking!
+    workflow = OptionalHeroWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    # Delete the hero
     @user.destroy!
 
     GenevaDrive::Executor.execute!(step_execution)
 
-    # Check class-level tracking
-    assert HeroOptionalWorkflow.ran?
+    assert OptionalHeroWorkflow.ran?
 
     step_execution.reload
     workflow.reload
@@ -243,7 +239,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "cancel! flow control cancels workflow" do
-    workflow = FlowControlTestWorkflow.create!(hero: @user)
+    workflow = FlowControlWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
@@ -256,9 +252,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "pause! flow control pauses workflow" do
-    # Create workflow that will run pause_step
-    workflow = FlowControlTestWorkflow.create!(hero: @user)
-    # Cancel the auto-scheduled first step and create pause_step manually
+    workflow = FlowControlWorkflow.create!(hero: @user)
     workflow.step_executions.first.mark_canceled!
     step_execution = workflow.step_executions.create!(
       step_name: "pause_step",
@@ -277,8 +271,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "skip! flow control skips to next step" do
-    workflow = FlowControlTestWorkflow.create!(hero: @user)
-    # Cancel the auto-scheduled first step and create skip_step manually
+    workflow = FlowControlWorkflow.create!(hero: @user)
     workflow.step_executions.first.mark_canceled!
     step_execution = workflow.step_executions.create!(
       step_name: "skip_step",
@@ -294,13 +287,11 @@ class ExecutorTest < ActiveSupport::TestCase
 
     assert_equal "skipped", step_execution.state
     assert_equal "ready", workflow.state
-    # Should have scheduled next step (3 total: canceled first, executed skip_step, scheduled next)
     assert_equal 3, workflow.step_executions.count
   end
 
   test "finished! flow control finishes workflow immediately" do
-    workflow = FlowControlTestWorkflow.create!(hero: @user)
-    # Cancel the auto-scheduled first step and create finish_step manually
+    workflow = FlowControlWorkflow.create!(hero: @user)
     workflow.step_executions.first.mark_canceled!
     step_execution = workflow.step_executions.create!(
       step_name: "finish_step",
@@ -319,8 +310,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "on_exception: :pause! pauses workflow on error" do
-    workflow = ExceptionTestWorkflow.create!(hero: @user)
-    # First step is pause_default, which will raise an error
+    workflow = ExceptionHandlingWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     GenevaDrive::Executor.execute!(step_execution)
@@ -335,8 +325,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "on_exception: :skip! skips step on error" do
-    workflow = ExceptionTestWorkflow.create!(hero: @user)
-    # Cancel the auto-scheduled first step and create skip_error manually
+    workflow = ExceptionHandlingWorkflow.create!(hero: @user)
     workflow.step_executions.first.mark_canceled!
     step_execution = workflow.step_executions.create!(
       step_name: "skip_error",
@@ -355,8 +344,7 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "on_exception: :cancel! cancels workflow on error" do
-    workflow = ExceptionTestWorkflow.create!(hero: @user)
-    # Cancel the auto-scheduled first step and create cancel_error manually
+    workflow = ExceptionHandlingWorkflow.create!(hero: @user)
     workflow.step_executions.first.mark_canceled!
     step_execution = workflow.step_executions.create!(
       step_name: "cancel_error",
@@ -376,21 +364,18 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   test "step execution idempotency - does not re-execute completed step" do
-    ExecutorTestWorkflow.reset_tracking!
-    workflow = ExecutorTestWorkflow.create!(hero: @user)
+    BasicWorkflow.reset_tracking!
+    workflow = BasicWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    # Execute once
     GenevaDrive::Executor.execute!(step_execution)
-    assert ExecutorTestWorkflow.first_executed?
+    assert BasicWorkflow.first_executed?
 
-    # Reset tracking to verify re-execution doesn't happen
-    ExecutorTestWorkflow.reset_tracking!
+    BasicWorkflow.reset_tracking!
 
-    # Try to execute again - should be a no-op
     GenevaDrive::Executor.execute!(step_execution.reload)
 
-    assert_nil ExecutorTestWorkflow.first_executed?
+    assert_nil BasicWorkflow.first_executed?
     assert_equal "completed", step_execution.state
   end
 end

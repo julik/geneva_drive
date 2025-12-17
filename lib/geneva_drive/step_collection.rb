@@ -130,25 +130,17 @@ module GenevaDrive
     end
 
     # Inserts a positioned step into the result array at the correct location.
+    # Note: Reference validation is done at definition time in Workflow.step
     #
     # @param result [Array<StepDefinition>] the current ordered steps
     # @param step [StepDefinition] the step to insert
-    # @raise [StepConfigurationError] if referenced step does not exist
     def insert_positioned_step(result, step)
       if step.before_step
         target_index = result.index { |s| s.name == step.before_step }
-        unless target_index
-          raise StepConfigurationError,
-            "Step '#{step.name}' references non-existent step '#{step.before_step}' in before_step:"
-        end
-        result.insert(target_index, step)
+        result.insert(target_index, step) if target_index
       elsif step.after_step
         target_index = result.index { |s| s.name == step.after_step }
-        unless target_index
-          raise StepConfigurationError,
-            "Step '#{step.name}' references non-existent step '#{step.after_step}' in after_step:"
-        end
-        result.insert(target_index + 1, step)
+        result.insert(target_index + 1, step) if target_index
       end
     end
   end

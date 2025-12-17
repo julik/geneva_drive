@@ -255,39 +255,37 @@ class StepDefinitionTest < ActiveSupport::TestCase
   end
 
   test "raises error for non-existent before_step reference" do
-    workflow_class = Class.new(GenevaDrive::Workflow) do
-      step :first do
-      end
-
-      step :orphan, before_step: :nonexistent do
-      end
-    end
-
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.steps.to_a
+      Class.new(GenevaDrive::Workflow) do
+        step :first do
+        end
+
+        step :orphan, before_step: :nonexistent do
+        end
+      end
     end
 
     assert_match(/references non-existent step/, error.message)
     assert_match(/nonexistent/, error.message)
     assert_match(/before_step/, error.message)
+    assert_match(/already been defined/, error.message)
   end
 
   test "raises error for non-existent after_step reference" do
-    workflow_class = Class.new(GenevaDrive::Workflow) do
-      step :first do
-      end
-
-      step :orphan, after_step: :nonexistent do
-      end
-    end
-
     error = assert_raises(GenevaDrive::StepConfigurationError) do
-      workflow_class.steps.to_a
+      Class.new(GenevaDrive::Workflow) do
+        step :first do
+        end
+
+        step :orphan, after_step: :nonexistent do
+        end
+      end
     end
 
     assert_match(/references non-existent step/, error.message)
     assert_match(/nonexistent/, error.message)
     assert_match(/after_step/, error.message)
+    assert_match(/already been defined/, error.message)
   end
 
   # Tests for step definition inheritance

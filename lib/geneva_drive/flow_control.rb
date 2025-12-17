@@ -28,6 +28,12 @@ module GenevaDrive
   #   raise InvalidStateError, "Cannot resume a finished workflow"
   class InvalidStateError < StandardError; end
 
+  # Raised when a step definition has invalid configuration.
+  #
+  # @example
+  #   raise StepConfigurationError, "Step requires either a block or method name"
+  class StepConfigurationError < StandardError; end
+
   # Module providing flow control methods for use within workflow steps.
   # These methods use throw/catch to interrupt step execution and signal
   # the executor how to proceed.

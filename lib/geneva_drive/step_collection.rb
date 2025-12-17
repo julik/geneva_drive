@@ -123,23 +123,22 @@ module GenevaDrive
     #
     # @param result [Array<StepDefinition>] the current ordered steps
     # @param step [StepDefinition] the step to insert
+    # @raise [StepConfigurationError] if referenced step does not exist
     def insert_positioned_step(result, step)
       if step.before_step
         target_index = result.index { |s| s.name == step.before_step }
-        if target_index
-          result.insert(target_index, step)
-        else
-          # Target not found, append to end
-          result << step
+        unless target_index
+          raise StepConfigurationError,
+            "Step '#{step.name}' references non-existent step '#{step.before_step}' in before_step:"
         end
+        result.insert(target_index, step)
       elsif step.after_step
         target_index = result.index { |s| s.name == step.after_step }
-        if target_index
-          result.insert(target_index + 1, step)
-        else
-          # Target not found, append to end
-          result << step
+        unless target_index
+          raise StepConfigurationError,
+            "Step '#{step.name}' references non-existent step '#{step.after_step}' in after_step:"
         end
+        result.insert(target_index + 1, step)
       end
     end
   end

@@ -27,6 +27,7 @@ module GenevaDrive
   # Core classes
   autoload :FlowControlSignal, "geneva_drive/flow_control"
   autoload :InvalidStateError, "geneva_drive/flow_control"
+  autoload :StepConfigurationError, "geneva_drive/flow_control"
   autoload :FlowControl, "geneva_drive/flow_control"
   autoload :StepDefinition, "geneva_drive/step_definition"
   autoload :StepCollection, "geneva_drive/step_collection"
@@ -38,4 +39,39 @@ module GenevaDrive
 
   # Jobs
   autoload :PerformStepJob, "geneva_drive/jobs/perform_step_job"
+  autoload :HousekeepingJob, "geneva_drive/jobs/housekeeping_job"
+
+  class << self
+    # How long to keep completed workflows before cleanup.
+    # Set to nil to disable automatic cleanup.
+    # @return [ActiveSupport::Duration, nil]
+    attr_accessor :delete_completed_workflows_after
+
+    # How long a step execution can be in "executing" state before being
+    # considered stuck and eligible for recovery.
+    # @return [ActiveSupport::Duration]
+    attr_accessor :stuck_executing_threshold
+
+    # How long a step execution can be past its scheduled_for time while
+    # still in "scheduled" state before being considered stuck.
+    # @return [ActiveSupport::Duration]
+    attr_accessor :stuck_scheduled_threshold
+
+    # Maximum number of workflows to process in a single housekeeping run.
+    # Prevents runaway processing if there's a large backlog.
+    # @return [Integer]
+    attr_accessor :housekeeping_batch_size
+
+    # Default recovery action for stuck step executions.
+    # Can be :reattempt or :cancel
+    # @return [Symbol]
+    attr_accessor :stuck_recovery_action
+  end
+
+  # Set default configuration values
+  self.delete_completed_workflows_after = nil  # Disabled by default
+  self.stuck_executing_threshold = 1.hour
+  self.stuck_scheduled_threshold = 1.hour
+  self.housekeeping_batch_size = 1000
+  self.stuck_recovery_action = :reattempt
 end

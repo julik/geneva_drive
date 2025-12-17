@@ -92,6 +92,8 @@ module GenevaDrive
       def step(name = nil, **options, &block)
         # Duplicate parent's array to avoid mutation
         self._step_definitions = _step_definitions.dup
+        # Invalidate cached step collection since we're adding a step
+        @steps = nil
 
         step_name = (name || generate_step_name).to_s
 

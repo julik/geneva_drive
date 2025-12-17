@@ -93,13 +93,23 @@ module GenevaDrive
         # Duplicate parent's array to avoid mutation
         self._step_definitions = _step_definitions.dup
 
+        step_name = (name || generate_step_name).to_s
+
+        # Check for duplicate step names
+        if _step_definitions.any? { |s| s.name == step_name }
+          raise StepConfigurationError,
+            "Step '#{step_name}' is already defined in #{self.name}"
+        end
+
         step_def = StepDefinition.new(
-          name: name || generate_step_name,
+          name: step_name,
           callable: block || name,
           **options
         )
 
         _step_definitions << step_def
+
+        step_def
       end
 
       # Defines a blanket cancellation condition for the workflow.
@@ -261,8 +271,11 @@ module GenevaDrive
       create_step_execution(first_step, wait: first_step.wait)
     end
 
-    # Creates a step execution and enqueues the job.
+    # Creates a step execution and enqueues the job after transaction commits.
     # Any existing scheduled/executing step executions are canceled first.
+    #
+    # The job is enqueued using `after_commit` to ensure the step execution
+    # record is visible to the job worker when it runs.
     #
     # @param step_definition [StepDefinition] the step to execute
     # @param wait [ActiveSupport::Duration, nil] delay before execution
@@ -284,14 +297,24 @@ module GenevaDrive
 
         update!(current_step_name: step_definition.name)
 
+        # Capture values for the after_commit callback
         job_options = self.class._step_job_options.dup
         job_options[:wait_until] = scheduled_for if wait
+        execution_id = step_execution.id
 
-        job = GenevaDrive::PerformStepJob
-          .set(**job_options)
-          .perform_later(step_execution.id)
+        # Enqueue job after transaction commits to ensure the step execution
+        # record is visible to the job worker
+        ActiveRecord.after_all_transactions_commit do
+          job = GenevaDrive::PerformStepJob
+            .set(**job_options)
+            .perform_later(execution_id)
 
-        step_execution.update!(job_id: job.job_id)
+          # Update job_id for debugging purposes (this is a separate transaction)
+          GenevaDrive::StepExecution
+            .where(id: execution_id)
+            .update_all(job_id: job.job_id)
+        end
+
         step_execution
       end
     end

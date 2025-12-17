@@ -29,6 +29,7 @@ module GenevaDrive
       skipped
       canceled
       failed
+      recovered
     ].freeze
 
     # Associations

@@ -16,7 +16,7 @@ module GenevaDrive
   module Executor
     # Valid state transitions for step executions
     STEP_TRANSITIONS = {
-      "scheduled" => %w[scheduled executing canceled skipped],
+      "scheduled" => %w[scheduled executing canceled skipped failed completed],
       "executing" => %w[executing completed failed canceled skipped]
     }.freeze
 
@@ -89,21 +89,31 @@ module GenevaDrive
             end
           end
 
-          # Check blanket cancel_if conditions
-          if should_cancel_workflow?(workflow)
-            transition_step!(step_execution, "canceled", outcome: "canceled")
-            transition_workflow!(workflow, "canceled")
+          # Get step definition (needed for exception handling policy)
+          step_def = step_execution.step_definition
+
+          # Check blanket cancel_if conditions (with exception handling)
+          begin
+            if should_cancel_workflow?(workflow)
+              transition_step!(step_execution, "canceled", outcome: "canceled")
+              transition_workflow!(workflow, "canceled")
+              return nil
+            end
+          rescue => e
+            handle_precondition_exception(e, step_def, step_execution, workflow)
             return nil
           end
 
-          # Get step definition
-          step_def = step_execution.step_definition
-
-          # Check skip_if condition
-          if step_def.should_skip?(workflow)
-            transition_step!(step_execution, "skipped", outcome: "skipped")
-            transition_workflow!(workflow, "ready")
-            workflow.schedule_next_step!
+          # Check skip_if condition (with exception handling)
+          begin
+            if step_def.should_skip?(workflow)
+              transition_step!(step_execution, "skipped", outcome: "skipped")
+              transition_workflow!(workflow, "ready")
+              workflow.schedule_next_step!
+              return nil
+            end
+          rescue => e
+            handle_precondition_exception(e, step_def, step_execution, workflow)
             return nil
           end
 
@@ -272,6 +282,56 @@ module GenevaDrive
           error: error,
           on_exception: step_def.on_exception
         }
+      end
+
+      # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
+      # Uses the step's on_exception policy to determine how to handle the exception.
+      #
+      # @param error [Exception] the exception that occurred
+      # @param step_def [StepDefinition] the step definition
+      # @param step_execution [GenevaDrive::StepExecution]
+      # @param workflow [GenevaDrive::Workflow]
+      # @return [void]
+      def handle_precondition_exception(error, step_def, step_execution, workflow)
+        Rails.logger.error("Pre-condition evaluation failed: #{error.message}")
+        Rails.error.report(error)
+
+        case step_def.on_exception
+        when :reattempt!
+          transition_step!(step_execution, "completed", outcome: "reattempted")
+          transition_workflow!(workflow, "ready")
+          workflow.reschedule_current_step!
+
+        when :cancel!
+          step_execution.update!(
+            error_message: error.message,
+            error_backtrace: error.backtrace&.join("\n")
+          )
+          transition_step!(step_execution, "failed", outcome: "canceled")
+          transition_workflow!(workflow, "canceled")
+
+        when :skip!
+          transition_step!(step_execution, "skipped", outcome: "skipped")
+          transition_workflow!(workflow, "ready")
+          workflow.schedule_next_step!
+
+        when :pause!
+          step_execution.update!(
+            error_message: error.message,
+            error_backtrace: error.backtrace&.join("\n")
+          )
+          transition_step!(step_execution, "failed", outcome: "failed")
+          transition_workflow!(workflow, "paused")
+
+        else
+          # Default: pause
+          step_execution.update!(
+            error_message: error.message,
+            error_backtrace: error.backtrace&.join("\n")
+          )
+          transition_step!(step_execution, "failed", outcome: "failed")
+          transition_workflow!(workflow, "paused")
+        end
       end
 
       # Handles successful step completion.

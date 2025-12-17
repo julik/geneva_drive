@@ -7,7 +7,7 @@ GenevaDrive is a Rails library for implementing durable workflows. It provides a
 **Key Design Principles:**
 - **Hero-oriented**: Workflows are associated with a polymorphic "hero" (homage to StepperMotor's hero's journey concept)
 - **Step Executions as Primitives**: Each step execution is a first-class database record, serving as an idempotency key
-- **Database-enforced Constraints**: Uniqueness and concurrency control via database constraints
+- **Database-enforced Constraints**: Uniqueness and concurrency control via database constraints (vital, not application-level)
 - **Forward Scheduling Only**: Steps are scheduled immediately as StepExecution records with jobs enqueued
 - **Multi-database Support**: Works on PostgreSQL, MySQL, and SQLite with appropriate strategies for each
 
@@ -25,9 +25,8 @@ create_table :geneva_drive_workflows do |t|
   t.string :type, null: false, index: true
 
   # Polymorphic association to the hero of the workflow
-  # Column types determined dynamically based on existing schema
   t.string :hero_type, null: false
-  # hero_id type: detected from schema (bigint, integer, or uuid/string)
+  # hero_id type: detected from schema (bigint default, uuid if schema uses it)
 
   # State machine
   t.string :state, null: false, default: 'ready', index: true
@@ -40,10 +39,8 @@ create_table :geneva_drive_workflows do |t|
   t.boolean :allow_multiple, default: false, null: false
 
   # Timestamps
-  t.datetime :started_at
-  t.datetime :finished_at
-  t.datetime :canceled_at
-  t.datetime :paused_at
+  t.datetime :started_at       # When first step began executing
+  t.datetime :transitioned_at  # When state last changed to finished/canceled/paused
 
   t.timestamps
 end
@@ -72,15 +69,12 @@ create_table :geneva_drive_step_executions do |t|
   # States: 'scheduled', 'executing', 'completed', 'failed', 'canceled', 'skipped'
 
   # Outcome for audit purposes (how the execution concluded)
-  # Values: 'success', 'reattempted', 'skipped_by_condition', 'skipped_by_flow_control',
-  #         'canceled_by_flow_control', 'canceled_by_condition', 'paused_by_exception',
-  #         'canceled_by_exception', 'skipped_by_exception'
   t.string :outcome
 
   # Scheduling
   t.datetime :scheduled_for, null: false, index: true
 
-  # Execution tracking
+  # Execution tracking (individual timestamps for audit trail)
   t.datetime :started_at
   t.datetime :completed_at
   t.datetime :failed_at
@@ -104,29 +98,43 @@ add_index :geneva_drive_step_executions,
 
 # Index for workflow execution history
 add_index :geneva_drive_step_executions, [:workflow_id, :created_at]
+
+# Index for common query patterns
+add_index :geneva_drive_step_executions, [:workflow_id, :state]
+```
+
+### Outcome Values
+
+Simplified to 6 values (down from 10). The "why" goes in logs, not the database:
+
+```ruby
+OUTCOMES = %w[
+  success       # Step completed normally
+  reattempted   # Step will be retried (by flow control or exception)
+  skipped       # Step was skipped (by condition, flow control, or exception)
+  canceled      # Step/workflow was canceled (by condition or flow control)
+  failed        # Step failed with exception, workflow paused
+].freeze
 ```
 
 ### Primary/Foreign Key Type Detection
 
-Use `bigint` for all primary keys and foreign keys. Databases handle upcasting on JOINs cheaply, and we don't do arithmetic on IDs.
-
-The only exception is UUID-based schemas - if the schema predominantly uses UUIDs, use `uuid` instead.
+Key type detection is provided as a migration helper module (not a separate class):
 
 ```ruby
-# lib/geneva_drive/schema_analyzer.rb
+# lib/geneva_drive/migration_helpers.rb
 module GenevaDrive
-  class SchemaAnalyzer
+  module MigrationHelpers
     # Detect if schema uses UUIDs; otherwise default to bigint
-    def self.detect_key_type
-      return :bigint if no_tables_exist?
+    def geneva_drive_key_type
+      tables = connection.tables.reject { |t| t.start_with?('schema_', 'ar_') }
+      return :bigint if tables.empty?
 
       uuid_count = 0
       other_count = 0
 
-      ActiveRecord::Base.connection.tables.each do |table_name|
-        next if table_name.start_with?('schema_', 'ar_')
-
-        columns = ActiveRecord::Base.connection.columns(table_name)
+      tables.each do |table_name|
+        columns = connection.columns(table_name)
         id_column = columns.find { |c| c.name == 'id' }
         next unless id_column
 
@@ -139,47 +147,38 @@ module GenevaDrive
 
       uuid_count > other_count ? :uuid : :bigint
     end
-
-    private
-
-    def self.no_tables_exist?
-      ActiveRecord::Base.connection.tables.reject { |t| t.start_with?('schema_', 'ar_') }.empty?
-    end
   end
 end
 ```
 
-Migration template uses this:
+Migration usage:
 
 ```ruby
-# In migration template
-def change
-  key_type = GenevaDrive::SchemaAnalyzer.detect_key_type
+class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.0]
+  include GenevaDrive::MigrationHelpers
 
-  create_table :geneva_drive_workflows, id: key_type do |t|
-    t.string :type, null: false, index: true
-    t.string :hero_type, null: false
+  def change
+    key_type = geneva_drive_key_type
 
-    if key_type == :uuid
-      t.uuid :hero_id, null: false
-    else
-      t.bigint :hero_id, null: false
+    create_table :geneva_drive_workflows, id: key_type do |t|
+      t.string :type, null: false, index: true
+      t.string :hero_type, null: false
+
+      if key_type == :uuid
+        t.uuid :hero_id, null: false
+      else
+        t.bigint :hero_id, null: false
+      end
+
+      # ... rest of columns
     end
-
-    # ... rest of columns
-  end
-
-  create_table :geneva_drive_step_executions, id: key_type do |t|
-    t.references :workflow,
-                 null: false,
-                 type: key_type,
-                 foreign_key: { to_table: :geneva_drive_workflows }
-    # ... rest of columns
   end
 end
 ```
 
 ### Uniqueness Constraints (Database-Specific)
+
+**These are vital and cannot be trusted to Rails validations alone.**
 
 #### PostgreSQL Strategy
 Uses partial indexes (most efficient):
@@ -249,7 +248,7 @@ WHERE state IN ('scheduled', 'executing');
 ## Implementation Plan
 
 ### Phase 1: Core Infrastructure
-1. **Workflow ActiveRecord Model** - The workflow definition and overall state
+1. **Workflow ActiveRecord Model** - The workflow definition, state, and scheduling (Scheduler inlined)
 2. **StepExecution ActiveRecord Model** - The scheduling and execution primitive
 3. **Step Definition System** - DSL for defining steps in workflow classes
 4. **State Machines** - Both workflow and step execution states
@@ -257,37 +256,38 @@ WHERE state IN ('scheduled', 'executing');
 6. **Class-inheritable DSL** - Using class_attribute for steps, cancel_conditions, job_options
 
 ### Phase 2: Step Execution Engine
-7. **Step Executor** - Handles step invocation via StepExecution
+7. **Executor** - Handles step invocation via StepExecution
 8. **Flow Control Methods** - cancel!, pause!, skip!, reattempt!, finished!
 9. **Exception Handling** - Configurable error behavior (pause!, cancel!, reattempt!, skip!)
 10. **Transactional Semantics** - Lock-guarded transitions on step execution
 11. **Skip Condition Evaluation** - Evaluated at execution time, not scheduling time
+12. **Hero Existence Check** - Cancel by default if hero deleted, opt-out via `may_proceed_without_hero!`
 
 ### Phase 3: Scheduling & Jobs
-12. **Scheduler** - Creates StepExecution records and enqueues jobs (forward scheduling only)
-13. **PerformStepJob** - Receives step_execution_id, loads and executes
-14. **Job Options** - Per-workflow queue and priority configuration
-15. **Idempotency** - Jobs can be safely retried using step execution state
+13. **Scheduling (inlined in Workflow)** - Creates StepExecution records and enqueues jobs
+14. **PerformStepJob** - Receives step_execution_id, loads and executes
+15. **Job Options** - Per-workflow queue and priority configuration
+16. **Idempotency** - Jobs can be safely retried using step execution state
 
 ### Phase 4: Advanced Features
-16. **Conditional Steps** - skip_if with symbols/procs/booleans (evaluated at execution)
-17. **Blanket Conditions** - cancel_if for workflow-wide cancellation
-18. **Step Ordering** - before_step/after_step positioning
-19. **Anonymous Steps** - Auto-generated names for inline blocks
-20. **Progress Callbacks** - before_step_starts hook
-21. **Resume from Pause** - resume! method for paused workflows
+17. **Conditional Steps** - skip_if with symbols/procs/booleans (evaluated at execution)
+18. **Blanket Conditions** - cancel_if for workflow-wide cancellation
+19. **Step Ordering** - before_step/after_step positioning
+20. **Anonymous Steps** - Auto-generated names for inline blocks
+21. **Progress Callbacks** - before_step_starts hook
+22. **Resume from Pause** - resume! method for paused workflows
 
 ### Phase 5: Uniqueness & Querying
-22. **Unique Constraints** - One active workflow per hero (with allow_multiple option)
-23. **Execution Constraints** - One active step execution per workflow
-24. **Execution History** - Query past step executions with outcomes
+23. **Unique Constraints** - One active workflow per hero (with allow_multiple option)
+24. **Execution Constraints** - One active step execution per workflow
+25. **Execution History** - Query past step executions with outcomes
 
 ### Phase 6: Configuration & Tooling
-25. **Generator** - Rails generator for installation and migrations
-26. **Schema Analyzer** - Detect primary key types from existing schema
-27. **Configuration DSL** - Global configuration
-28. **Testing Helpers** - speedrun_workflow for test environments
-29. **Logging & Instrumentation** - Comprehensive logging of state transitions
+26. **Generator** - Rails generator for installation and migrations
+27. **MigrationHelpers Module** - Key type detection for migrations
+28. **Configuration DSL** - Global configuration
+29. **Testing Helpers** - speedrun_workflow for test environments
+30. **Logging & Instrumentation** - Comprehensive logging of state transitions
 
 ---
 
@@ -300,18 +300,13 @@ lib/geneva_drive/
 ├── geneva_drive.rb                    # Main entry point
 ├── version.rb
 ├── configuration.rb
-├── schema_analyzer.rb                 # Detects PK types from schema
-├── workflow.rb                        # Base Workflow class
+├── migration_helpers.rb               # Key type detection for migrations
+├── workflow.rb                        # Base Workflow class (includes scheduling)
 ├── step_execution.rb                  # StepExecution model
 ├── step_definition.rb                 # Step metadata
 ├── step_collection.rb                 # Step ordering
-├── conditional.rb                     # Conditional evaluation
-├── state_machines/
-│   ├── workflow_state_machine.rb      # Workflow states
-│   └── step_execution_state_machine.rb # Step execution states
 ├── executor.rb                        # Step execution logic
 ├── flow_control.rb                    # cancel!, pause!, etc.
-├── scheduler.rb                       # Creates step executions
 ├── jobs/
 │   └── perform_step_job.rb            # Receives step_execution_id
 ├── test_helpers.rb
@@ -326,13 +321,15 @@ lib/generators/geneva_drive/
         └── initializer.rb.tt
 ```
 
+**Note:** Scheduler has been inlined into Workflow as private methods. No separate Scheduler class.
+
 ---
 
 ## Key Classes
 
 ### 1. GenevaDrive::Workflow
 
-Base class for all workflows, provides DSL and state management.
+Base class for all workflows, provides DSL, state management, and scheduling.
 
 ```ruby
 module GenevaDrive
@@ -350,9 +347,7 @@ module GenevaDrive
     class_attribute :_step_definitions, instance_writer: false, default: []
     class_attribute :_cancel_conditions, instance_writer: false, default: []
     class_attribute :_step_job_options, instance_writer: false, default: {}
-
-    # State machine for workflow
-    include WorkflowStateMachine
+    class_attribute :_may_proceed_without_hero, instance_writer: false, default: false
 
     # Flow control
     include FlowControl
@@ -394,6 +389,11 @@ module GenevaDrive
         self._step_job_options = _step_job_options.merge(options)
       end
 
+      # Allow workflow to continue even if hero is deleted
+      def may_proceed_without_hero!
+        self._may_proceed_without_hero = true
+      end
+
       def step_definitions
         _step_definitions
       end
@@ -414,13 +414,17 @@ module GenevaDrive
     # Callbacks
     after_create :schedule_first_step!
 
-    # Instance methods
-    def schedule_first_step!
-      Scheduler.new(self).schedule_first_step!
+    # Public scheduling interface
+    def schedule_next_step!(wait: nil)
+      next_step = self.class.step_collection.next_after(current_step_name)
+      return finish_workflow! unless next_step
+
+      create_step_execution(next_step, wait: wait || next_step.wait)
     end
 
-    def schedule_next_step!(wait: nil)
-      Scheduler.new(self).schedule_next_step!(wait: wait)
+    def reschedule_current_step!(wait: nil)
+      step_def = self.class.step_collection.find_by_name(current_step_name)
+      create_step_execution(step_def, wait: wait)
     end
 
     # Resume a paused workflow
@@ -428,11 +432,10 @@ module GenevaDrive
       raise InvalidStateError, "Cannot resume a #{state} workflow" unless state == 'paused'
 
       with_lock do
-        update!(state: 'ready', paused_at: nil)
+        update!(state: 'ready', transitioned_at: nil)
       end
 
-      # Schedule the current step again
-      Scheduler.new(self).reschedule_current_step!
+      reschedule_current_step!
     end
 
     # Current execution (if any)
@@ -453,8 +456,48 @@ module GenevaDrive
     # State transitions
     def transition_to!(new_state, **attributes)
       with_lock do
-        update!(attributes.merge(state: new_state))
+        attrs = attributes.merge(state: new_state)
+        attrs[:transitioned_at] = Time.current if %w[finished canceled paused].include?(new_state)
+        update!(attrs)
       end
+    end
+
+    private
+
+    def schedule_first_step!
+      first_step = self.class.step_definitions.first
+      return finish_workflow! unless first_step
+
+      create_step_execution(first_step, wait: first_step.wait)
+    end
+
+    def create_step_execution(step_definition, wait: nil)
+      scheduled_for = wait ? wait.from_now : Time.current
+
+      with_lock do
+        step_execution = step_executions.create!(
+          step_name: step_definition.name,
+          state: 'scheduled',
+          scheduled_for: scheduled_for
+        )
+
+        update!(current_step_name: step_definition.name)
+
+        job_options = self.class._step_job_options.dup
+        job_options[:wait_until] = scheduled_for if wait
+
+        job = GenevaDrive::PerformStepJob
+          .set(job_options)
+          .perform_later(step_execution.id)
+
+        step_execution.update!(job_id: job.job_id)
+        step_execution
+      end
+    end
+
+    def finish_workflow!
+      transition_to!('finished')
+      nil
     end
   end
 end
@@ -464,8 +507,11 @@ end
 - Uses `class_attribute` for inheritable DSL arrays/hashes
 - Arrays are duplicated before modification to prevent parent mutation
 - `hero` as polymorphic association (homage to StepperMotor)
+- `may_proceed_without_hero!` for workflows that can continue without hero
 - `resume!` method for paused workflows
-- Scopes for all states plus `for_hero` and `active`
+- Scheduling inlined as private methods (no separate Scheduler class)
+- All scheduling happens within workflow lock (fixes race condition)
+- `transitioned_at` auto-set when transitioning to terminal/paused states
 
 ### 2. GenevaDrive::StepExecution
 
@@ -480,14 +526,9 @@ module GenevaDrive
     OUTCOMES = %w[
       success
       reattempted
-      skipped_by_condition
-      skipped_by_flow_control
-      canceled_by_flow_control
-      canceled_by_condition
-      paused_by_exception
-      canceled_by_exception
-      skipped_by_exception
-      reattempted_by_exception
+      skipped
+      canceled
+      failed
     ].freeze
 
     # Associations
@@ -532,7 +573,7 @@ module GenevaDrive
       end
     end
 
-    def mark_failed!(error, outcome: 'paused_by_exception')
+    def mark_failed!(error, outcome: 'failed')
       with_lock do
         update!(
           state: 'failed',
@@ -544,7 +585,7 @@ module GenevaDrive
       end
     end
 
-    def mark_skipped!(outcome: 'skipped_by_condition')
+    def mark_skipped!(outcome: 'skipped')
       with_lock do
         update!(
           state: 'skipped',
@@ -554,7 +595,7 @@ module GenevaDrive
       end
     end
 
-    def mark_canceled!(outcome: 'canceled_by_flow_control')
+    def mark_canceled!(outcome: 'canceled')
       with_lock do
         update!(
           state: 'canceled',
@@ -578,9 +619,9 @@ end
 ```
 
 **Key Design Decisions:**
-- `outcome` column for audit purposes - tracks HOW the execution concluded
-- Outcome is separate from state - state is for logic, outcome is for debugging/audit
-- All state transition methods accept outcome parameter
+- `outcome` column for audit purposes - simplified to 5 values
+- Individual timestamps kept for step executions (audit trail)
+- All state transition methods use `with_lock`
 
 ### 3. GenevaDrive::StepDefinition
 
@@ -598,7 +639,7 @@ module GenevaDrive
       @name = name.to_s
       @callable = callable
       @wait = options[:wait]
-      @skip_condition = normalize_condition(options[:skip_if] || options[:if])
+      @skip_condition = options[:skip_if] || options[:if]
       @on_exception = options[:on_exception] || :pause!
       @before_step = options[:before_step]&.to_s
       @after_step = options[:after_step]&.to_s
@@ -627,15 +668,6 @@ module GenevaDrive
       end
     end
 
-    def normalize_condition(condition)
-      case condition
-      when Symbol, Proc, TrueClass, FalseClass, NilClass
-        condition
-      else
-        condition
-      end
-    end
-
     def evaluate_condition(condition, workflow)
       case condition
       when Symbol
@@ -654,92 +686,9 @@ module GenevaDrive
 end
 ```
 
-**Key Design Decisions:**
-- Supports `on_exception: :skip!` (now validated)
-- All four exception handlers: `:pause!`, `:cancel!`, `:reattempt!`, `:skip!`
+### 4. GenevaDrive::Executor
 
-### 4. GenevaDrive::Scheduler
-
-Creates StepExecution records and enqueues jobs. Does NOT evaluate skip conditions.
-
-```ruby
-module GenevaDrive
-  class Scheduler
-    def initialize(workflow)
-      @workflow = workflow
-    end
-
-    def schedule_first_step!
-      first_step = @workflow.class.step_definitions.first
-      return finish_workflow! unless first_step
-
-      schedule_step(first_step, wait: first_step.wait)
-    end
-
-    def schedule_next_step!(wait: nil)
-      current_step_name = @workflow.current_step_name
-      next_step = @workflow.class.step_collection.next_after(current_step_name)
-
-      return finish_workflow! unless next_step
-
-      # NOTE: We do NOT evaluate skip_if here!
-      # Skip conditions are evaluated at execution time by the Executor.
-      # This ensures conditions are evaluated with current state, not stale state.
-
-      schedule_step(next_step, wait: wait || next_step.wait)
-    end
-
-    def reschedule_current_step!(wait: nil)
-      current_step_name = @workflow.current_step_name
-      step_def = @workflow.class.step_collection.find_by_name(current_step_name)
-
-      schedule_step(step_def, wait: wait)
-    end
-
-    private
-
-    def schedule_step(step_definition, wait: nil)
-      scheduled_for = wait ? wait.from_now : Time.current
-
-      # Create the step execution
-      step_execution = @workflow.step_executions.create!(
-        step_name: step_definition.name,
-        state: 'scheduled',
-        scheduled_for: scheduled_for
-      )
-
-      # Update workflow's current step
-      @workflow.update!(current_step_name: step_definition.name)
-
-      # Enqueue the job
-      job_options = @workflow.class._step_job_options.dup
-      job_options[:wait_until] = scheduled_for if wait
-
-      job = GenevaDrive::Jobs::PerformStepJob
-        .set(job_options)
-        .perform_later(step_execution.id)
-
-      # Store job ID for debugging
-      step_execution.update!(job_id: job.job_id)
-
-      step_execution
-    end
-
-    def finish_workflow!
-      @workflow.transition_to!('finished', finished_at: Time.current)
-      nil
-    end
-  end
-end
-```
-
-**Key Design Decisions:**
-- Does NOT evaluate skip_if - that's the Executor's job
-- Clear comment explaining why skip conditions aren't evaluated here
-
-### 5. GenevaDrive::Executor
-
-Executes step logic with flow control and exception handling. Evaluates skip_if at execution time.
+Executes step logic with flow control and exception handling.
 
 ```ruby
 module GenevaDrive
@@ -756,25 +705,34 @@ module GenevaDrive
       # 2. Transition workflow to performing
       @workflow.transition_to!('performing') if @workflow.state == 'ready'
 
-      # 3. Check blanket cancel_if conditions
+      # 3. Check hero exists (unless workflow opts out)
+      unless @workflow.class._may_proceed_without_hero
+        unless @workflow.hero
+          @step_execution.mark_canceled!(outcome: 'canceled')
+          @workflow.transition_to!('canceled')
+          return
+        end
+      end
+
+      # 4. Check blanket cancel_if conditions
       if should_cancel_workflow?
         handle_blanket_cancellation
         return
       end
 
-      # 4. Get step definition
+      # 5. Get step definition
       step_def = @step_execution.step_definition
 
-      # 5. Check skip_if condition (evaluated at execution time!)
+      # 6. Check skip_if condition (evaluated at execution time!)
       if step_def.should_skip?(@workflow)
         handle_skip_by_condition
         return
       end
 
-      # 6. Invoke before_step_starts hook
+      # 7. Invoke before_step_starts hook
       @workflow.before_step_starts(step_def.name)
 
-      # 7. Execute step with flow control
+      # 8. Execute step with flow control
       flow_result = catch(:flow_control) do
         begin
           step_def.execute_in_context(@workflow)
@@ -784,7 +742,7 @@ module GenevaDrive
         end
       end
 
-      # 8. Handle flow control result
+      # 9. Handle flow control result
       handle_flow_control(flow_result)
     end
 
@@ -808,14 +766,14 @@ module GenevaDrive
     end
 
     def handle_blanket_cancellation
-      @step_execution.mark_canceled!(outcome: 'canceled_by_condition')
-      @workflow.transition_to!('canceled', canceled_at: Time.current)
+      @step_execution.mark_canceled!(outcome: 'canceled')
+      @workflow.transition_to!('canceled')
     end
 
     def handle_skip_by_condition
-      @step_execution.mark_skipped!(outcome: 'skipped_by_condition')
+      @step_execution.mark_skipped!(outcome: 'skipped')
       @workflow.transition_to!('ready')
-      Scheduler.new(@workflow).schedule_next_step!
+      @workflow.schedule_next_step!
     end
 
     def handle_exception(error, step_def)
@@ -824,31 +782,30 @@ module GenevaDrive
 
       case step_def.on_exception
       when :reattempt!
-        @step_execution.mark_completed!(outcome: 'reattempted_by_exception')
+        @step_execution.mark_completed!(outcome: 'reattempted')
         @workflow.transition_to!('ready')
-        Scheduler.new(@workflow).reschedule_current_step!
+        @workflow.reschedule_current_step!
 
       when :cancel!
-        @step_execution.mark_failed!(error, outcome: 'canceled_by_exception')
-        @workflow.transition_to!('canceled', canceled_at: Time.current)
+        @step_execution.mark_failed!(error, outcome: 'canceled')
+        @workflow.transition_to!('canceled')
 
       when :skip!
-        @step_execution.mark_skipped!(outcome: 'skipped_by_exception')
+        @step_execution.mark_skipped!(outcome: 'skipped')
         @workflow.transition_to!('ready')
-        Scheduler.new(@workflow).schedule_next_step!
+        @workflow.schedule_next_step!
 
       when :pause!
-        @step_execution.mark_failed!(error, outcome: 'paused_by_exception')
-        @workflow.transition_to!('paused', paused_at: Time.current)
+        @step_execution.mark_failed!(error, outcome: 'failed')
+        @workflow.transition_to!('paused')
 
       else
         # Default: pause
-        @step_execution.mark_failed!(error, outcome: 'paused_by_exception')
-        @workflow.transition_to!('paused', paused_at: Time.current)
+        @step_execution.mark_failed!(error, outcome: 'failed')
+        @workflow.transition_to!('paused')
       end
 
-      # Return nil to indicate exception was handled (don't process as flow control)
-      nil
+      nil # Indicate exception was handled
     end
 
     def handle_flow_control(signal)
@@ -863,33 +820,32 @@ module GenevaDrive
       when FlowControlSignal
         case signal.action
         when :cancel
-          @step_execution.mark_canceled!(outcome: 'canceled_by_flow_control')
-          @workflow.transition_to!('canceled', canceled_at: Time.current)
+          @step_execution.mark_canceled!(outcome: 'canceled')
+          @workflow.transition_to!('canceled')
 
         when :pause
-          @step_execution.mark_canceled!(outcome: 'canceled_by_flow_control')
-          @workflow.transition_to!('paused', paused_at: Time.current)
+          @step_execution.mark_canceled!(outcome: 'canceled')
+          @workflow.transition_to!('paused')
 
         when :reattempt
           @step_execution.mark_completed!(outcome: 'reattempted')
           @workflow.transition_to!('ready')
-          Scheduler.new(@workflow).reschedule_current_step!(wait: signal.options[:wait])
+          @workflow.reschedule_current_step!(wait: signal.options[:wait])
 
         when :skip
-          @step_execution.mark_skipped!(outcome: 'skipped_by_flow_control')
+          @step_execution.mark_skipped!(outcome: 'skipped')
           @workflow.transition_to!('ready')
           schedule_next_or_finish!
 
         when :finished
           @step_execution.mark_completed!(outcome: 'success')
-          @workflow.transition_to!('finished', finished_at: Time.current)
+          @workflow.transition_to!('finished')
         end
       end
     end
 
     def schedule_next_or_finish!
-      next_scheduled = Scheduler.new(@workflow).schedule_next_step!
-      # schedule_next_step! returns nil and finishes workflow if no next step
+      @workflow.schedule_next_step!
     end
   end
 end
@@ -898,41 +854,44 @@ end
 **Key Design Decisions:**
 - NO ensure block that blindly transitions to 'ready'
 - Each path explicitly sets the correct workflow state
-- Skip conditions evaluated at execution time (step 5)
-- All four exception handlers implemented: `:pause!`, `:cancel!`, `:reattempt!`, `:skip!`
-- Clear outcome tracking for every execution path
+- Hero existence check at step 3 (before cancel_if conditions)
+- Skip conditions evaluated at execution time (step 6)
+- All four exception handlers implemented
+- Simplified outcome tracking
 
-### 6. GenevaDrive::Jobs::PerformStepJob
+### 5. GenevaDrive::PerformStepJob
 
 ActiveJob that receives step_execution_id and executes the step.
 
 ```ruby
 module GenevaDrive
-  module Jobs
-    class PerformStepJob < ActiveJob::Base
-      queue_as :default
+  class PerformStepJob < ActiveJob::Base
+    queue_as :default
 
-      def perform(step_execution_id)
-        step_execution = GenevaDrive::StepExecution.find(step_execution_id)
+    def perform(step_execution_id)
+      step_execution = GenevaDrive::StepExecution.lock.find(step_execution_id)
 
-        # Idempotency: if already executed, don't execute again
-        return unless step_execution.state == 'scheduled'
+      # Idempotency: if already executed, don't execute again
+      return unless step_execution.state == 'scheduled'
 
-        # Don't execute if scheduled for future (job ran early)
-        return if step_execution.scheduled_for > Time.current
+      # Don't execute if scheduled for future (job ran early)
+      return if step_execution.scheduled_for > Time.current
 
-        # Execute the step
-        step_execution.execute!
-      rescue ActiveRecord::RecordNotFound
-        # Step execution was deleted, nothing to do
-        Rails.logger.warn("StepExecution #{step_execution_id} not found")
-      end
+      # Execute the step
+      step_execution.execute!
+    rescue ActiveRecord::RecordNotFound
+      # Step execution was deleted, nothing to do
+      Rails.logger.warn("StepExecution #{step_execution_id} not found")
     end
   end
 end
 ```
 
-### 7. GenevaDrive::FlowControl
+**Key Design Decisions:**
+- Uses `lock.find` for proper idempotency (per Kieran's review)
+- Simple job that delegates to StepExecution#execute!
+
+### 6. GenevaDrive::FlowControl
 
 Module providing flow control methods via throw/catch.
 
@@ -986,19 +945,17 @@ workflow = SignupWorkflow.create!(hero: current_user)
 # What happens internally:
 # 1. Workflow record created in 'ready' state
 # 2. after_create callback calls schedule_first_step!
-# 3. Scheduler creates first StepExecution record
-#    - step_name: 'send_welcome_email'
-#    - state: 'scheduled'
-#    - scheduled_for: Time.current (or Time.current + wait)
-# 4. PerformStepJob enqueued with step_execution.id
-# 5. Workflow.current_step_name set to 'send_welcome_email'
+# 3. Within workflow lock:
+#    - StepExecution created (state: 'scheduled')
+#    - Workflow.current_step_name updated
+#    - PerformStepJob enqueued
 ```
 
 ### 2. Job Executes
 
 ```ruby
 # PerformStepJob.perform(step_execution_id)
-# 1. Load StepExecution by ID
+# 1. Load StepExecution with lock
 # 2. Check if state == 'scheduled' (idempotency)
 # 3. Check if scheduled_for <= now
 # 4. Call step_execution.execute!
@@ -1010,55 +967,44 @@ workflow = SignupWorkflow.create!(hero: current_user)
 # Executor#execute!
 # 1. Lock step execution, transition to 'executing'
 # 2. Transition workflow to 'performing'
-# 3. Check cancel_if conditions -> cancel if any true
-# 4. Check skip_if condition -> skip if true (EVALUATED HERE, not at scheduling!)
-# 5. Call before_step_starts hook
-# 6. Execute step block (catch flow control signals)
-# 7. Handle result and set appropriate outcome:
-#    - :completed -> outcome: 'success', schedule next
-#    - :cancel -> outcome: 'canceled_by_flow_control', cancel workflow
-#    - :reattempt -> outcome: 'reattempted', reschedule same step
-#    - :skip -> outcome: 'skipped_by_flow_control', schedule next
-#    - :finished -> outcome: 'success', finish workflow
-#    - exception -> depends on on_exception config
+# 3. Check hero exists (unless may_proceed_without_hero!)
+# 4. Check cancel_if conditions -> cancel if any true
+# 5. Check skip_if condition -> skip if true
+# 6. Call before_step_starts hook
+# 7. Execute step block (catch flow control signals)
+# 8. Handle result and set appropriate outcome
 ```
 
-### 4. Resuming a Paused Workflow
+### 4. Hero Deletion Handling
+
+```ruby
+# Default: workflow cancels if hero is deleted
+class PaymentWorkflow < GenevaDrive::Workflow
+  step :charge do
+    hero.charge!  # If hero deleted, workflow auto-cancels before reaching here
+  end
+end
+
+# Opt-out: workflow may continue without hero
+class CleanupWorkflow < GenevaDrive::Workflow
+  may_proceed_without_hero!
+
+  step :archive_data do
+    # hero might be nil here, workflow handles it
+    ArchiveService.archive(hero_id: hero&.id)
+  end
+end
+```
+
+### 5. Resuming a Paused Workflow
 
 ```ruby
 # workflow.resume!
 # 1. Verify workflow is in 'paused' state
 # 2. Lock and transition to 'ready'
-# 3. Clear paused_at timestamp
+# 3. Clear transitioned_at timestamp
 # 4. Reschedule current step (creates new StepExecution)
-# 5. Enqueue new job
 ```
-
-### 5. Workflow Completion
-
-```ruby
-# When Scheduler.schedule_next_step! has no next step:
-# - Workflow transitions to 'finished'
-# - finished_at timestamp set
-# - No more step executions created
-```
-
----
-
-## Outcome Values Reference
-
-| Outcome | Meaning |
-|---------|---------|
-| `success` | Step executed and completed normally |
-| `reattempted` | Step called `reattempt!`, will run again |
-| `skipped_by_condition` | Step's `skip_if` condition was true |
-| `skipped_by_flow_control` | Step called `skip!` |
-| `canceled_by_flow_control` | Step called `cancel!` |
-| `canceled_by_condition` | Workflow's `cancel_if` condition was true |
-| `paused_by_exception` | Exception raised, `on_exception: :pause!` |
-| `canceled_by_exception` | Exception raised, `on_exception: :cancel!` |
-| `skipped_by_exception` | Exception raised, `on_exception: :skip!` |
-| `reattempted_by_exception` | Exception raised, `on_exception: :reattempt!` |
 
 ---
 
@@ -1095,13 +1041,19 @@ workflow = SignupWorkflow.create!(hero: current_user)
 - [ ] finished! - mark workflow complete
 - [ ] resume! - resume paused workflow
 
+### Hero Handling
+- [ ] Cancel by default if hero deleted
+- [ ] may_proceed_without_hero! opt-out
+
 ### Scheduling
-- [ ] Forward scheduler (enqueue jobs early)
+- [ ] Forward scheduler (inlined in Workflow)
+- [ ] Scheduling within workflow lock (atomic)
 
 ### ActiveJob Integration
 - [ ] PerformStepJob for step execution
 - [ ] set_step_job_options for queue/priority
 - [ ] Class-inheritable job options
+- [ ] Lock-based idempotency in job
 
 ### Exception Handling
 - [ ] on_exception: :pause! (default)
@@ -1126,13 +1078,14 @@ workflow = SignupWorkflow.create!(hero: current_user)
 ### Rails Integration
 - [ ] Generator for installation
 - [ ] Migration templates with database detection
-- [ ] Schema analyzer for PK type detection
+- [ ] MigrationHelpers module for key type detection
 - [ ] Configuration initializer
 
 ### Audit Trail
 - [ ] Step execution history preserved
-- [ ] Outcome column for debugging
+- [ ] Outcome column (5 values)
 - [ ] Error message/backtrace storage
+- [ ] Individual timestamps on step executions
 
 ### Testing
 - [ ] speedrun_workflow helper
@@ -1167,18 +1120,12 @@ SignupWorkflow.create!(hero: current_user)
 
 ```ruby
 class BaseWorkflow < GenevaDrive::Workflow
-  # All subclasses will check this condition
   cancel_if { hero.deactivated? }
-
-  # All subclasses will use this queue
   set_step_job_options queue: :workflows
 end
 
 class PremiumOnboardingWorkflow < BaseWorkflow
-  # Adds to parent's cancel conditions
   cancel_if { hero.subscription_expired? }
-
-  # Overrides queue but inherits other options
   set_step_job_options queue: :premium
 
   step :send_premium_welcome do
@@ -1187,27 +1134,43 @@ class PremiumOnboardingWorkflow < BaseWorkflow
 end
 ```
 
+### Hero Deletion Handling
+
+```ruby
+# Default: auto-cancel if hero deleted
+class PaymentWorkflow < GenevaDrive::Workflow
+  step :charge do
+    hero.charge!
+  end
+end
+
+# Opt-out for cleanup workflows
+class DataCleanupWorkflow < GenevaDrive::Workflow
+  may_proceed_without_hero!
+
+  step :cleanup do
+    # Safe to run even if hero was deleted
+    DataArchive.cleanup_for_hero_id(hero&.id || hero_id)
+  end
+end
+```
+
 ### Exception Handling
 
 ```ruby
 class PaymentWorkflow < GenevaDrive::Workflow
-  # Retry on transient errors
   step :initiate_payment, on_exception: :reattempt! do
     PaymentGateway.charge(hero)
   rescue PaymentGateway::InvalidCard => e
-    # Unrecoverable - cancel the workflow
     cancel!
   rescue PaymentGateway::RateLimited => e
-    # Explicit retry with backoff
     reattempt!(wait: e.retry_after)
   end
 
-  # Skip this step if it fails (non-critical)
   step :send_receipt, on_exception: :skip! do
     ReceiptMailer.send_receipt(hero).deliver_later
   end
 
-  # Cancel workflow if this fails
   step :update_inventory, on_exception: :cancel! do
     InventoryService.decrement(hero.items)
   end
@@ -1217,10 +1180,7 @@ end
 ### Resuming Paused Workflows
 
 ```ruby
-# Find paused workflows
 paused = PaymentWorkflow.paused.where(hero: user)
-
-# Resume after fixing the issue
 paused.each(&:resume!)
 ```
 
@@ -1229,19 +1189,12 @@ paused.each(&:resume!)
 ```ruby
 workflow = SignupWorkflow.find(123)
 
-# See all executions
 workflow.execution_history.each do |execution|
   puts "#{execution.step_name}: #{execution.state} (#{execution.outcome})"
   if execution.failed?
     puts "  Error: #{execution.error_message}"
   end
 end
-
-# Output:
-# send_welcome_email: completed (success)
-# send_reminder: completed (reattempted)
-# send_reminder: completed (success)
-# complete_onboarding: skipped (skipped_by_condition)
 ```
 
 ---
@@ -1250,10 +1203,11 @@ end
 
 | Feature | PostgreSQL | MySQL | SQLite |
 |---------|-----------|-------|--------|
-| Uniqueness Constraints | Partial Index | Generated Column | Partial Index |
+| Workflow Uniqueness | Partial Index | Generated Column | Partial Index |
+| Step Execution Uniqueness | Partial Index | Generated Column | Partial Index |
 | PK Type Detection | ✅ Yes | ✅ Yes | ✅ Yes |
 | Performance | Excellent | Good | Good |
 | Concurrent Access | Excellent | Good | Limited |
 | Production Ready | ✅ Yes | ✅ Yes | ⚠️ Dev/Test Only |
 
-**Recommendation**: Use PostgreSQL in production for best performance and concurrency.
+**All uniqueness constraints are database-enforced. Application-level validations are not sufficient.**

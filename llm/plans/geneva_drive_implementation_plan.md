@@ -13,6 +13,70 @@ GenevaDrive is a Rails library for implementing durable workflows. It provides a
 
 ---
 
+## Project Setup & Development Standards
+
+### Ruby & Rails Requirements
+
+- **Ruby Version**: 3.x syntax required (mandate Ruby 3.0+)
+- **Rails Version**: 7.2.2 minimum, only test with 7.2.2 for now
+- **Structure**: Rails Engine (generated as Rails plugin with `rails plugin new`)
+
+### Project Structure
+
+Generate as a Rails plugin/engine:
+```bash
+rails plugin new geneva_drive --mountable --skip-test-unit
+```
+
+This provides:
+- `lib/geneva_drive/engine.rb` for Rails integration
+- Generator infrastructure
+- Proper gem structure with `geneva_drive.gemspec`
+
+### Testing
+
+- **Primary Database**: PostgreSQL (default for all tests)
+- **Test Framework**: Minitest (Rails default)
+- **CI Matrix**: Test with PostgreSQL only initially; MySQL and SQLite support verified manually
+
+### Code Quality
+
+- **Linting**: standardrb - install and apply on every change
+- **Documentation**: All public methods must have YARD comments
+- **Format**: Run `standardrb --fix` before each commit
+
+```ruby
+# Gemfile (development dependencies)
+gem "standard", "~> 1.0"
+
+# Example YARD documentation
+module GenevaDrive
+  # Executes a step within a workflow context.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow instance
+  # @param step_execution [GenevaDrive::StepExecution] the step to execute
+  # @return [void]
+  # @raise [InvalidStateError] if step is not in scheduled state
+  class Executor
+    # ...
+  end
+end
+```
+
+### Generator
+
+The install generator should:
+1. Copy migration templates (with database-specific strategies)
+2. Create initializer at `config/initializers/geneva_drive.rb`
+3. Detect key type from existing schema
+
+```bash
+bin/rails generate geneva_drive:install
+bin/rails db:migrate
+```
+
+---
+
 ## Database Structure
 
 ### Table: `geneva_drive_workflows`

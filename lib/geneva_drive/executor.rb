@@ -44,18 +44,74 @@ module GenevaDrive::Executor
       step_execution.logger.debug("Running before step blocks")
       workflow.before_step_starts(step_def.name)
 
-      flow_result = catch(:flow_control) do
-        step_def.execute_in_context(workflow)
-        :completed
-      rescue => e
-        step_execution.logger.error("Encountered #{e.class}, cleaning up and re-raising")
-        # Don't transition here - just capture the error info
-        capture_exception(e, step_def)
-      end
+      flow_result = instrument_step_execution(step_execution, workflow, step_def)
       step_execution.logger.info("Finished step with outcome #{flow_result.inspect}")
 
       # Phase 3: Acquire locks and handle result
-      finalize_execution(step_execution, workflow, flow_result)
+      instrument_finalize(step_execution, workflow, flow_result)
+    end
+
+    # Executes the step block with instrumentation.
+    #
+    # @param step_execution [GenevaDrive::StepExecution]
+    # @param workflow [GenevaDrive::Workflow]
+    # @param step_def [StepDefinition]
+    # @return [Symbol, FlowControlSignal, Hash] the execution result
+    def instrument_step_execution(step_execution, workflow, step_def)
+      payload = instrumentation_payload(step_execution, workflow)
+      payload[:step_name] = step_def.name
+
+      ActiveSupport::Notifications.instrument("step.geneva_drive", payload) do |p|
+        result = catch(:flow_control) do
+          step_def.execute_in_context(workflow)
+          :completed
+        rescue => e
+          step_execution.logger.error("Encountered #{e.class}, cleaning up and re-raising")
+          # Don't transition here - just capture the error info
+          capture_exception(e, step_def)
+        end
+
+        p[:outcome] = case result
+        when :completed then :completed
+        when GenevaDrive::FlowControlSignal then result.action
+        when Hash then :exception
+        end
+        p[:exception] = result[:error] if result.is_a?(Hash)
+
+        result
+      end
+    end
+
+    # Finalizes execution with instrumentation.
+    #
+    # @param step_execution [GenevaDrive::StepExecution]
+    # @param workflow [GenevaDrive::Workflow]
+    # @param flow_result [Symbol, FlowControlSignal, Hash]
+    # @return [void]
+    def instrument_finalize(step_execution, workflow, flow_result)
+      payload = instrumentation_payload(step_execution, workflow)
+      payload[:step_name] = step_execution.step_name
+
+      ActiveSupport::Notifications.instrument("finalize.geneva_drive", payload) do |p|
+        finalize_execution(step_execution, workflow, flow_result)
+
+        # Add outcome based on final workflow state after finalization
+        p[:workflow_state] = workflow.state
+        p[:step_state] = step_execution.state
+      end
+    end
+
+    # Builds the common instrumentation payload.
+    #
+    # @param step_execution [GenevaDrive::StepExecution]
+    # @param workflow [GenevaDrive::Workflow]
+    # @return [Hash]
+    def instrumentation_payload(step_execution, workflow)
+      {
+        execution_id: step_execution.id,
+        workflow_id: workflow.id,
+        workflow_class: workflow.class.name
+      }
     end
 
     private
@@ -119,34 +175,10 @@ module GenevaDrive::Executor
           next nil
         end
 
-        # Check blanket cancel_if conditions (with exception handling)
-        begin
-          step_execution.logger.debug("Evaluating cancel_if conditions")
-          if should_cancel_workflow?(workflow)
-            step_execution.logger.info("cancel_if condition matched, canceling workflow")
-            transition_step!(step_execution, "canceled", outcome: "canceled")
-            transition_workflow!(workflow, "canceled")
-            next nil
-          end
-        rescue => e
-          step_execution.logger.error("Exception in cancel_if evaluation: #{e.class} - #{e.message}")
-          exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
-          next nil
-        end
-
-        # Check skip_if condition (with exception handling)
-        begin
-          step_execution.logger.debug("Evaluating skip_if condition for step")
-          if step_def.should_skip?(workflow)
-            step_execution.logger.info("skip_if condition matched, skipping step")
-            transition_step!(step_execution, "skipped", outcome: "skipped")
-            transition_workflow!(workflow, "ready")
-            workflow.schedule_next_step!
-            next nil
-          end
-        rescue => e
-          step_execution.logger.error("Exception in skip_if evaluation: #{e.class} - #{e.message}")
-          exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
+        # Evaluate preconditions with instrumentation
+        precondition_result = instrument_preconditions(step_execution, workflow, step_def)
+        if precondition_result[:abort]
+          exception_to_raise = precondition_result[:exception]
           next nil
         end
 
@@ -169,6 +201,57 @@ module GenevaDrive::Executor
 
       raise exception_to_raise if exception_to_raise
       result
+    end
+
+    # Evaluates preconditions (cancel_if and skip_if) with instrumentation.
+    #
+    # @param step_execution [GenevaDrive::StepExecution]
+    # @param workflow [GenevaDrive::Workflow]
+    # @param step_def [StepDefinition]
+    # @return [Hash] result with :abort and optional :exception keys
+    def instrument_preconditions(step_execution, workflow, step_def)
+      payload = instrumentation_payload(step_execution, workflow)
+      payload[:step_name] = step_def.name
+
+      ActiveSupport::Notifications.instrument("precondition.geneva_drive", payload) do |p|
+        # Check blanket cancel_if conditions (with exception handling)
+        begin
+          step_execution.logger.debug("Evaluating cancel_if conditions")
+          if should_cancel_workflow?(workflow)
+            step_execution.logger.info("cancel_if condition matched, canceling workflow")
+            transition_step!(step_execution, "canceled", outcome: "canceled")
+            transition_workflow!(workflow, "canceled")
+            p[:outcome] = :canceled
+            return {abort: true}
+          end
+        rescue => e
+          step_execution.logger.error("Exception in cancel_if evaluation: #{e.class} - #{e.message}")
+          p[:outcome] = :exception
+          p[:exception] = e
+          return {abort: true, exception: handle_precondition_exception(e, step_def, step_execution, workflow)}
+        end
+
+        # Check skip_if condition (with exception handling)
+        begin
+          step_execution.logger.debug("Evaluating skip_if condition for step")
+          if step_def.should_skip?(workflow)
+            step_execution.logger.info("skip_if condition matched, skipping step")
+            transition_step!(step_execution, "skipped", outcome: "skipped")
+            transition_workflow!(workflow, "ready")
+            workflow.schedule_next_step!
+            p[:outcome] = :skipped
+            return {abort: true}
+          end
+        rescue => e
+          step_execution.logger.error("Exception in skip_if evaluation: #{e.class} - #{e.message}")
+          p[:outcome] = :exception
+          p[:exception] = e
+          return {abort: true, exception: handle_precondition_exception(e, step_def, step_execution, workflow)}
+        end
+
+        p[:outcome] = :passed
+        {abort: false}
+      end
     end
 
     # Phase 3: Handles the execution result and performs final state transitions.

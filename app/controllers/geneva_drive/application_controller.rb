@@ -1,4 +1,2 @@
-module GenevaDrive
-  class ApplicationController < ActionController::Base
-  end
+class GenevaDrive::ApplicationController < ActionController::Base
 end

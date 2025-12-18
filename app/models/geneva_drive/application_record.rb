@@ -1,5 +1,3 @@
-module GenevaDrive
-  class ApplicationRecord < ActiveRecord::Base
-    self.abstract_class = true
-  end
+class GenevaDrive::ApplicationRecord < ActiveRecord::Base
+  self.abstract_class = true
 end

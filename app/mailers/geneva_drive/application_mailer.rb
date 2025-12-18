@@ -1,6 +1,4 @@
-module GenevaDrive
-  class ApplicationMailer < ActionMailer::Base
-    default from: "from@example.com"
-    layout "mailer"
-  end
+class GenevaDrive::ApplicationMailer < ActionMailer::Base
+  default from: "from@example.com"
+  layout "mailer"
 end

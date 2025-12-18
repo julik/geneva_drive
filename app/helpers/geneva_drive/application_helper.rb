@@ -1,4 +1,2 @@
-module GenevaDrive
-  module ApplicationHelper
-  end
+module GenevaDrive::ApplicationHelper
 end

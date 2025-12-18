@@ -1,4 +1,2 @@
-module GenevaDrive
-  class ApplicationJob < ActiveJob::Base
-  end
+class GenevaDrive::ApplicationJob < ActiveJob::Base
 end

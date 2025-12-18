@@ -1,5 +1,3 @@
-module GenevaDrive
-  class Engine < ::Rails::Engine
-    isolate_namespace GenevaDrive
-  end
+class GenevaDrive::Engine < ::Rails::Engine
+  isolate_namespace GenevaDrive
 end

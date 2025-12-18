@@ -35,21 +35,25 @@ module GenevaDrive
         workflow = step_execution.workflow
 
         # Phase 1: Acquire locks, validate, and prepare for execution
+        step_execution.logger.debug("Preparing execution context")
         execution_context = prepare_execution(step_execution, workflow)
         return unless execution_context
 
         step_def = execution_context[:step_def]
 
         # Phase 2: Execute step block (locks released)
+        step_execution.logger.debug("Running before step blocks")
         workflow.before_step_starts(step_def.name)
 
         flow_result = catch(:flow_control) do
           step_def.execute_in_context(workflow)
           :completed
         rescue => e
+          step_execution.logger.error("Encountered #{e.class}, cleaning up and re-raising")
           # Don't transition here - just capture the error info
           capture_exception(e, step_def)
         end
+        step_execution.logger.info("Finished step with outcome #{flow_result.inspect}")
 
         # Phase 3: Acquire locks and handle result
         finalize_execution(step_execution, workflow, flow_result)
@@ -72,11 +76,15 @@ module GenevaDrive
         result = with_execution_lock(step_execution, workflow) do
           # Validate step execution can start
           unless step_execution.state == "scheduled"
+            step_execution.logger.info("Step execution is in #{step_execution.state.inspect} and can't be stepped, dropping through")
+
             next nil
           end
 
           # Validate workflow is in a state that allows execution
           unless %w[ready performing].include?(workflow.state)
+            step_execution.logger.info("Workflow is in #{workflow.state.inspect} state and can't be stepped, canceling and dropping through")
+
             step_execution.update!(
               state: "canceled",
               canceled_at: Time.current,
@@ -86,12 +94,11 @@ module GenevaDrive
           end
 
           # Check hero exists (unless workflow opts out)
-          unless workflow.class._may_proceed_without_hero
-            unless workflow.hero
-              transition_step!(step_execution, "canceled", outcome: "canceled")
-              transition_workflow!(workflow, "canceled")
-              next nil
-            end
+          if workflow.hero.blank? && !workflow.class._may_proceed_without_hero
+            step_execution.logger.info("No hero present and this workflow is not set to run without one. Canceling and dropping through")
+            transition_step!(step_execution, "canceled", outcome: "canceled")
+            transition_workflow!(workflow, "canceled")
+            next nil
           end
 
           # Get step definition (needed for exception handling policy)
@@ -100,6 +107,8 @@ module GenevaDrive
           # Check step definition exists
           unless step_def
             error_message = "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
+            step_execution.logger.error(error_message)
+
             step_execution.update!(error_message: error_message)
             transition_step!(step_execution, "failed", outcome: "failed")
             transition_workflow!(workflow, "paused")
@@ -137,6 +146,8 @@ module GenevaDrive
           end
 
           # All checks passed - transition to in_progress
+          step_execution.logger.debug("Step may be performed - changing state flags and proceeding to perform")
+
           transition_step!(step_execution, "in_progress")
           transition_workflow!(workflow, "performing") if workflow.ready?
 
@@ -160,7 +171,7 @@ module GenevaDrive
         with_execution_lock(step_execution, workflow) do
           # Verify step is still in_progress (guard against external changes)
           unless step_execution.in_progress?
-            Rails.logger.warn(
+            step_execution.logger.warn(
               "Step execution #{step_execution.id} state changed during execution: #{step_execution.state}"
             )
             next
@@ -168,8 +179,8 @@ module GenevaDrive
 
           # Verify workflow is still in performing state
           unless workflow.performing?
-            Rails.logger.warn(
-              "Workflow #{workflow.id} state changed during execution: #{workflow.state}"
+            step_execution.logger.warn(
+              "Workflow #{workflow.id} state unexpectedly changed during execution: #{workflow.state}"
             )
             transition_step!(step_execution, "canceled", outcome: "canceled")
             next
@@ -301,9 +312,7 @@ module GenevaDrive
       # @param step_def [StepDefinition]
       # @return [Hash] captured exception context
       def capture_exception(error, step_def)
-        Rails.logger.error("Step execution failed: #{error.message}")
         Rails.error.report(error)
-
         {
           type: :exception,
           error: error,

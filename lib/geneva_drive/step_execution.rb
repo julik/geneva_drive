@@ -145,5 +145,15 @@ module GenevaDrive
     def execute!
       Executor.execute!(self)
     end
+
+    # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow
+    #
+    # @return [Logger]
+    def logger
+      @logger ||= begin
+        workflow_tagged_logger = workflow.logger
+        workflow_tagged_logger.tagged("execution=#{id} step_name=#{step_name}")
+      end
+    end
   end
 end

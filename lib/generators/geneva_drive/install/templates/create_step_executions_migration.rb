@@ -7,10 +7,10 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     key_type = geneva_drive_key_type
 
     create_table :geneva_drive_step_executions, **geneva_drive_table_options do |t|
-      # Link to workflow
+      # Link to workflow (cascade delete when workflow is deleted)
       t.references :workflow,
         null: false,
-        foreign_key: {to_table: :geneva_drive_workflows},
+        foreign_key: {to_table: :geneva_drive_workflows, on_delete: :cascade},
         index: true,
         type: key_type
 

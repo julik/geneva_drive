@@ -40,7 +40,7 @@ module GenevaDrive
       class_name: "GenevaDrive::StepExecution",
       foreign_key: :workflow_id,
       inverse_of: :workflow,
-      dependent: :destroy
+      dependent: :delete_all
 
     # Class-inheritable attributes for DSL
     class_attribute :_step_definitions, instance_writer: false, default: []

@@ -8,7 +8,7 @@ require "minitest/autorun"
 # Test that the install generator creates working migrations.
 # Uses a separate dummy_install app to avoid conflicts with the main test suite.
 class InstallGeneratorTest < Minitest::Test
-  DUMMY_INSTALL_PATH = File.expand_path("dummy_install", __dir__)
+  DUMMY_INSTALL_PATH = File.expand_path("../dummy_install", __dir__)
   MIGRATIONS_PATH = File.join(DUMMY_INSTALL_PATH, "db/migrate")
 
   def setup

@@ -46,7 +46,7 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     # Index for finding scheduled executions
     add_index :geneva_drive_step_executions,
       [:state, :scheduled_for],
-      name: "index_step_executions_scheduled"
+      name: "index_geneva_drive_step_executions_scheduled"
 
     # Index for workflow execution history
     add_index :geneva_drive_step_executions, [:workflow_id, :created_at]
@@ -65,7 +65,7 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     adapter = connection.adapter_name.downcase
     if adapter.include?("postgresql")
       execute <<-SQL
-        CREATE UNIQUE INDEX index_step_executions_one_active
+        CREATE UNIQUE INDEX index_geneva_drive_step_executions_one_active
         ON geneva_drive_step_executions (workflow_id)
         WHERE state IN ('scheduled', 'in_progress');
       SQL
@@ -82,12 +82,12 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
         ) STORED;
       SQL
       execute <<-SQL
-        CREATE UNIQUE INDEX index_step_executions_one_active
+        CREATE UNIQUE INDEX index_geneva_drive_step_executions_one_active
         ON geneva_drive_step_executions (active_unique_key);
       SQL
     elsif adapter.include?("sqlite")
       execute <<-SQL
-        CREATE UNIQUE INDEX index_step_executions_one_active
+        CREATE UNIQUE INDEX index_geneva_drive_step_executions_one_active
         ON geneva_drive_step_executions (workflow_id)
         WHERE state IN ('scheduled', 'in_progress');
       SQL

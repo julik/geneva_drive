@@ -43,7 +43,7 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
     adapter = connection.adapter_name.downcase
     if adapter.include?("postgresql")
       execute <<-SQL
-        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        CREATE UNIQUE INDEX index_geneva_drive_workflows_unique_ongoing
         ON geneva_drive_workflows (type, hero_type, hero_id)
         WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = false;
       SQL
@@ -60,12 +60,12 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
         ) STORED;
       SQL
       execute <<-SQL
-        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        CREATE UNIQUE INDEX index_geneva_drive_workflows_unique_ongoing
         ON geneva_drive_workflows (ongoing_unique_key);
       SQL
     elsif adapter.include?("sqlite")
       execute <<-SQL
-        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        CREATE UNIQUE INDEX index_geneva_drive_workflows_unique_ongoing
         ON geneva_drive_workflows (type, hero_type, hero_id)
         WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = 0;
       SQL

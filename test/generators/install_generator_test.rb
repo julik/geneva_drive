@@ -71,9 +71,9 @@ class InstallGeneratorTest < Minitest::Test
     end
 
     # Verify uniqueness constraint indexes were created
-    assert_includes schema_info["workflow_indexes"], "index_workflows_unique_ongoing",
+    assert_includes schema_info["workflow_indexes"], "index_geneva_drive_workflows_unique_ongoing",
       "Workflow unique ongoing index should exist"
-    assert_includes schema_info["step_indexes"], "index_step_executions_one_active",
+    assert_includes schema_info["step_indexes"], "index_geneva_drive_step_executions_one_active",
       "Step execution one active index should exist"
   end
 

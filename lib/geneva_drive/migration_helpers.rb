@@ -118,7 +118,7 @@ module GenevaDrive
     end
 
     # Adds the step execution uniqueness constraint.
-    # Ensures only one active (scheduled/executing) step per workflow.
+    # Ensures only one active (scheduled/in_progress) step per workflow.
     #
     # @return [void]
     def add_step_execution_uniqueness_constraint
@@ -126,7 +126,7 @@ module GenevaDrive
         execute <<-SQL
           CREATE UNIQUE INDEX index_step_executions_one_active
           ON geneva_drive_step_executions (workflow_id)
-          WHERE state IN ('scheduled', 'executing');
+          WHERE state IN ('scheduled', 'in_progress');
         SQL
       elsif mysql?
         execute <<-SQL
@@ -134,7 +134,7 @@ module GenevaDrive
           ADD COLUMN active_unique_key VARCHAR(767)
           AS (
             CASE
-              WHEN state IN ('scheduled', 'executing')
+              WHEN state IN ('scheduled', 'in_progress')
               THEN CAST(workflow_id AS CHAR)
               ELSE NULL
             END
@@ -148,7 +148,7 @@ module GenevaDrive
         execute <<-SQL
           CREATE UNIQUE INDEX index_step_executions_one_active
           ON geneva_drive_step_executions (workflow_id)
-          WHERE state IN ('scheduled', 'executing');
+          WHERE state IN ('scheduled', 'in_progress');
         SQL
       end
     end

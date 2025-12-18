@@ -20,11 +20,11 @@ module GenevaDrive
     self.table_name = "geneva_drive_step_executions"
 
     # Step execution states as enum with string values
-    # Provides: scheduled?, executing?, etc. predicates
-    # Provides: scheduled, executing, etc. scopes
+    # Provides: scheduled?, in_progress?, etc. predicates
+    # Provides: scheduled, in_progress, etc. scopes
     enum :state, {
       scheduled: "scheduled",
-      executing: "executing",
+      in_progress: "in_progress",
       completed: "completed",
       failed: "failed",
       canceled: "canceled",
@@ -58,15 +58,15 @@ module GenevaDrive
       scheduled.where("scheduled_for <= ?", Time.current)
     }
 
-    # Transitions the step execution to 'executing' state.
+    # Transitions the step execution to 'in_progress' state.
     # Uses pessimistic locking to prevent double execution.
     #
     # @return [Boolean] true if transition succeeded, false if already executed
-    def start_executing!
+    def start!
       with_lock do
-        return false unless state == "scheduled"
+        return false unless scheduled?
         update!(
-          state: "executing",
+          state: "in_progress",
           started_at: Time.current
         )
       end

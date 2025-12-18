@@ -250,7 +250,7 @@ module GenevaDrive
     #
     # @return [StepExecution, nil] the current execution
     def current_execution
-      step_executions.where(state: %w[scheduled executing]).first
+      step_executions.where(state: %w[scheduled in_progress]).first
     end
 
     # Returns all step executions in chronological order.
@@ -304,7 +304,8 @@ module GenevaDrive
     end
 
     # Creates a step execution and enqueues the job after transaction commits.
-    # Any existing scheduled/executing step executions are canceled first.
+    # Any existing scheduled step executions are canceled first.
+    # In-progress step executions are left alone - they're being executed.
     #
     # The job is enqueued using `after_commit` to ensure the step execution
     # record is visible to the job worker when it runs.
@@ -316,8 +317,8 @@ module GenevaDrive
       scheduled_for = wait ? wait.from_now : Time.current
 
       with_lock do
-        # Cancel any existing active step executions to maintain uniqueness
-        step_executions.where(state: %w[scheduled executing]).find_each do |exec|
+        # Cancel any scheduled step executions (not in_progress - those are being executed)
+        step_executions.scheduled.find_each do |exec|
           exec.mark_canceled!(outcome: "canceled")
         end
 

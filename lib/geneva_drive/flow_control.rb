@@ -34,6 +34,48 @@ module GenevaDrive
   #   raise StepConfigurationError, "Step requires either a block or method name"
   class StepConfigurationError < StandardError; end
 
+  # Base class for errors that occur during step execution.
+  # These errors are raised after recovery actions have been performed,
+  # so the workflow/step states are already updated when the exception propagates.
+  #
+  # @example Rescuing step execution errors
+  #   begin
+  #     GenevaDrive::Executor.execute!(step_execution)
+  #   rescue GenevaDrive::StepExecutionError => e
+  #     Rails.logger.error("Step failed: #{e.message}")
+  #     Rails.logger.error("Original error: #{e.cause}")
+  #   end
+  class StepExecutionError < StandardError
+    # @return [GenevaDrive::StepExecution] the step execution that failed
+    attr_reader :step_execution
+
+    # @return [GenevaDrive::Workflow] the workflow
+    attr_reader :workflow
+
+    # Creates a new StepExecutionError.
+    #
+    # @param message [String] the error message
+    # @param step_execution [GenevaDrive::StepExecution] the step execution
+    # @param workflow [GenevaDrive::Workflow] the workflow
+    def initialize(message, step_execution:, workflow:)
+      @step_execution = step_execution
+      @workflow = workflow
+      super(message)
+    end
+  end
+
+  # Raised when a step execution references a step that doesn't exist in the workflow class.
+  # This can happen if the workflow class definition changed after the step was scheduled.
+  class StepNotDefinedError < StepExecutionError; end
+
+  # Raised when an exception occurs during step execution.
+  # The original exception is available via the standard `cause` method.
+  class StepFailedError < StepExecutionError; end
+
+  # Raised when an exception occurs during pre-condition evaluation (cancel_if, skip_if).
+  # The original exception is available via the standard `cause` method.
+  class PreconditionError < StepExecutionError; end
+
   # Module providing flow control methods for use within workflow steps.
   # These methods use throw/catch to interrupt step execution and signal
   # the executor how to proceed.

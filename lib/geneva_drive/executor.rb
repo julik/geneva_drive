@@ -225,11 +225,9 @@ module GenevaDrive::Executor
     # @return [Object] result of the block
     def with_execution_lock(step_execution, workflow)
       # Lock in consistent order (workflow first) to prevent deadlocks
+      # with_lock automatically reloads the record before yielding
       workflow.with_lock do
         step_execution.with_lock do
-          # Reload to get fresh state after acquiring locks
-          workflow.reload
-          step_execution.reload
           yield
         end
       end

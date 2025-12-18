@@ -839,3 +839,63 @@ FOREIGN KEY ("workflow_id")
   [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO public[0m
   [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO "$user", public[0m
 Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.
+Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.
+Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.
+  [1m[36mActiveRecord::SchemaMigration Load (1.0ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC[0m
+  [1m[36mActiveRecord::InternalMetadata Load (0.8ms)[0m  [1m[34mSELECT * FROM "ar_internal_metadata" WHERE "ar_internal_metadata"."key" = $1 ORDER BY "ar_internal_metadata"."key" ASC LIMIT 1[0m  [[nil, "environment"]]
+  [1m[36mActiveRecord::SchemaMigration Load (0.1ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC[0m
+  [1m[36mActiveRecord::InternalMetadata Load (0.2ms)[0m  [1m[34mSELECT * FROM "ar_internal_metadata" WHERE "ar_internal_metadata"."key" = $1 ORDER BY "ar_internal_metadata"."key" ASC LIMIT 1[0m  [[nil, "environment"]]
+  [1m[36mActiveRecord::SchemaMigration Load (0.1ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC[0m
+  [1m[36mActiveRecord::InternalMetadata Load (0.2ms)[0m  [1m[34mSELECT * FROM "ar_internal_metadata" WHERE "ar_internal_metadata"."key" = $1 ORDER BY "ar_internal_metadata"."key" ASC LIMIT 1[0m  [[nil, "environment"]]
+  [1m[35mSQL (0.1ms)[0m  [1m[35mSET search_path TO public[0m
+  [1m[35m (104.6ms)[0m  [1m[35mDROP DATABASE IF EXISTS "geneva_drive_install_test"[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO public[0m
+  [1m[35m (91.2ms)[0m  [1m[35mCREATE DATABASE "geneva_drive_install_test" ENCODING = 'unicode'[0m
+  [1m[35m (2.1ms)[0m  [1m[35mCREATE TABLE "schema_migrations" ("version" character varying NOT NULL PRIMARY KEY)[0m
+  [1m[35m (1.0ms)[0m  [1m[35mCREATE TABLE "ar_internal_metadata" ("key" character varying NOT NULL PRIMARY KEY, "value" character varying, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL)[0m
+  [1m[35m (0.1ms)[0m  [1m[34mSELECT pg_try_advisory_lock(5769190355348905590)[0m
+  [1m[36mActiveRecord::SchemaMigration Load (0.2ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC[0m
+  [1m[36mActiveRecord::InternalMetadata Load (0.3ms)[0m  [1m[34mSELECT * FROM "ar_internal_metadata" WHERE "ar_internal_metadata"."key" = $1 ORDER BY "ar_internal_metadata"."key" ASC LIMIT 1[0m  [[nil, "environment"]]
+  [1m[36mActiveRecord::InternalMetadata Create (0.2ms)[0m  [1m[32mINSERT INTO "ar_internal_metadata" ("key", "value", "created_at", "updated_at") VALUES ('environment', 'test', '2025-12-18 13:39:55.329197', '2025-12-18 13:39:55.329198') RETURNING "key"[0m
+Migrating to CreateUsers (20241217000000)
+  [1m[36mTRANSACTION (0.0ms)[0m  [1m[35mBEGIN[0m
+  [1m[35m (1.3ms)[0m  [1m[35mCREATE TABLE "users" ("id" bigserial primary key, "email" character varying NOT NULL, "name" character varying, "active" boolean DEFAULT TRUE, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL)[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.1ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20241217000000') RETURNING "version"[0m
+  [1m[36mTRANSACTION (0.3ms)[0m  [1m[35mCOMMIT[0m
+Migrating to CreateGenevaDriveWorkflows (20251218133954)
+  [1m[36mTRANSACTION (0.1ms)[0m  [1m[35mBEGIN[0m
+  [1m[35m (1.0ms)[0m  [1m[35mCREATE TABLE "geneva_drive_workflows" ("id" bigserial primary key, "type" character varying NOT NULL, "hero_type" character varying NOT NULL, "hero_id" bigint NOT NULL, "state" character varying DEFAULT 'ready' NOT NULL, "current_step_name" character varying, "next_step_name" character varying, "allow_multiple" boolean DEFAULT FALSE NOT NULL, "started_at" timestamp(6), "transitioned_at" timestamp(6), "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL)[0m
+  [1m[35m (0.2ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_type" ON "geneva_drive_workflows" ("type")[0m
+  [1m[35m (0.2ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_state" ON "geneva_drive_workflows" ("state")[0m
+  [1m[35m (0.2ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_workflows_on_hero_type_and_hero_id" ON "geneva_drive_workflows" ("hero_type", "hero_id")[0m
+  [1m[35m (0.3ms)[0m  [1m[35m        CREATE UNIQUE INDEX index_geneva_drive_workflows_unique_ongoing
+        ON geneva_drive_workflows (type, hero_type, hero_id)
+        WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = false;
+[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.0ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20251218133954') RETURNING "version"[0m
+  [1m[36mTRANSACTION (0.1ms)[0m  [1m[35mCOMMIT[0m
+Migrating to CreateGenevaDriveStepExecutions (20251218133955)
+  [1m[36mTRANSACTION (0.1ms)[0m  [1m[35mBEGIN[0m
+  [1m[35m (1.4ms)[0m  [1m[35mCREATE TABLE "geneva_drive_step_executions" ("id" bigserial primary key, "workflow_id" bigint NOT NULL, "step_name" character varying NOT NULL, "state" character varying DEFAULT 'scheduled' NOT NULL, "outcome" character varying, "scheduled_for" timestamp(6) NOT NULL, "started_at" timestamp(6), "completed_at" timestamp(6), "failed_at" timestamp(6), "canceled_at" timestamp(6), "skipped_at" timestamp(6), "error_message" text, "error_backtrace" text, "job_id" character varying, "created_at" timestamp(6) NOT NULL, "updated_at" timestamp(6) NOT NULL, CONSTRAINT "fk_rails_714b91b701"
+FOREIGN KEY ("workflow_id")
+  REFERENCES "geneva_drive_workflows" ("id")
+ ON DELETE CASCADE)[0m
+  [1m[35m (0.3ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_workflow_id" ON "geneva_drive_step_executions" ("workflow_id")[0m
+  [1m[35m (0.3ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_state" ON "geneva_drive_step_executions" ("state")[0m
+  [1m[35m (0.4ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_scheduled_for" ON "geneva_drive_step_executions" ("scheduled_for")[0m
+  [1m[35m (0.3ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_scheduled" ON "geneva_drive_step_executions" ("state", "scheduled_for")[0m
+  [1m[35m (0.3ms)[0m  [1m[35mCREATE INDEX "idx_on_workflow_id_created_at_af16a14fb2" ON "geneva_drive_step_executions" ("workflow_id", "created_at")[0m
+  [1m[35m (0.2ms)[0m  [1m[35mCREATE INDEX "index_geneva_drive_step_executions_on_workflow_id_and_state" ON "geneva_drive_step_executions" ("workflow_id", "state")[0m
+  [1m[35m (0.3ms)[0m  [1m[35m        CREATE UNIQUE INDEX index_geneva_drive_step_executions_one_active
+        ON geneva_drive_step_executions (workflow_id)
+        WHERE state IN ('scheduled', 'in_progress');
+[0m
+  [1m[36mActiveRecord::SchemaMigration Create (0.0ms)[0m  [1m[32mINSERT INTO "schema_migrations" ("version") VALUES ('20251218133955') RETURNING "version"[0m
+  [1m[36mTRANSACTION (0.1ms)[0m  [1m[35mCOMMIT[0m
+  [1m[35m (0.2ms)[0m  [1m[34mSELECT pg_advisory_unlock(5769190355348905590)[0m
+  [1m[36mActiveRecord::SchemaMigration Load (0.0ms)[0m  [1m[34mSELECT "schema_migrations"."version" FROM "schema_migrations" ORDER BY "schema_migrations"."version" ASC[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO public[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO "$user", public[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO public[0m
+  [1m[35mSQL (0.0ms)[0m  [1m[35mSET search_path TO "$user", public[0m
+Generating image variants require the image_processing gem. Please add `gem "image_processing", "~> 1.2"` to your Gemfile or set `config.active_storage.variant_processor = :disabled`.

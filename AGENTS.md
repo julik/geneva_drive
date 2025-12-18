@@ -33,3 +33,24 @@ end
 ```
 
 **Exception:** Rails generators must use nested syntax because they are loaded directly by Rails before autoload runs.
+
+**Do not reload inside `with_lock` blocks.** Rails' `with_lock` automatically reloads the record before yielding. If you need to verify a value hasn't changed, check it inside the block (after the automatic reload):
+
+```ruby
+# Good - with_lock reloads automatically
+def pause!
+  with_lock do
+    raise InvalidStateError unless state == "ready"  # Check after automatic reload
+    update!(state: "paused")
+  end
+end
+
+# Bad - redundant reload
+def pause!
+  with_lock do
+    reload  # Unnecessary - with_lock already reloaded
+    raise InvalidStateError unless state == "ready"
+    update!(state: "paused")
+  end
+end
+```

@@ -180,11 +180,9 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
   # @param workflow [GenevaDrive::Workflow]
   # @return [void]
   def reattempt_step_execution!(step_execution, workflow)
+    # with_lock automatically reloads the record before yielding
     workflow.with_lock do
       step_execution.with_lock do
-        step_execution.reload
-        workflow.reload
-
         # Only recover if still stuck
         return unless step_execution.scheduled? || step_execution.in_progress?
 
@@ -206,11 +204,9 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
   # @param workflow [GenevaDrive::Workflow]
   # @return [void]
   def cancel_step_execution!(step_execution, workflow)
+    # with_lock automatically reloads the record before yielding
     workflow.with_lock do
       step_execution.with_lock do
-        step_execution.reload
-        workflow.reload
-
         # Only recover if still stuck
         return unless step_execution.scheduled? || step_execution.in_progress?
 

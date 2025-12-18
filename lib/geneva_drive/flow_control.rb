@@ -174,7 +174,7 @@ module GenevaDrive::FlowControl
 
     logger.info("Flow control: pause! called externally on step #{current_step_name.inspect}")
     with_lock do
-      reload
+      # with_lock reloads automatically; re-check state in case it changed
       raise GenevaDrive::InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
 
       current_execution&.mark_canceled!(outcome: "workflow_paused")
@@ -193,7 +193,7 @@ module GenevaDrive::FlowControl
 
     logger.info("Flow control: skip! called externally on step #{current_step_name.inspect}")
     with_lock do
-      reload
+      # with_lock reloads automatically; re-check state in case it changed
       raise GenevaDrive::InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
 
       current_execution&.mark_skipped!(outcome: "skipped")

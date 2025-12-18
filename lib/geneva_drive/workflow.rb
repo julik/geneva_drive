@@ -317,10 +317,14 @@ module GenevaDrive
       scheduled_for = wait ? wait.from_now : Time.current
 
       with_lock do
-        # Cancel any scheduled step executions (not in_progress - those are being executed)
-        step_executions.scheduled.find_each do |exec|
-          exec.mark_canceled!(outcome: "canceled")
-        end
+        # Cancel any scheduled step executions (not in_progress - those are being executed).
+        # Safe to use update_all since we hold the workflow lock, blocking any executor
+        # that would try to start these steps.
+        step_executions.scheduled.update_all(
+          state: "canceled",
+          outcome: "canceled",
+          canceled_at: Time.current
+        )
 
         step_execution = step_executions.create!(
           step_name: step_definition.name,

@@ -363,5 +363,26 @@ module GenevaDrive
       transition_to!("finished")
       nil
     end
+
+    # Returns the Logger properly tagged to this Workflow
+    #
+    # @return [Logger]
+    public def logger
+      @tagged_logger ||= begin
+        tagged_logger = ActiveSupport::TaggedLogging.new(super)
+
+        # Tag log entries with the workflow
+        workflow_tag = [self.class.name, "(id=", to_param, " current_step=", current_step_name, ")"].join
+        tagged_logger = tagged_logger.tagged(workflow_tag)
+
+        # Tag log entries with the hero too
+        if hero_id.present?
+          hero_tag = [hero_type, "(id=", hero_id, ")"].join
+          tagged_logger = tagged_logger.tagged(hero_tag)
+        end
+
+        tagged_logger
+      end
+    end
   end
 end

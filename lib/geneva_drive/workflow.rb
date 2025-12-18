@@ -56,6 +56,7 @@ module GenevaDrive
     scope :for_hero, ->(hero) { where(hero: hero) }
 
     # Callbacks
+    after_create :log_workflow_created
     after_create :schedule_first_step!
 
     class << self
@@ -217,8 +218,12 @@ module GenevaDrive
     # @return [StepExecution, nil] the created step execution or nil if finished
     def schedule_next_step!(wait: nil)
       next_step = steps.next_after(current_step_name)
-      return finish_workflow! unless next_step
+      unless next_step
+        logger.info("No more steps after #{current_step_name.inspect}, finishing workflow")
+        return finish_workflow!
+      end
 
+      logger.info("Scheduling next step #{next_step.name.inspect} after #{current_step_name.inspect}")
       create_step_execution(next_step, wait: wait || next_step.wait)
     end
 
@@ -228,6 +233,8 @@ module GenevaDrive
     # @return [StepExecution] the created step execution
     def reschedule_current_step!(wait: nil)
       step_def = steps.named(current_step_name)
+      wait_msg = wait ? " with wait #{wait.inspect}" : ""
+      logger.info("Rescheduling current step #{current_step_name.inspect}#{wait_msg}")
       create_step_execution(step_def, wait: wait)
     end
 
@@ -239,6 +246,7 @@ module GenevaDrive
     def resume!
       raise InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
+      logger.info("Resuming paused workflow, will reschedule step #{current_step_name.inspect}")
       with_lock do
         update!(state: "ready", transitioned_at: nil)
       end
@@ -293,13 +301,25 @@ module GenevaDrive
 
     private
 
+    # Logs when a workflow is created.
+    #
+    # @return [void]
+    def log_workflow_created
+      step_count = self.class.step_definitions.size
+      logger.info("Created workflow with #{step_count} step(s) defined")
+    end
+
     # Schedules the first step after workflow creation.
     #
     # @return [StepExecution, nil] the created step execution
     def schedule_first_step!
       first_step = self.class.step_definitions.first
-      return finish_workflow! unless first_step
+      unless first_step
+        logger.info("No steps defined, finishing workflow immediately")
+        return finish_workflow!
+      end
 
+      logger.info("Scheduling first step #{first_step.name.inspect}")
       create_step_execution(first_step, wait: first_step.wait)
     end
 
@@ -320,11 +340,12 @@ module GenevaDrive
         # Cancel any scheduled step executions (not in_progress - those are being executed).
         # Safe to use update_all since we hold the workflow lock, blocking any executor
         # that would try to start these steps.
-        step_executions.scheduled.update_all(
+        canceled_count = step_executions.scheduled.update_all(
           state: "canceled",
           outcome: "canceled",
           canceled_at: Time.current
         )
+        logger.debug("Canceled #{canceled_count} previously scheduled step execution(s)") if canceled_count > 0
 
         step_execution = step_executions.create!(
           step_name: step_definition.name,
@@ -338,6 +359,10 @@ module GenevaDrive
         job_options = self.class._step_job_options.dup
         job_options[:wait_until] = scheduled_for if wait
         execution_id = step_execution.id
+        workflow_logger = logger
+
+        wait_msg = wait ? " (scheduled for #{scheduled_for})" : ""
+        workflow_logger.debug("Created step execution #{execution_id} for step #{step_definition.name.inspect}#{wait_msg}")
 
         # Enqueue job after transaction commits to ensure the step execution
         # record is visible to the job worker
@@ -345,6 +370,8 @@ module GenevaDrive
           job = GenevaDrive::PerformStepJob
             .set(**job_options)
             .perform_later(execution_id)
+
+          workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for step execution #{execution_id}")
 
           # Update job_id for debugging purposes (this is a separate transaction)
           GenevaDrive::StepExecution
@@ -360,6 +387,7 @@ module GenevaDrive
     #
     # @return [nil]
     def finish_workflow!
+      logger.info("Workflow finished successfully")
       transition_to!("finished")
       nil
     end

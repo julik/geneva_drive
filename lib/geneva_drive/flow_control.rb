@@ -100,6 +100,7 @@ module GenevaDrive
     # @return [void]
     # @raise [UncaughtThrowError] if called outside of step execution context
     def cancel!
+      logger.info("Flow control: cancel! called from step")
       throw :flow_control, FlowControlSignal.new(:cancel)
     end
 
@@ -114,6 +115,7 @@ module GenevaDrive
     # @raise [InvalidStateError] if called on a non-ready/non-performing workflow
     def pause!
       if state == "performing"
+        logger.info("Flow control: pause! called from step")
         throw :flow_control, FlowControlSignal.new(:pause)
       else
         external_pause!
@@ -130,6 +132,8 @@ module GenevaDrive
     # @example Retry after rate limit
     #   reattempt!(wait: 5.minutes)
     def reattempt!(wait: nil)
+      wait_msg = wait ? " with wait #{wait.inspect}" : ""
+      logger.info("Flow control: reattempt! called from step#{wait_msg}")
       throw :flow_control, FlowControlSignal.new(:reattempt, wait: wait)
     end
 
@@ -142,6 +146,7 @@ module GenevaDrive
     # @raise [InvalidStateError] if called on a non-ready/non-performing workflow
     def skip!
       if state == "performing"
+        logger.info("Flow control: skip! called from step")
         throw :flow_control, FlowControlSignal.new(:skip)
       else
         external_skip!
@@ -154,6 +159,7 @@ module GenevaDrive
     # @return [void]
     # @raise [UncaughtThrowError] if called outside of step execution context
     def finished!
+      logger.info("Flow control: finished! called from step")
       throw :flow_control, FlowControlSignal.new(:finished)
     end
 
@@ -167,6 +173,7 @@ module GenevaDrive
     def external_pause!
       raise InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
 
+      logger.info("Flow control: pause! called externally on step #{current_step_name.inspect}")
       with_lock do
         reload
         raise InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
@@ -174,6 +181,7 @@ module GenevaDrive
         current_execution&.mark_canceled!(outcome: "workflow_paused")
         update!(state: "paused", transitioned_at: Time.current)
       end
+      logger.info("Workflow paused")
     end
 
     # Skips the current step from outside a step execution.
@@ -184,6 +192,7 @@ module GenevaDrive
     def external_skip!
       raise InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
 
+      logger.info("Flow control: skip! called externally on step #{current_step_name.inspect}")
       with_lock do
         reload
         raise InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"

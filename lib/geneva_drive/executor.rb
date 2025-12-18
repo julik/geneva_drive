@@ -122,25 +122,31 @@ module GenevaDrive
 
           # Check blanket cancel_if conditions (with exception handling)
           begin
+            step_execution.logger.debug("Evaluating cancel_if conditions")
             if should_cancel_workflow?(workflow)
+              step_execution.logger.info("cancel_if condition matched, canceling workflow")
               transition_step!(step_execution, "canceled", outcome: "canceled")
               transition_workflow!(workflow, "canceled")
               next nil
             end
           rescue => e
+            step_execution.logger.error("Exception in cancel_if evaluation: #{e.class} - #{e.message}")
             exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
             next nil
           end
 
           # Check skip_if condition (with exception handling)
           begin
+            step_execution.logger.debug("Evaluating skip_if condition for step")
             if step_def.should_skip?(workflow)
+              step_execution.logger.info("skip_if condition matched, skipping step")
               transition_step!(step_execution, "skipped", outcome: "skipped")
               transition_workflow!(workflow, "ready")
               workflow.schedule_next_step!
               next nil
             end
           rescue => e
+            step_execution.logger.error("Exception in skip_if evaluation: #{e.class} - #{e.message}")
             exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
             next nil
           end
@@ -234,6 +240,9 @@ module GenevaDrive
           raise InvalidStateTransition,
             "Cannot transition step execution from '#{current_state}' to '#{new_state}'"
         end
+
+        outcome_msg = outcome ? " (outcome: #{outcome})" : ""
+        step_execution.logger.debug("Step execution state: #{current_state} -> #{new_state}#{outcome_msg}")
 
         attrs = {state: new_state}
         attrs[:outcome] = outcome if outcome
@@ -330,16 +339,21 @@ module GenevaDrive
       # @param workflow [GenevaDrive::Workflow]
       # @return [Exception] the original exception to be re-raised
       def handle_precondition_exception(error, step_def, step_execution, workflow)
-        Rails.logger.error("Pre-condition evaluation failed: #{error.message}")
+        step_execution.logger.error("Pre-condition evaluation failed: #{error.class} - #{error.message}")
         Rails.error.report(error)
 
-        case step_def.on_exception
+        on_exception = step_def.on_exception
+        step_execution.logger.info("Precondition exception handling with on_exception: #{on_exception.inspect}")
+
+        case on_exception
         when :reattempt!
+          step_execution.logger.info("Precondition exception policy: reattempt! - rescheduling step")
           transition_step!(step_execution, "completed", outcome: "reattempted")
           transition_workflow!(workflow, "ready")
           workflow.reschedule_current_step!
 
         when :cancel!
+          step_execution.logger.info("Precondition exception policy: cancel! - canceling workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -348,11 +362,13 @@ module GenevaDrive
           transition_workflow!(workflow, "canceled")
 
         when :skip!
+          step_execution.logger.info("Precondition exception policy: skip! - skipping to next step")
           transition_step!(step_execution, "skipped", outcome: "skipped")
           transition_workflow!(workflow, "ready")
           workflow.schedule_next_step!
 
         when :pause!
+          step_execution.logger.info("Precondition exception policy: pause! - pausing workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -362,6 +378,7 @@ module GenevaDrive
 
         else
           # Default: pause
+          step_execution.logger.info("Precondition exception policy: default (pause!) - pausing workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -380,6 +397,7 @@ module GenevaDrive
       # @param workflow [GenevaDrive::Workflow]
       # @return [void]
       def handle_completion(step_execution, workflow)
+        step_execution.logger.info("Step completed successfully, scheduling next step")
         transition_step!(step_execution, "completed", outcome: "success")
         transition_workflow!(workflow, "ready")
         workflow.schedule_next_step!
@@ -394,14 +412,19 @@ module GenevaDrive
       # @return [Exception] the original exception to be re-raised
       def handle_captured_exception(context, workflow, step_execution)
         error = context[:error]
+        on_exception = context[:on_exception]
 
-        case context[:on_exception]
+        step_execution.logger.info("Handling exception with on_exception: #{on_exception.inspect}")
+
+        case on_exception
         when :reattempt!
+          step_execution.logger.info("Exception policy: reattempt! - rescheduling step")
           transition_step!(step_execution, "completed", outcome: "reattempted")
           transition_workflow!(workflow, "ready")
           workflow.reschedule_current_step!
 
         when :cancel!
+          step_execution.logger.info("Exception policy: cancel! - canceling workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -410,11 +433,13 @@ module GenevaDrive
           transition_workflow!(workflow, "canceled")
 
         when :skip!
+          step_execution.logger.info("Exception policy: skip! - skipping to next step")
           transition_step!(step_execution, "skipped", outcome: "skipped")
           transition_workflow!(workflow, "ready")
           workflow.schedule_next_step!
 
         when :pause!
+          step_execution.logger.info("Exception policy: pause! - pausing workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -424,6 +449,7 @@ module GenevaDrive
 
         else
           # Default: pause
+          step_execution.logger.info("Exception policy: default (pause!) - pausing workflow")
           step_execution.update!(
             error_message: error.message,
             error_backtrace: error.backtrace&.join("\n")
@@ -443,26 +469,34 @@ module GenevaDrive
       # @param step_execution [GenevaDrive::StepExecution]
       # @return [void]
       def handle_flow_control_signal(signal, workflow, step_execution)
+        step_execution.logger.debug("Handling flow control signal: #{signal.action}")
+
         case signal.action
         when :cancel
+          step_execution.logger.info("Processing cancel signal: canceling workflow")
           transition_step!(step_execution, "canceled", outcome: "canceled")
           transition_workflow!(workflow, "canceled")
 
         when :pause
+          step_execution.logger.info("Processing pause signal: pausing workflow")
           transition_step!(step_execution, "canceled", outcome: "canceled")
           transition_workflow!(workflow, "paused")
 
         when :reattempt
+          wait_msg = signal.options[:wait] ? " after #{signal.options[:wait].inspect}" : ""
+          step_execution.logger.info("Processing reattempt signal: rescheduling step#{wait_msg}")
           transition_step!(step_execution, "completed", outcome: "reattempted")
           transition_workflow!(workflow, "ready")
           workflow.reschedule_current_step!(wait: signal.options[:wait])
 
         when :skip
+          step_execution.logger.info("Processing skip signal: scheduling next step")
           transition_step!(step_execution, "skipped", outcome: "skipped")
           transition_workflow!(workflow, "ready")
           workflow.schedule_next_step!
 
         when :finished
+          step_execution.logger.info("Processing finished signal: finishing workflow")
           transition_step!(step_execution, "completed", outcome: "success")
           transition_workflow!(workflow, "finished")
         end

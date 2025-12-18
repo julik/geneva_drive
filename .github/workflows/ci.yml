@@ -28,8 +28,8 @@ jobs:
     strategy:
       matrix:
         database:
-          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/stepper_motor_test' }
-          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1' }
+          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/stepper_motor_test?encoding=unicode' }
+          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1?encoding=utf8mb4' }
           - { name: 'SQLite', url: 'sqlite3:db/test.sqlite3' }
 
     services:

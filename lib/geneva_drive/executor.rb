@@ -59,15 +59,20 @@ module GenevaDrive
 
       # Phase 1: Validates states and transitions to executing.
       # Returns execution context hash or nil if execution should abort.
+      # May raise StepNotDefinedError or PreconditionError after transaction commits.
       #
       # @param step_execution [GenevaDrive::StepExecution]
       # @param workflow [GenevaDrive::Workflow]
       # @return [Hash, nil] execution context or nil to abort
+      # @raise [StepNotDefinedError] if step is not defined
+      # @raise [PreconditionError] if cancel_if/skip_if raises exception
       def prepare_execution(step_execution, workflow)
-        with_execution_lock(step_execution, workflow) do
+        exception_to_raise = nil
+
+        result = with_execution_lock(step_execution, workflow) do
           # Validate step execution can start
           unless step_execution.state == "scheduled"
-            return nil
+            next nil
           end
 
           # Validate workflow is in a state that allows execution
@@ -77,7 +82,7 @@ module GenevaDrive
               canceled_at: Time.current,
               outcome: "canceled"
             )
-            return nil
+            next nil
           end
 
           # Check hero exists (unless workflow opts out)
@@ -85,7 +90,7 @@ module GenevaDrive
             unless workflow.hero
               transition_step!(step_execution, "canceled", outcome: "canceled")
               transition_workflow!(workflow, "canceled")
-              return nil
+              next nil
             end
           end
 
@@ -94,12 +99,16 @@ module GenevaDrive
 
           # Check step definition exists
           unless step_def
-            step_execution.update!(
-              error_message: "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
-            )
+            error_message = "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
+            step_execution.update!(error_message: error_message)
             transition_step!(step_execution, "failed", outcome: "failed")
             transition_workflow!(workflow, "paused")
-            return nil
+            exception_to_raise = StepNotDefinedError.new(
+              error_message,
+              step_execution: step_execution,
+              workflow: workflow
+            )
+            next nil
           end
 
           # Check blanket cancel_if conditions (with exception handling)
@@ -107,11 +116,11 @@ module GenevaDrive
             if should_cancel_workflow?(workflow)
               transition_step!(step_execution, "canceled", outcome: "canceled")
               transition_workflow!(workflow, "canceled")
-              return nil
+              next nil
             end
           rescue => e
-            handle_precondition_exception(e, step_def, step_execution, workflow)
-            return nil
+            exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
+            next nil
           end
 
           # Check skip_if condition (with exception handling)
@@ -120,11 +129,11 @@ module GenevaDrive
               transition_step!(step_execution, "skipped", outcome: "skipped")
               transition_workflow!(workflow, "ready")
               workflow.schedule_next_step!
-              return nil
+              next nil
             end
           rescue => e
-            handle_precondition_exception(e, step_def, step_execution, workflow)
-            return nil
+            exception_to_raise = handle_precondition_exception(e, step_def, step_execution, workflow)
+            next nil
           end
 
           # All checks passed - transition to in_progress
@@ -133,22 +142,28 @@ module GenevaDrive
 
           {step_def: step_def}
         end
+
+        raise exception_to_raise if exception_to_raise
+        result
       end
 
       # Phase 3: Handles the execution result and performs final state transitions.
+      # Re-raises original exception after the transaction commits.
       #
       # @param step_execution [GenevaDrive::StepExecution]
       # @param workflow [GenevaDrive::Workflow]
       # @param flow_result [Symbol, FlowControlSignal, Hash] the execution result
       # @return [void]
       def finalize_execution(step_execution, workflow, flow_result)
+        exception_to_raise = nil
+
         with_execution_lock(step_execution, workflow) do
           # Verify step is still in_progress (guard against external changes)
           unless step_execution.in_progress?
             Rails.logger.warn(
               "Step execution #{step_execution.id} state changed during execution: #{step_execution.state}"
             )
-            return
+            next
           end
 
           # Verify workflow is still in performing state
@@ -157,7 +172,7 @@ module GenevaDrive
               "Workflow #{workflow.id} state changed during execution: #{workflow.state}"
             )
             transition_step!(step_execution, "canceled", outcome: "canceled")
-            return
+            next
           end
 
           case flow_result
@@ -166,10 +181,12 @@ module GenevaDrive
           when FlowControlSignal
             handle_flow_control_signal(flow_result, workflow, step_execution)
           when Hash
-            # Exception was captured
-            handle_captured_exception(flow_result, workflow, step_execution)
+            # Exception was captured - handle it and capture for re-raising
+            exception_to_raise = handle_captured_exception(flow_result, workflow, step_execution)
           end
         end
+
+        raise exception_to_raise if exception_to_raise
       end
 
       # Acquires locks on both step_execution and workflow in a consistent order.
@@ -296,12 +313,13 @@ module GenevaDrive
 
       # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
       # Uses the step's on_exception policy to determine how to handle the exception.
+      # Returns the original exception to be re-raised after the transaction commits.
       #
       # @param error [Exception] the exception that occurred
       # @param step_def [StepDefinition] the step definition
       # @param step_execution [GenevaDrive::StepExecution]
       # @param workflow [GenevaDrive::Workflow]
-      # @return [void]
+      # @return [Exception] the original exception to be re-raised
       def handle_precondition_exception(error, step_def, step_execution, workflow)
         Rails.logger.error("Pre-condition evaluation failed: #{error.message}")
         Rails.error.report(error)
@@ -342,6 +360,9 @@ module GenevaDrive
           transition_step!(step_execution, "failed", outcome: "failed")
           transition_workflow!(workflow, "paused")
         end
+
+        # Return original exception to be re-raised after transaction commits
+        error
       end
 
       # Handles successful step completion.
@@ -356,11 +377,12 @@ module GenevaDrive
       end
 
       # Handles a captured exception based on the step's on_exception configuration.
+      # Returns the original exception to be re-raised after the transaction commits.
       #
       # @param context [Hash] captured exception context
       # @param workflow [GenevaDrive::Workflow]
       # @param step_execution [GenevaDrive::StepExecution]
-      # @return [void]
+      # @return [Exception] the original exception to be re-raised
       def handle_captured_exception(context, workflow, step_execution)
         error = context[:error]
 
@@ -400,6 +422,9 @@ module GenevaDrive
           transition_step!(step_execution, "failed", outcome: "failed")
           transition_workflow!(workflow, "paused")
         end
+
+        # Return original exception to be re-raised after transaction commits
+        error
       end
 
       # Handles a flow control signal.

@@ -3,9 +3,13 @@
 require "test_helper"
 
 class PreconditionExceptionTest < ActiveSupport::TestCase
+  # Custom exception classes for testing exception propagation
+  class CancelIfTestError < StandardError; end
+  class SkipIfTestError < StandardError; end
+
   # Workflow with cancel_if that raises exception
   class CancelIfExceptionWorkflow < GenevaDrive::Workflow
-    cancel_if { raise StandardError, "Exception in cancel_if condition" }
+    cancel_if { raise CancelIfTestError, "Exception in cancel_if condition" }
 
     step :test_step, on_exception: :pause! do
       Thread.current[:step_executed] = true
@@ -14,7 +18,7 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
 
   # Workflow with cancel_if exception and cancel! policy
   class CancelIfCancelPolicyWorkflow < GenevaDrive::Workflow
-    cancel_if { raise StandardError, "Exception in cancel_if" }
+    cancel_if { raise CancelIfTestError, "Exception in cancel_if" }
 
     step :test_step, on_exception: :cancel! do
       Thread.current[:step_executed] = true
@@ -23,7 +27,7 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
 
   # Workflow with cancel_if exception and reattempt! policy
   class CancelIfReattemptPolicyWorkflow < GenevaDrive::Workflow
-    cancel_if { raise StandardError, "Exception in cancel_if" }
+    cancel_if { raise CancelIfTestError, "Exception in cancel_if" }
 
     step :test_step, on_exception: :reattempt! do
       Thread.current[:step_executed] = true
@@ -32,7 +36,7 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
 
   # Workflow with cancel_if exception and skip! policy
   class CancelIfSkipPolicyWorkflow < GenevaDrive::Workflow
-    cancel_if { raise StandardError, "Exception in cancel_if" }
+    cancel_if { raise CancelIfTestError, "Exception in cancel_if" }
 
     step :test_step, on_exception: :skip! do
       Thread.current[:step_executed] = true
@@ -45,28 +49,28 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
 
   # Workflow with skip_if that raises exception
   class SkipIfExceptionWorkflow < GenevaDrive::Workflow
-    step :test_step, skip_if: -> { raise StandardError, "Exception in skip_if" }, on_exception: :pause! do
+    step :test_step, skip_if: -> { raise SkipIfTestError, "Exception in skip_if" }, on_exception: :pause! do
       Thread.current[:step_executed] = true
     end
   end
 
   # Workflow with skip_if exception and cancel! policy
   class SkipIfCancelPolicyWorkflow < GenevaDrive::Workflow
-    step :test_step, skip_if: -> { raise StandardError, "Exception in skip_if" }, on_exception: :cancel! do
+    step :test_step, skip_if: -> { raise SkipIfTestError, "Exception in skip_if" }, on_exception: :cancel! do
       Thread.current[:step_executed] = true
     end
   end
 
   # Workflow with skip_if exception and reattempt! policy
   class SkipIfReattemptPolicyWorkflow < GenevaDrive::Workflow
-    step :test_step, skip_if: -> { raise StandardError, "Exception in skip_if" }, on_exception: :reattempt! do
+    step :test_step, skip_if: -> { raise SkipIfTestError, "Exception in skip_if" }, on_exception: :reattempt! do
       Thread.current[:step_executed] = true
     end
   end
 
   # Workflow with skip_if exception and skip! policy
   class SkipIfSkipPolicyWorkflow < GenevaDrive::Workflow
-    step :test_step, skip_if: -> { raise StandardError, "Exception in skip_if" }, on_exception: :skip! do
+    step :test_step, skip_if: -> { raise SkipIfTestError, "Exception in skip_if" }, on_exception: :skip! do
       Thread.current[:step_executed] = true
     end
 
@@ -92,7 +96,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = CancelIfExceptionWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(CancelIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in cancel_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -107,7 +115,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = CancelIfCancelPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(CancelIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in cancel_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -122,7 +134,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = CancelIfReattemptPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(CancelIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in cancel_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -139,7 +155,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = CancelIfSkipPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(CancelIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in cancel_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -156,7 +176,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = SkipIfExceptionWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(SkipIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in skip_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -171,7 +195,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = SkipIfCancelPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(SkipIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in skip_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -186,7 +214,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = SkipIfReattemptPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(SkipIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in skip_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -202,7 +234,11 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = SkipIfSkipPolicyWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(SkipIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/Exception in skip_if/, error.message)
 
     step_execution.reload
     workflow.reload
@@ -218,7 +254,9 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = CancelIfExceptionWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    assert_raises(CancelIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
 
     assert_nil Thread.current[:step_executed]
   end
@@ -227,7 +265,9 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     workflow = SkipIfExceptionWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    assert_raises(SkipIfTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
 
     assert_nil Thread.current[:step_executed]
   end

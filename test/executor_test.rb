@@ -124,21 +124,27 @@ class ExecutorTest < ActiveSupport::TestCase
   end
 
   # Workflow with exception handling
+  # Custom exception classes for testing exception propagation
+  class PauseTestError < StandardError; end
+  class SkipTestError < StandardError; end
+  class CancelTestError < StandardError; end
+  class RetryTestError < StandardError; end
+
   class ExceptionHandlingWorkflow < GenevaDrive::Workflow
     step :pause_default, on_exception: :pause! do
-      raise "pause error"
+      raise PauseTestError, "pause error"
     end
 
     step :reattempt_error, on_exception: :reattempt! do
-      raise "retry error"
+      raise RetryTestError, "retry error"
     end
 
     step :skip_error, on_exception: :skip! do
-      raise "skip error"
+      raise SkipTestError, "skip error"
     end
 
     step :cancel_error, on_exception: :cancel! do
-      raise "cancel error"
+      raise CancelTestError, "cancel error"
     end
   end
 
@@ -313,7 +319,11 @@ class ExecutorTest < ActiveSupport::TestCase
     workflow = ExceptionHandlingWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(PauseTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_equal "pause error", error.message
 
     step_execution.reload
     workflow.reload
@@ -334,7 +344,11 @@ class ExecutorTest < ActiveSupport::TestCase
     )
     workflow.update!(current_step_name: "skip_error")
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(SkipTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_equal "skip error", error.message
 
     step_execution.reload
     workflow.reload
@@ -353,7 +367,11 @@ class ExecutorTest < ActiveSupport::TestCase
     )
     workflow.update!(current_step_name: "cancel_error")
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(CancelTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_equal "cancel error", error.message
 
     step_execution.reload
     workflow.reload
@@ -386,7 +404,14 @@ class ExecutorTest < ActiveSupport::TestCase
     # Manually change the step name to something that doesn't exist
     step_execution.update_column(:step_name, "non_existent_step")
 
-    GenevaDrive::Executor.execute!(step_execution)
+    error = assert_raises(GenevaDrive::StepNotDefinedError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/non_existent_step/, error.message)
+    assert_match(/not defined/, error.message)
+    assert_equal step_execution, error.step_execution
+    assert_equal workflow, error.workflow
 
     step_execution.reload
     workflow.reload
@@ -394,7 +419,6 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "failed", step_execution.state
     assert_equal "failed", step_execution.outcome
     assert_match(/non_existent_step/, step_execution.error_message)
-    assert_match(/not defined/, step_execution.error_message)
     assert_equal "paused", workflow.state
   end
 end

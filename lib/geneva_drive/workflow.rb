@@ -23,8 +23,16 @@ module GenevaDrive
   class Workflow < ActiveRecord::Base
     self.table_name = "geneva_drive_workflows"
 
-    # Workflow states
-    STATES = %w[ready performing finished canceled paused].freeze
+    # Workflow states as enum with string values
+    # Provides: ready?, performing?, etc. predicates
+    # Provides: ready, performing, etc. scopes
+    enum :state, {
+      ready: "ready",
+      performing: "performing",
+      finished: "finished",
+      canceled: "canceled",
+      paused: "paused"
+    }
 
     # Associations
     belongs_to :hero, polymorphic: true, optional: true
@@ -43,15 +51,7 @@ module GenevaDrive
     # Include flow control methods
     include FlowControl
 
-    # Validations
-    validates :state, presence: true, inclusion: {in: STATES}
-
-    # Scopes for querying workflows by state
-    scope :ready, -> { where(state: "ready") }
-    scope :performing, -> { where(state: "performing") }
-    scope :finished, -> { where(state: "finished") }
-    scope :canceled, -> { where(state: "canceled") }
-    scope :paused, -> { where(state: "paused") }
+    # Additional scopes
     scope :ongoing, -> { where.not(state: %w[finished canceled]) }
     scope :for_hero, ->(hero) { where(hero: hero) }
 

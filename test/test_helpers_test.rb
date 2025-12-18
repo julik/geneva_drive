@@ -68,16 +68,16 @@ class TestHelpersTest < ActiveSupport::TestCase
     assert_equal 1, workflow.step_executions.count
   end
 
-  test "step_workflow executes one step at a time" do
+  test "perform_next_step executes one step at a time" do
     workflow = MultiStepWorkflow.create!(hero: @user)
 
-    step_workflow(workflow)
+    perform_next_step(workflow)
     assert_equal "step_two", workflow.current_step_name
 
-    step_workflow(workflow)
+    perform_next_step(workflow)
     assert_equal "step_three", workflow.current_step_name
 
-    step_workflow(workflow)
+    perform_next_step(workflow)
     assert_equal "finished", workflow.state
   end
 

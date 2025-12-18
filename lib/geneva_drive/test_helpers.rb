@@ -69,12 +69,12 @@ module GenevaDrive
     #
     # @example Execute one step at a time
     #   workflow = PaymentWorkflow.create!(hero: order)
-    #   step_workflow(workflow)
+    #   perform_next_step(workflow)
     #   assert_equal "charge", workflow.current_step_name
-    #   step_workflow(workflow)
+    #   perform_next_step(workflow)
     #   assert_equal "receipt", workflow.current_step_name
     #
-    def step_workflow(workflow)
+    def perform_next_step(workflow)
       workflow.reload
       step_execution = workflow.current_execution
       return nil unless step_execution

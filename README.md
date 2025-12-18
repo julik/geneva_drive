@@ -234,10 +234,10 @@ class SignupWorkflowTest < ActiveSupport::TestCase
   test "step-by-step execution" do
     workflow = SignupWorkflow.create!(hero: users(:one))
 
-    step_workflow(workflow)
+    perform_next_step(workflow)
     assert_equal "send_reminder", workflow.current_step_name
 
-    step_workflow(workflow)
+    perform_next_step(workflow)
     assert_equal "complete_onboarding", workflow.current_step_name
   end
 end

@@ -84,6 +84,57 @@ module GenevaDrive
       step_execution
     end
 
+    # Executes a step inline, bypassing normal workflow progression.
+    #
+    # Creates a step execution for the given step and executes it
+    # immediately. This is a testing shortcut that allows you to test
+    # individual steps without running through the entire flow.
+    #
+    # When called without a step name, executes the current step.
+    #
+    # @param workflow [GenevaDrive::Workflow] the workflow containing the step
+    # @param step_name [String, Symbol, nil] the step to execute (defaults to current step)
+    # @return [GenevaDrive::StepExecution] the executed step
+    # @raise [ArgumentError] if the step is not defined in the workflow
+    #
+    # @example Execute the current step
+    #   workflow = OnboardingWorkflow.create!(hero: user)
+    #   perform_step_inline(workflow)
+    #
+    # @example Execute a specific step directly
+    #   workflow = OnboardingWorkflow.create!(hero: user)
+    #   perform_step_inline(workflow, :send_welcome_email)
+    #
+    def perform_step_inline(workflow, step_name = nil)
+      workflow.reload
+      step_name ||= workflow.next_step_name
+      step_def = workflow.class.steps.find { |s| s.name == step_name.to_s }
+
+      unless step_def
+        available = workflow.class.steps.map(&:name).join(", ")
+        raise ArgumentError,
+          "Step '#{step_name}' is not defined in #{workflow.class.name}. " \
+          "Available steps: #{available}"
+      end
+
+      # Cancel any existing scheduled step executions to satisfy uniqueness constraint
+      workflow.step_executions.where(state: "scheduled").update_all(
+        state: "canceled",
+        outcome: "canceled",
+        canceled_at: Time.current
+      )
+
+      step_execution = workflow.step_executions.create!(
+        step_name: step_def.name,
+        state: "scheduled",
+        scheduled_for: Time.current
+      )
+
+      step_execution.execute!
+      workflow.reload
+      step_execution
+    end
+
     # Asserts that a workflow has executed a specific step.
     #
     # @param workflow [GenevaDrive::Workflow] the workflow to check

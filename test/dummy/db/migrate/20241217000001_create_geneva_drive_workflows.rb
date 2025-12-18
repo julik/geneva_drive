@@ -17,6 +17,7 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
 
       # Current position in workflow
       t.string :current_step_name
+      t.string :next_step_name
 
       # Multiple workflows of same type for same hero
       t.boolean :allow_multiple, default: false, null: false

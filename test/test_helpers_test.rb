@@ -72,10 +72,10 @@ class TestHelpersTest < ActiveSupport::TestCase
     workflow = MultiStepWorkflow.create!(hero: @user)
 
     perform_next_step(workflow)
-    assert_equal "step_two", workflow.current_step_name
+    assert_equal "step_two", workflow.next_step_name
 
     perform_next_step(workflow)
-    assert_equal "step_three", workflow.current_step_name
+    assert_equal "step_three", workflow.next_step_name
 
     perform_next_step(workflow)
     assert_equal "finished", workflow.state
@@ -106,5 +106,57 @@ class TestHelpersTest < ActiveSupport::TestCase
     speedrun_workflow(workflow)
 
     assert_workflow_state(workflow, :finished)
+  end
+
+  test "perform_step_inline creates and executes a step by name" do
+    workflow = MultiStepWorkflow.create!(hero: @user)
+
+    # Can execute step_two directly without running step_one first
+    step_execution = perform_step_inline(workflow, :step_two)
+
+    assert_equal "step_two", step_execution.step_name
+    assert_equal "completed", step_execution.state
+  end
+
+  test "perform_step_inline accepts string step name" do
+    workflow = MultiStepWorkflow.create!(hero: @user)
+
+    step_execution = perform_step_inline(workflow, "step_three")
+
+    assert_equal "step_three", step_execution.step_name
+    assert_equal "completed", step_execution.state
+  end
+
+  test "perform_step_inline raises when step not defined" do
+    workflow = MultiStepWorkflow.create!(hero: @user)
+
+    error = assert_raises(ArgumentError) do
+      perform_step_inline(workflow, :nonexistent_step)
+    end
+
+    assert_match(/Step 'nonexistent_step' is not defined/, error.message)
+    assert_match(/Available steps:/, error.message)
+  end
+
+  test "perform_step_inline can execute same step multiple times" do
+    workflow = MultiStepWorkflow.create!(hero: @user)
+
+    first_execution = perform_step_inline(workflow, :step_one)
+    second_execution = perform_step_inline(workflow, :step_one)
+
+    assert_not_equal first_execution.id, second_execution.id
+    assert_equal "completed", first_execution.reload.state
+    assert_equal "completed", second_execution.reload.state
+  end
+
+  test "perform_step_inline without step_name executes next step" do
+    workflow = MultiStepWorkflow.create!(hero: @user)
+
+    assert_equal "step_one", workflow.next_step_name
+
+    step_execution = perform_step_inline(workflow)
+
+    assert_equal "step_one", step_execution.step_name
+    assert_equal "completed", step_execution.state
   end
 end

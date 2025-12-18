@@ -64,7 +64,8 @@ class ReattemptOnExceptionIntegrationTest < ActiveSupport::TestCase
     workflow = ReattemptingWorkflow.create!(hero: @user)
 
     assert_equal "ready", workflow.state
-    assert_equal "process", workflow.current_step_name
+    assert_nil workflow.current_step_name, "current_step_name should be nil until execution starts"
+    assert_equal "process", workflow.next_step_name
     assert_equal 1, workflow.step_executions.count
 
     first_step_execution = workflow.step_executions.first
@@ -94,7 +95,8 @@ class ReattemptOnExceptionIntegrationTest < ActiveSupport::TestCase
 
     # Workflow should be back to ready state
     assert_equal "ready", workflow.state
-    assert_equal "process", workflow.current_step_name
+    assert_nil workflow.current_step_name, "current_step_name should be nil (not executing)"
+    assert_equal "process", workflow.next_step_name
 
     # A new step execution should have been created for the reattempt
     assert_equal 2, workflow.step_executions.count

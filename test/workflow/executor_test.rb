@@ -167,7 +167,8 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "completed", step_execution.state
     assert_equal "success", step_execution.outcome
     assert_equal "ready", workflow.state
-    assert_equal "second_step", workflow.current_step_name
+    assert_nil workflow.current_step_name, "current_step_name should be nil after execution"
+    assert_equal "second_step", workflow.next_step_name
     assert_equal 2, workflow.step_executions.count
   end
 
@@ -194,7 +195,8 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "skipped", step_execution.state
     assert_equal "skipped", step_execution.outcome
     assert_nil workflow.ran
-    assert_equal "final", workflow.current_step_name
+    assert_nil workflow.current_step_name, "current_step_name should be nil (not executing)"
+    assert_equal "final", workflow.next_step_name
   end
 
   test "cancel_if condition cancels workflow" do

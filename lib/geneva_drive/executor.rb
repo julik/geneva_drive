@@ -157,6 +157,14 @@ module GenevaDrive
           transition_step!(step_execution, "in_progress")
           transition_workflow!(workflow, "performing") if workflow.ready?
 
+          # Set current_step_name to the step being executed,
+          # and next_step_name to what comes after
+          following_step = workflow.steps.next_after(step_def.name)
+          workflow.update!(
+            current_step_name: step_def.name,
+            next_step_name: following_step&.name
+          )
+
           {step_def: step_def}
         end
 
@@ -201,6 +209,9 @@ module GenevaDrive
             # Exception was captured - handle it and capture for re-raising
             exception_to_raise = handle_captured_exception(flow_result, workflow, step_execution)
           end
+
+          # Clear current_step_name - the step is no longer executing
+          workflow.update!(current_step_name: nil)
         end
 
         raise exception_to_raise if exception_to_raise

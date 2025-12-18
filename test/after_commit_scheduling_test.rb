@@ -71,7 +71,7 @@ class AfterCommitSchedulingTest < ActiveSupport::TestCase
 
   test "jobs are enqueued with wait_until for delayed steps" do
     freeze_time do
-      workflow = DelayedWorkflow.create!(hero: @user)
+      DelayedWorkflow.create!(hero: @user)
       expected_time = 2.hours.from_now
 
       assert_enqueued_with(

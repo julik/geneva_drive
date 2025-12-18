@@ -115,7 +115,7 @@ class PerformStepJobTest < ActiveSupport::TestCase
     begin
       clear_enqueued_jobs
 
-      workflow = TestJobOptionsWorkflow.create!(hero: @user)
+      TestJobOptionsWorkflow.create!(hero: @user)
 
       assert_enqueued_with(
         job: GenevaDrive::PerformStepJob,

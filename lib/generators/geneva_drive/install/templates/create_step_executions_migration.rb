@@ -54,7 +54,37 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     # Index for common query patterns
     add_index :geneva_drive_step_executions, [:workflow_id, :state]
 
-    # Database-specific uniqueness constraint
-    add_step_execution_uniqueness_constraint
+    # Database-specific uniqueness constraint for active step executions
+    # Ensures only one active (scheduled/in_progress) step per workflow
+    adapter = connection.adapter_name.downcase
+    if adapter.include?("postgresql")
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_step_executions_one_active
+        ON geneva_drive_step_executions (workflow_id)
+        WHERE state IN ('scheduled', 'in_progress');
+      SQL
+    elsif adapter.include?("mysql")
+      execute <<-SQL
+        ALTER TABLE geneva_drive_step_executions
+        ADD COLUMN active_unique_key VARCHAR(767)
+        AS (
+          CASE
+            WHEN state IN ('scheduled', 'in_progress')
+            THEN CAST(workflow_id AS CHAR)
+            ELSE NULL
+          END
+        ) STORED;
+      SQL
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_step_executions_one_active
+        ON geneva_drive_step_executions (active_unique_key);
+      SQL
+    elsif adapter.include?("sqlite")
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_step_executions_one_active
+        ON geneva_drive_step_executions (workflow_id)
+        WHERE state IN ('scheduled', 'in_progress');
+      SQL
+    end
   end
 end

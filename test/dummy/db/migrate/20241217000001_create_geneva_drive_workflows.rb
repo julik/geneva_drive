@@ -31,7 +31,37 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
     # Polymorphic index
     add_index :geneva_drive_workflows, [:hero_type, :hero_id]
 
-    # Database-specific uniqueness constraint
-    add_workflow_uniqueness_constraint
+    # Database-specific uniqueness constraint for ongoing workflows
+    # Ensures only one ongoing workflow per (type, hero) unless allow_multiple is true
+    adapter = connection.adapter_name.downcase
+    if adapter.include?("postgresql")
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        ON geneva_drive_workflows (type, hero_type, hero_id)
+        WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = false;
+      SQL
+    elsif adapter.include?("mysql")
+      execute <<-SQL
+        ALTER TABLE geneva_drive_workflows
+        ADD COLUMN ongoing_unique_key VARCHAR(767)
+        AS (
+          CASE
+            WHEN state NOT IN ('finished', 'canceled') AND allow_multiple = 0
+            THEN CONCAT(type, '-', hero_type, '-', hero_id)
+            ELSE NULL
+          END
+        ) STORED;
+      SQL
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        ON geneva_drive_workflows (ongoing_unique_key);
+      SQL
+    elsif adapter.include?("sqlite")
+      execute <<-SQL
+        CREATE UNIQUE INDEX index_workflows_unique_ongoing
+        ON geneva_drive_workflows (type, hero_type, hero_id)
+        WHERE state NOT IN ('finished', 'canceled') AND allow_multiple = 0;
+      SQL
+    end
   end
 end

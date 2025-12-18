@@ -18,7 +18,7 @@ class HousekeepingJobTest < ActiveSupport::TestCase
   setup do
     @user = create_user
     @original_delete_after = GenevaDrive.delete_completed_workflows_after
-    @original_stuck_executing = GenevaDrive.stuck_executing_threshold
+    @original_stuck_in_progress = GenevaDrive.stuck_in_progress_threshold
     @original_stuck_scheduled = GenevaDrive.stuck_scheduled_threshold
     @original_recovery_action = GenevaDrive.stuck_recovery_action
     @original_batch_size = GenevaDrive.housekeeping_batch_size
@@ -26,7 +26,7 @@ class HousekeepingJobTest < ActiveSupport::TestCase
 
   teardown do
     GenevaDrive.delete_completed_workflows_after = @original_delete_after
-    GenevaDrive.stuck_executing_threshold = @original_stuck_executing
+    GenevaDrive.stuck_in_progress_threshold = @original_stuck_in_progress
     GenevaDrive.stuck_scheduled_threshold = @original_stuck_scheduled
     GenevaDrive.stuck_recovery_action = @original_recovery_action
     GenevaDrive.housekeeping_batch_size = @original_batch_size
@@ -135,25 +135,25 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     end
   end
 
-  # Recovery tests - stuck executing
+  # Recovery tests - stuck in_progress
 
-  test "recovers step executions stuck in executing state with reattempt" do
-    GenevaDrive.stuck_executing_threshold = 1.hour
+  test "recovers step executions stuck in in_progress state with reattempt" do
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :reattempt
 
     workflow = SimpleWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    # Simulate stuck in executing
+    # Simulate stuck in in_progress
     step_execution.update!(
-      state: "executing",
+      state: "in_progress",
       started_at: 2.hours.ago
     )
     workflow.update!(state: "performing")
 
     result = GenevaDrive::HousekeepingJob.perform_now
 
-    assert_equal 1, result[:stuck_executing_recovered]
+    assert_equal 1, result[:stuck_in_progress_recovered]
 
     step_execution.reload
     workflow.reload
@@ -165,22 +165,22 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     assert_equal 2, workflow.step_executions.count
   end
 
-  test "recovers step executions stuck in executing state with cancel" do
-    GenevaDrive.stuck_executing_threshold = 1.hour
+  test "recovers step executions stuck in in_progress state with cancel" do
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :cancel
 
     workflow = SimpleWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     step_execution.update!(
-      state: "executing",
+      state: "in_progress",
       started_at: 2.hours.ago
     )
     workflow.update!(state: "performing")
 
     result = GenevaDrive::HousekeepingJob.perform_now
 
-    assert_equal 1, result[:stuck_executing_recovered]
+    assert_equal 1, result[:stuck_in_progress_recovered]
 
     step_execution.reload
     workflow.reload
@@ -190,25 +190,25 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     assert_equal "canceled", workflow.state
   end
 
-  test "does not recover recently executing step executions" do
-    GenevaDrive.stuck_executing_threshold = 1.hour
+  test "does not recover recently in_progress step executions" do
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :reattempt
 
     workflow = SimpleWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
     step_execution.update!(
-      state: "executing",
+      state: "in_progress",
       started_at: 30.minutes.ago
     )
     workflow.update!(state: "performing")
 
     result = GenevaDrive::HousekeepingJob.perform_now
 
-    assert_equal 0, result[:stuck_executing_recovered]
+    assert_equal 0, result[:stuck_in_progress_recovered]
 
     step_execution.reload
-    assert_equal "executing", step_execution.state
+    assert_equal "in_progress", step_execution.state
   end
 
   # Recovery tests - stuck scheduled
@@ -297,7 +297,7 @@ class HousekeepingJobTest < ActiveSupport::TestCase
 
   test "performs both cleanup and recovery in one run" do
     GenevaDrive.delete_completed_workflows_after = 30.days
-    GenevaDrive.stuck_executing_threshold = 1.hour
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :reattempt
 
     # Create old finished workflow
@@ -308,25 +308,25 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     # Create stuck workflow
     stuck_workflow = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
     stuck_step = stuck_workflow.step_executions.first
-    stuck_step.update!(state: "executing", started_at: 2.hours.ago)
+    stuck_step.update!(state: "in_progress", started_at: 2.hours.ago)
     stuck_workflow.update!(state: "performing")
 
     result = GenevaDrive::HousekeepingJob.perform_now
 
     assert_equal 1, result[:workflows_cleaned_up]
-    assert_equal 1, result[:stuck_executing_recovered]
+    assert_equal 1, result[:stuck_in_progress_recovered]
     assert_not GenevaDrive::Workflow.exists?(old_workflow.id)
     assert_equal "ready", stuck_workflow.reload.state
   end
 
   test "handles errors gracefully during recovery" do
-    GenevaDrive.stuck_executing_threshold = 1.hour
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :reattempt
 
     workflow = SimpleWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
 
-    step_execution.update!(state: "executing", started_at: 2.hours.ago)
+    step_execution.update!(state: "in_progress", started_at: 2.hours.ago)
     workflow.update!(state: "performing")
 
     # Delete the workflow to cause an error during recovery
@@ -341,14 +341,14 @@ class HousekeepingJobTest < ActiveSupport::TestCase
 
   test "returns summary of actions taken" do
     GenevaDrive.delete_completed_workflows_after = 30.days
-    GenevaDrive.stuck_executing_threshold = 1.hour
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_scheduled_threshold = 1.hour
 
     result = GenevaDrive::HousekeepingJob.perform_now
 
     assert result.key?(:workflows_cleaned_up)
     assert result.key?(:step_executions_cleaned_up)
-    assert result.key?(:stuck_executing_recovered)
+    assert result.key?(:stuck_in_progress_recovered)
     assert result.key?(:stuck_scheduled_recovered)
   end
 end

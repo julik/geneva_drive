@@ -16,8 +16,8 @@ module GenevaDrive
   module Executor
     # Valid state transitions for step executions
     STEP_TRANSITIONS = {
-      "scheduled" => %w[scheduled executing canceled skipped failed completed],
-      "executing" => %w[executing completed failed canceled skipped]
+      "scheduled" => %w[scheduled in_progress canceled skipped failed completed],
+      "in_progress" => %w[in_progress completed failed canceled skipped]
     }.freeze
 
     # Valid state transitions for workflows
@@ -117,9 +117,9 @@ module GenevaDrive
             return nil
           end
 
-          # All checks passed - transition to executing
-          transition_step!(step_execution, "executing")
-          transition_workflow!(workflow, "performing") if workflow.state == "ready"
+          # All checks passed - transition to in_progress
+          transition_step!(step_execution, "in_progress")
+          transition_workflow!(workflow, "performing") if workflow.ready?
 
           {step_def: step_def}
         end
@@ -133,8 +133,8 @@ module GenevaDrive
       # @return [void]
       def finalize_execution(step_execution, workflow, flow_result)
         with_execution_lock(step_execution, workflow) do
-          # Verify step is still in executing state (guard against external changes)
-          unless step_execution.state == "executing"
+          # Verify step is still in_progress (guard against external changes)
+          unless step_execution.in_progress?
             Rails.logger.warn(
               "Step execution #{step_execution.id} state changed during execution: #{step_execution.state}"
             )
@@ -142,7 +142,7 @@ module GenevaDrive
           end
 
           # Verify workflow is still in performing state
-          unless workflow.state == "performing"
+          unless workflow.performing?
             Rails.logger.warn(
               "Workflow #{workflow.id} state changed during execution: #{workflow.state}"
             )
@@ -201,7 +201,7 @@ module GenevaDrive
         attrs[:outcome] = outcome if outcome
 
         case new_state
-        when "executing"
+        when "in_progress"
           attrs[:started_at] = Time.current
         when "completed"
           attrs[:completed_at] = Time.current

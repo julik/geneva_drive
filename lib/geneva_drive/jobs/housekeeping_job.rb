@@ -7,7 +7,7 @@ module GenevaDrive
   # 1. **Cleanup**: Deletes completed/canceled workflows (with their step executions)
   #    that are older than the configured threshold.
   # 2. **Recovery**: Recovers stuck step executions that are:
-  #    - In "executing" state for too long (process crashed)
+  #    - In "in_progress" state for too long (process crashed)
   #    - In "scheduled" state past their scheduled_for time (job never ran)
   #
   # @example Running the housekeeping job
@@ -20,7 +20,7 @@ module GenevaDrive
   # @example Configuration
   #   # config/initializers/geneva_drive.rb
   #   GenevaDrive.delete_completed_workflows_after = 30.days
-  #   GenevaDrive.stuck_executing_threshold = 1.hour
+  #   GenevaDrive.stuck_in_progress_threshold = 1.hour
   #   GenevaDrive.stuck_scheduled_threshold = 1.hour
   #   GenevaDrive.stuck_recovery_action = :reattempt # or :cancel
   #
@@ -34,7 +34,7 @@ module GenevaDrive
       results = {
         workflows_cleaned_up: 0,
         step_executions_cleaned_up: 0,
-        stuck_executing_recovered: 0,
+        stuck_in_progress_recovered: 0,
         stuck_scheduled_recovered: 0
       }
 
@@ -90,33 +90,33 @@ module GenevaDrive
 
     # Recovers stuck step executions.
     # Handles two scenarios:
-    # 1. Steps stuck in "executing" state (process crashed mid-execution)
+    # 1. Steps stuck in "in_progress" state (process crashed mid-execution)
     # 2. Steps stuck in "scheduled" state past their scheduled_for time (job never ran)
     #
     # @param results [Hash] results hash to update
     # @return [void]
     def recover_stuck_step_executions!(results)
-      recover_stuck_executing!(results)
+      recover_stuck_in_progress!(results)
       recover_stuck_scheduled!(results)
     end
 
-    # Recovers step executions stuck in "executing" state.
+    # Recovers step executions stuck in "in_progress" state.
     #
     # @param results [Hash] results hash to update
     # @return [void]
-    def recover_stuck_executing!(results)
-      threshold = GenevaDrive.stuck_executing_threshold
+    def recover_stuck_in_progress!(results)
+      threshold = GenevaDrive.stuck_in_progress_threshold
       batch_size = GenevaDrive.housekeeping_batch_size
       cutoff_time = threshold.ago
 
       stuck_executions = StepExecution
-        .where(state: "executing")
+        .in_progress
         .where("started_at < ?", cutoff_time)
         .limit(batch_size)
 
       stuck_executions.find_each do |step_execution|
         recover_step_execution!(step_execution)
-        results[:stuck_executing_recovered] += 1
+        results[:stuck_in_progress_recovered] += 1
       rescue => e
         Rails.logger.error(
           "[GenevaDrive::HousekeepingJob] Failed to recover step execution " \
@@ -136,7 +136,7 @@ module GenevaDrive
       cutoff_time = threshold.ago
 
       stuck_executions = StepExecution
-        .where(state: "scheduled")
+        .scheduled
         .where("scheduled_for < ?", cutoff_time)
         .limit(batch_size)
 
@@ -187,7 +187,7 @@ module GenevaDrive
           workflow.reload
 
           # Only recover if still stuck
-          return unless %w[scheduled executing].include?(step_execution.state)
+          return unless step_execution.scheduled? || step_execution.in_progress?
 
           step_execution.update!(
             state: "completed",
@@ -195,7 +195,7 @@ module GenevaDrive
             completed_at: Time.current
           )
 
-          workflow.update!(state: "ready") if workflow.state == "performing"
+          workflow.update!(state: "ready") if workflow.performing?
           workflow.reschedule_current_step!
         end
       end
@@ -213,7 +213,7 @@ module GenevaDrive
           workflow.reload
 
           # Only recover if still stuck
-          return unless %w[scheduled executing].include?(step_execution.state)
+          return unless step_execution.scheduled? || step_execution.in_progress?
 
           step_execution.update!(
             state: "canceled",

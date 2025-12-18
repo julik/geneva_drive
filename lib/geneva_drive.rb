@@ -47,10 +47,10 @@ module GenevaDrive
     # @return [ActiveSupport::Duration, nil]
     attr_accessor :delete_completed_workflows_after
 
-    # How long a step execution can be in "executing" state before being
+    # How long a step execution can be in "in_progress" state before being
     # considered stuck and eligible for recovery.
     # @return [ActiveSupport::Duration]
-    attr_accessor :stuck_executing_threshold
+    attr_accessor :stuck_in_progress_threshold
 
     # How long a step execution can be past its scheduled_for time while
     # still in "scheduled" state before being considered stuck.
@@ -70,7 +70,7 @@ module GenevaDrive
 
   # Set default configuration values
   self.delete_completed_workflows_after = nil  # Disabled by default
-  self.stuck_executing_threshold = 1.hour
+  self.stuck_in_progress_threshold = 1.hour
   self.stuck_scheduled_threshold = 1.hour
   self.housekeeping_batch_size = 1000
   self.stuck_recovery_action = :reattempt

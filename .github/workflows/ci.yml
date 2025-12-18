@@ -7,10 +7,11 @@ on:
 
 jobs:
   lint:
+    name: "Lint (standardrb)"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -18,33 +19,52 @@ jobs:
           ruby-version: 3.4.4
           bundler-cache: true
 
-      - name: Lint code with StandardRB
+      - name: Lint code for consistent style
         run: bundle exec standardrb
 
   test:
+    name: "Tests (${{ matrix.database.name }})"
     runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        database:
+          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/stepper_motor_test' }
+          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1' }
+          - { name: 'SQLite', url: 'sqlite3:db/test.sqlite3' }
 
     services:
       postgres:
-        image: postgres:16
-        ports:
-          - 5432:5432
+        image: postgres:14
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: geneva_drive_test
+          POSTGRES_DB: stepper_motor_test
+        ports:
+          - 5432:5432
         options: >-
           --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: stepper_motor_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
 
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libpq-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config
 
       - name: Checkout code
-        uses: actions/checkout@v6
+        uses: actions/checkout@v5
 
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
@@ -52,8 +72,22 @@ jobs:
           ruby-version: 3.4.4
           bundler-cache: true
 
+      - name: Remove existing schema.rb
+        run: rm -f test/dummy/db/schema.rb
+
+      - name: Setup database
+        env:
+          RAILS_ENV: test
+          DATABASE_URL: ${{ matrix.database.url }}
+        run: |
+          cd test/dummy
+          bundle exec rails db:create
+          bundle exec rails db:migrate
+          cd ../..
+
       - name: Run tests
         env:
           RAILS_ENV: test
-          DATABASE_URL: postgres://postgres:postgres@localhost:5432/geneva_drive_test
-        run: bin/rails db:test:prepare test
+          DATABASE_URL: ${{ matrix.database.url }}
+        run: bin/test
+

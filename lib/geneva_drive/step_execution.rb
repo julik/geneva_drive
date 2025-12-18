@@ -19,8 +19,17 @@ module GenevaDrive
   class StepExecution < ActiveRecord::Base
     self.table_name = "geneva_drive_step_executions"
 
-    # Valid execution states
-    STATES = %w[scheduled executing completed failed canceled skipped].freeze
+    # Step execution states as enum with string values
+    # Provides: scheduled?, executing?, etc. predicates
+    # Provides: scheduled, executing, etc. scopes
+    enum :state, {
+      scheduled: "scheduled",
+      executing: "executing",
+      completed: "completed",
+      failed: "failed",
+      canceled: "canceled",
+      skipped: "skipped"
+    }
 
     # Outcome values for audit purposes
     OUTCOMES = %w[
@@ -40,23 +49,13 @@ module GenevaDrive
       inverse_of: :step_executions
 
     # Validations
-    validates :state, presence: true, inclusion: {in: STATES}
     validates :step_name, presence: true
     validates :scheduled_for, presence: true
     validates :outcome, inclusion: {in: OUTCOMES}, allow_nil: true
 
-    # Scopes for querying by state
-    scope :scheduled, -> { where(state: "scheduled") }
-    scope :executing, -> { where(state: "executing") }
-    scope :completed, -> { where(state: "completed") }
-    scope :failed, -> { where(state: "failed") }
-    scope :skipped, -> { where(state: "skipped") }
-    scope :canceled, -> { where(state: "canceled") }
-
     # Find executions that are ready to run
     scope :ready_to_execute, -> {
-      where(state: "scheduled")
-        .where("scheduled_for <= ?", Time.current)
+      scheduled.where("scheduled_for <= ?", Time.current)
     }
 
     # Transitions the step execution to 'executing' state.

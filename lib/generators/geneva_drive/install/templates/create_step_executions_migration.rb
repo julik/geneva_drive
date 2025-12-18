@@ -54,6 +54,12 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     # Index for common query patterns
     add_index :geneva_drive_step_executions, [:workflow_id, :state]
 
+    reversible do |direction|
+      direction.up { create_db_specific_indices }
+    end
+  end
+
+  def create_db_specific_indices
     # Database-specific uniqueness constraint for active step executions
     # Ensures only one active (scheduled/in_progress) step per workflow
     adapter = connection.adapter_name.downcase

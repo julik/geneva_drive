@@ -17,6 +17,7 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
 
       # Current position in workflow
       t.string :current_step_name
+      t.string :next_step_name
 
       # Multiple workflows of same type for same hero
       t.boolean :allow_multiple, default: false, null: false
@@ -31,6 +32,12 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
     # Polymorphic index
     add_index :geneva_drive_workflows, [:hero_type, :hero_id]
 
+    reversible do |direction|
+      direction.up { create_db_specific_indices }
+    end
+  end
+
+  def create_db_specific_indices
     # Database-specific uniqueness constraint for ongoing workflows
     # Ensures only one ongoing workflow per (type, hero) unless allow_multiple is true
     adapter = connection.adapter_name.downcase

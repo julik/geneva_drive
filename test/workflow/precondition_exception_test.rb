@@ -167,7 +167,7 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     assert_equal "skipped", step_execution.state
     assert_equal "ready", workflow.state
     assert_nil Thread.current[:step_executed]
-    assert_equal "next_step", workflow.current_step_name
+    assert_equal "next_step", workflow.next_step_name
   end
 
   # Tests for skip_if exception handling
@@ -246,7 +246,7 @@ class PreconditionExceptionTest < ActiveSupport::TestCase
     assert_equal "skipped", step_execution.state
     assert_equal "ready", workflow.state
     assert_nil Thread.current[:step_executed]
-    assert_equal "next_step", workflow.current_step_name
+    assert_equal "next_step", workflow.next_step_name
   end
 
   # Test that step is not executed when precondition raises

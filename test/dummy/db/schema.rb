@@ -45,6 +45,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000002) do
     t.string "current_step_name"
     t.bigint "hero_id", null: false
     t.string "hero_type", null: false
+    t.string "next_step_name"
     t.datetime "started_at"
     t.string "state", default: "ready", null: false
     t.datetime "transitioned_at"

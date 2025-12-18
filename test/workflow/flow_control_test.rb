@@ -104,7 +104,7 @@ class FlowControlTest < ActiveSupport::TestCase
       state: "scheduled",
       scheduled_for: Time.current
     )
-    workflow.update!(current_step_name: "skip_step")
+    workflow.update!(next_step_name: "skip_step")
 
     perform_next_step(workflow)
 
@@ -122,7 +122,7 @@ class FlowControlTest < ActiveSupport::TestCase
       state: "scheduled",
       scheduled_for: Time.current
     )
-    workflow.update!(current_step_name: "cancel_step")
+    workflow.update!(next_step_name: "cancel_step")
 
     perform_next_step(workflow)
 
@@ -140,7 +140,7 @@ class FlowControlTest < ActiveSupport::TestCase
     perform_next_step(workflow)
     assert Thread.current[:first_ran]
     assert_equal "ready", workflow.state
-    assert_equal "last_step", workflow.current_step_name
+    assert_equal "last_step", workflow.next_step_name
 
     # Execute last step (which calls skip!)
     perform_next_step(workflow)
@@ -225,13 +225,13 @@ class FlowControlTest < ActiveSupport::TestCase
 
   test "external skip! skips current step and schedules next" do
     workflow = SimpleWorkflow.create!(hero: @user)
-    assert_equal "step_one", workflow.current_step_name
+    assert_equal "step_one", workflow.next_step_name
 
     workflow.skip!
 
     workflow.reload
     assert_equal "ready", workflow.state
-    assert_equal "step_two", workflow.current_step_name
+    assert_equal "step_two", workflow.next_step_name
   end
 
   test "external skip! marks step execution as skipped" do
@@ -251,7 +251,7 @@ class FlowControlTest < ActiveSupport::TestCase
     # Execute first two steps
     perform_next_step(workflow)
     perform_next_step(workflow)
-    assert_equal "step_three", workflow.current_step_name
+    assert_equal "step_three", workflow.next_step_name
 
     workflow.skip!
 
@@ -294,13 +294,13 @@ class FlowControlTest < ActiveSupport::TestCase
 
   test "external skip! can skip multiple steps in sequence" do
     workflow = SimpleWorkflow.create!(hero: @user)
-    assert_equal "step_one", workflow.current_step_name
+    assert_equal "step_one", workflow.next_step_name
 
     workflow.skip!
-    assert_equal "step_two", workflow.reload.current_step_name
+    assert_equal "step_two", workflow.reload.next_step_name
 
     workflow.skip!
-    assert_equal "step_three", workflow.reload.current_step_name
+    assert_equal "step_three", workflow.reload.next_step_name
 
     workflow.skip!
     assert_equal "finished", workflow.reload.state
@@ -329,12 +329,12 @@ class FlowControlTest < ActiveSupport::TestCase
       state: "scheduled",
       scheduled_for: Time.current
     )
-    workflow.update!(current_step_name: "skip_step")
+    workflow.update!(next_step_name: "skip_step")
 
     perform_next_step(workflow)
 
     assert_equal "ready", workflow.state
     # Should have moved to next step
-    assert_equal "cancel_step", workflow.current_step_name
+    assert_equal "cancel_step", workflow.next_step_name
   end
 end

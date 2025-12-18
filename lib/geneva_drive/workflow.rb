@@ -214,44 +214,53 @@ module GenevaDrive
 
     # Schedules the next step in the workflow.
     #
+    # Uses current_step_name as reference if executing, otherwise next_step_name.
+    #
     # @param wait [ActiveSupport::Duration, nil] override wait time
     # @return [StepExecution, nil] the created step execution or nil if finished
     def schedule_next_step!(wait: nil)
-      next_step = steps.next_after(current_step_name)
+      # Use current_step_name during execution, next_step_name otherwise
+      reference_step = current_step_name || next_step_name
+      next_step = steps.next_after(reference_step)
       unless next_step
-        logger.info("No more steps after #{current_step_name.inspect}, finishing workflow")
+        logger.info("No more steps after #{reference_step.inspect}, finishing workflow")
         return finish_workflow!
       end
 
-      logger.info("Scheduling next step #{next_step.name.inspect} after #{current_step_name.inspect}")
+      logger.info("Scheduling next step #{next_step.name.inspect} after #{reference_step.inspect}")
       create_step_execution(next_step, wait: wait || next_step.wait)
     end
 
     # Reschedules the current step for another attempt.
     #
+    # Uses current_step_name if executing, otherwise next_step_name.
+    #
     # @param wait [ActiveSupport::Duration, nil] delay before retry
     # @return [StepExecution] the created step execution
     def reschedule_current_step!(wait: nil)
-      step_def = steps.named(current_step_name)
+      # Use current_step_name during execution, next_step_name otherwise
+      step_name = current_step_name || next_step_name
+      step_def = steps.named(step_name)
       wait_msg = wait ? " with wait #{wait.inspect}" : ""
-      logger.info("Rescheduling current step #{current_step_name.inspect}#{wait_msg}")
+      logger.info("Rescheduling step #{step_name.inspect}#{wait_msg}")
       create_step_execution(step_def, wait: wait)
     end
 
     # Resumes a paused workflow.
-    # Creates a new step execution for the current step.
+    # Creates a new step execution for the next step.
     #
     # @return [StepExecution] the created step execution
     # @raise [InvalidStateError] if workflow is not paused
     def resume!
       raise InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
-      logger.info("Resuming paused workflow, will reschedule step #{current_step_name.inspect}")
+      logger.info("Resuming paused workflow, will schedule step #{next_step_name.inspect}")
       with_lock do
         update!(state: "ready", transitioned_at: nil)
       end
 
-      reschedule_current_step!
+      step_def = steps.named(next_step_name)
+      create_step_execution(step_def)
     end
 
     # Returns the current active step execution, if any.
@@ -353,7 +362,8 @@ module GenevaDrive
           scheduled_for: scheduled_for
         )
 
-        update!(current_step_name: step_definition.name)
+        # next_step_name points to the step that's scheduled to run next
+        update!(next_step_name: step_definition.name)
 
         # Capture values for the after_commit callback
         job_options = self.class._step_job_options.dup
@@ -388,7 +398,7 @@ module GenevaDrive
     # @return [nil]
     def finish_workflow!
       logger.info("Workflow finished successfully")
-      transition_to!("finished")
+      transition_to!("finished", current_step_name: nil, next_step_name: nil)
       nil
     end
 

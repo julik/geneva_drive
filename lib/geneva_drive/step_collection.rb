@@ -38,7 +38,7 @@ module GenevaDrive
     #   @param index [Integer] the index
     #   @return [StepDefinition, nil] the step or nil
 
-    def_delegators :ordered_steps, :each, :size, :first, :last, :empty?, :[]
+    def_delegators :ordered_steps, :each, :size, :first, :last, :empty?, :[], :index, :find_index
     alias_method :length, :size
 
     # Creates a new step collection from an array of step definitions.

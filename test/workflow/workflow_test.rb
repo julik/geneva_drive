@@ -133,7 +133,8 @@ class WorkflowTest < ActiveSupport::TestCase
     workflow = SimpleWorkflow.create!(hero: @user)
 
     assert_equal "ready", workflow.state
-    assert_equal "step_one", workflow.current_step_name
+    assert_nil workflow.current_step_name, "current_step_name should be nil until execution starts"
+    assert_equal "step_one", workflow.next_step_name
     assert_equal 1, workflow.step_executions.count
 
     step_execution = workflow.step_executions.first
@@ -184,11 +185,11 @@ class WorkflowTest < ActiveSupport::TestCase
     first_execution = workflow.step_executions.first
     assert first_execution.scheduled_for <= Time.current + 1.second
 
-    first_execution.mark_completed!
-    workflow.transition_to!("ready")
-    workflow.schedule_next_step!
+    # Simulate step execution completing
+    first_execution.execute!
+    workflow.reload
 
-    second_execution = workflow.step_executions.last
+    second_execution = workflow.step_executions.where(step_name: "delayed_step").first
     assert second_execution.scheduled_for > Time.current + 1.day
     assert second_execution.scheduled_for <= Time.current + 2.days + 1.second
   end
@@ -231,5 +232,62 @@ class WorkflowTest < ActiveSupport::TestCase
     assert_includes GenevaDrive::Workflow.ongoing, workflow1
     assert_not_includes GenevaDrive::Workflow.ongoing, workflow2
     assert_equal 2, GenevaDrive::Workflow.for_hero(@user).count
+  end
+
+  # Three-step workflow for next_step_name tests
+  class ThreeStepWorkflow < GenevaDrive::Workflow
+    step :first do
+    end
+
+    step :second do
+    end
+
+    step :third do
+    end
+  end
+
+  test "next_step_name is set on workflow creation" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    assert_nil workflow.current_step_name, "current_step_name should be nil until execution starts"
+    assert_equal "first", workflow.next_step_name
+  end
+
+  test "current_step_name and next_step_name are set during execution" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    # Start execution - this sets current_step_name
+    workflow.step_executions.first.execute!
+    workflow.reload
+
+    # After execution completes, current_step_name is cleared
+    assert_nil workflow.current_step_name
+    # next_step_name points to the next step that was scheduled
+    assert_equal "second", workflow.next_step_name
+  end
+
+  test "next_step_name is nil when last step is scheduled" do
+    workflow = SimpleWorkflow.create!(hero: @user)
+
+    # Execute first step - schedules second step
+    workflow.step_executions.first.execute!
+    workflow.reload
+
+    # After first step completes, next_step_name is "step_two" (what's scheduled)
+    assert_equal "step_two", workflow.next_step_name
+  end
+
+  test "next_step_name is cleared when workflow finishes" do
+    workflow = SimpleWorkflow.create!(hero: @user)
+
+    # Execute both steps
+    workflow.step_executions.first.execute!
+    workflow.reload
+    workflow.step_executions.where(step_name: "step_two").first.execute!
+    workflow.reload
+
+    assert_equal "finished", workflow.state
+    assert_nil workflow.current_step_name
+    assert_nil workflow.next_step_name
   end
 end

@@ -378,4 +378,23 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_nil BasicWorkflow.first_executed?
     assert_equal "completed", step_execution.state
   end
+
+  test "pauses workflow when step execution references non-existent step" do
+    workflow = BasicWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    # Manually change the step name to something that doesn't exist
+    step_execution.update_column(:step_name, "non_existent_step")
+
+    GenevaDrive::Executor.execute!(step_execution)
+
+    step_execution.reload
+    workflow.reload
+
+    assert_equal "failed", step_execution.state
+    assert_equal "failed", step_execution.outcome
+    assert_match(/non_existent_step/, step_execution.error_message)
+    assert_match(/not defined/, step_execution.error_message)
+    assert_equal "paused", workflow.state
+  end
 end

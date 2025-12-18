@@ -92,6 +92,16 @@ module GenevaDrive
           # Get step definition (needed for exception handling policy)
           step_def = step_execution.step_definition
 
+          # Check step definition exists
+          unless step_def
+            step_execution.update!(
+              error_message: "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
+            )
+            transition_step!(step_execution, "failed", outcome: "failed")
+            transition_workflow!(workflow, "paused")
+            return nil
+          end
+
           # Check blanket cancel_if conditions (with exception handling)
           begin
             if should_cancel_workflow?(workflow)

@@ -17,3 +17,7 @@ gem "standard", "~> 1.0", require: false
 
 # Start debugger with binding.b [https://github.com/ruby/debug]
 gem "debug", ">= 1.0.0"
+
+# Testing with various databases
+gem "sqlite3"
+gem "mysql2"

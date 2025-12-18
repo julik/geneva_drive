@@ -38,12 +38,19 @@ module GenevaDrive
   # These methods use throw/catch to interrupt step execution and signal
   # the executor how to proceed.
   #
+  # When called outside of a step execution context (e.g., from a controller),
+  # pause! and skip! will directly modify the workflow state.
+  #
   # @example Using flow control in a step
   #   step :process_payment do
   #     result = PaymentGateway.charge(hero)
   #     cancel! if result.declined?
   #     skip! if result.already_processed?
   #   end
+  #
+  # @example External flow control
+  #   workflow = MyWorkflow.find(id)
+  #   workflow.pause!  # Pauses workflow from outside a step
   module FlowControl
     # Cancels the workflow immediately.
     # The current step is marked as canceled and the workflow transitions to 'canceled' state.
@@ -55,13 +62,20 @@ module GenevaDrive
     end
 
     # Pauses the workflow for manual intervention.
-    # The current step is marked as canceled and the workflow transitions to 'paused' state.
+    #
+    # When called inside a step (workflow state is 'performing'): interrupts execution via throw/catch.
+    # When called outside a step (workflow state is 'ready'): directly pauses the workflow.
+    #
     # Can be resumed later with {Workflow#resume!}.
     #
     # @return [void]
-    # @raise [UncaughtThrowError] if called outside of step execution context
+    # @raise [InvalidStateError] if called on a non-ready/non-performing workflow
     def pause!
-      throw :flow_control, FlowControlSignal.new(:pause)
+      if state == "performing"
+        throw :flow_control, FlowControlSignal.new(:pause)
+      else
+        external_pause!
+      end
     end
 
     # Reschedules the current step for another attempt.
@@ -78,12 +92,18 @@ module GenevaDrive
     end
 
     # Skips the current step and proceeds to the next one.
-    # The current step is marked as skipped.
+    #
+    # When called inside a step (workflow state is 'performing'): interrupts execution via throw/catch.
+    # When called outside a step (workflow state is 'ready'): directly skips current step.
     #
     # @return [void]
-    # @raise [UncaughtThrowError] if called outside of step execution context
+    # @raise [InvalidStateError] if called on a non-ready/non-performing workflow
     def skip!
-      throw :flow_control, FlowControlSignal.new(:skip)
+      if state == "performing"
+        throw :flow_control, FlowControlSignal.new(:skip)
+      else
+        external_skip!
+      end
     end
 
     # Marks the workflow as finished immediately.
@@ -93,6 +113,42 @@ module GenevaDrive
     # @raise [UncaughtThrowError] if called outside of step execution context
     def finished!
       throw :flow_control, FlowControlSignal.new(:finished)
+    end
+
+    private
+
+    # Pauses the workflow from outside a step execution.
+    # Cancels any pending step execution and transitions workflow to paused.
+    #
+    # @raise [InvalidStateError] if workflow is not in 'ready' state
+    # @return [void]
+    def external_pause!
+      raise InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
+
+      with_lock do
+        reload
+        raise InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
+
+        current_execution&.mark_canceled!(outcome: "workflow_paused")
+        update!(state: "paused", transitioned_at: Time.current)
+      end
+    end
+
+    # Skips the current step from outside a step execution.
+    # Marks step as skipped and schedules next step (or finishes if last).
+    #
+    # @raise [InvalidStateError] if workflow is not in 'ready' state
+    # @return [void]
+    def external_skip!
+      raise InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
+
+      with_lock do
+        reload
+        raise InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
+
+        current_execution&.mark_skipped!(outcome: "skipped")
+        schedule_next_step!
+      end
     end
   end
 end

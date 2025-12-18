@@ -30,6 +30,7 @@ module GenevaDrive
       canceled
       failed
       recovered
+      workflow_paused
     ].freeze
 
     # Associations

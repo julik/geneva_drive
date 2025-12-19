@@ -23,7 +23,7 @@ class GenevaDrive::PerformStepJob < ActiveJob::Base
     step_execution = GenevaDrive::StepExecution.find_by(id: step_execution_id)
 
     unless step_execution
-      Rails.logger.warn("[GenevaDrive::PerformStepJob] StepExecution #{step_execution_id} not found, skipping")
+      logger.warn("StepExecution #{step_execution_id} not found, skipping")
       return
     end
 

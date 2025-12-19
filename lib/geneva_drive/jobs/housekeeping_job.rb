@@ -40,7 +40,7 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
     cleanup_completed_workflows!(results)
     recover_stuck_step_executions!(results)
 
-    Rails.logger.info("[GenevaDrive::HousekeepingJob] Completed: #{results}")
+    logger.info("Completed: #{results}")
     results
   end
 
@@ -81,8 +81,8 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
     results[:workflows_cleaned_up] = workflow_count
     results[:step_executions_cleaned_up] = step_exec_count
 
-    Rails.logger.info(
-      "[GenevaDrive::HousekeepingJob] Cleaned up #{workflow_count} workflows " \
+    logger.info(
+      "Cleaned up #{workflow_count} workflows " \
       "and #{step_exec_count} step executions older than #{cutoff_time}"
     )
   end
@@ -117,10 +117,7 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
       recover_step_execution!(step_execution)
       results[:stuck_in_progress_recovered] += 1
     rescue => e
-      Rails.logger.error(
-        "[GenevaDrive::HousekeepingJob] Failed to recover step execution " \
-        "#{step_execution.id}: #{e.message}"
-      )
+      logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
       Rails.error.report(e)
     end
   end
@@ -143,10 +140,7 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
       recover_step_execution!(step_execution)
       results[:stuck_scheduled_recovered] += 1
     rescue => e
-      Rails.logger.error(
-        "[GenevaDrive::HousekeepingJob] Failed to recover step execution " \
-        "#{step_execution.id}: #{e.message}"
-      )
+      logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
       Rails.error.report(e)
     end
   end
@@ -168,10 +162,7 @@ class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
       raise ArgumentError, "Unknown stuck_recovery_action: #{action}"
     end
 
-    Rails.logger.info(
-      "[GenevaDrive::HousekeepingJob] Recovered step execution #{step_execution.id} " \
-      "with action: #{action}"
-    )
+    logger.info("Recovered step execution #{step_execution.id} with action: #{action}")
   end
 
   # Reattempts a stuck step execution by marking it as completed and scheduling a retry.

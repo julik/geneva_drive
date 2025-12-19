@@ -15,7 +15,7 @@ module GenevaDrive
 
       source_root File.expand_path("templates", __dir__)
 
-      desc "Creates GenevaDrive migrations and initializer"
+      desc "Creates GenevaDrive migrations and initializer. If already installed, any missing migrations will be added to perform an upgrade."
 
       # Creates the migration files for workflows and step executions.
       #
@@ -29,6 +29,11 @@ module GenevaDrive
         migration_template(
           "create_step_executions_migration.rb",
           "db/migrate/create_geneva_drive_step_executions.rb"
+        )
+
+        migration_template(
+          "add_finished_at_to_step_executions.rb",
+          "db/migrate/add_finished_at_to_geneva_drive_step_executions.rb"
         )
       end
 

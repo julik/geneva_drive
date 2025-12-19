@@ -143,6 +143,7 @@ module GenevaDrive::Executor
           step_execution.update!(
             state: "canceled",
             canceled_at: Time.current,
+            finished_at: Time.current,
             outcome: "canceled"
           )
           next nil
@@ -343,12 +344,16 @@ module GenevaDrive::Executor
         attrs[:started_at] = Time.current
       when "completed"
         attrs[:completed_at] = Time.current
+        attrs[:finished_at] = Time.current
       when "failed"
         attrs[:failed_at] = Time.current
+        attrs[:finished_at] = Time.current
       when "skipped"
         attrs[:skipped_at] = Time.current
+        attrs[:finished_at] = Time.current
       when "canceled"
         attrs[:canceled_at] = Time.current
+        attrs[:finished_at] = Time.current
       end
 
       step_execution.update!(attrs)

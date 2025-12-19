@@ -423,4 +423,61 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_match(/non_existent_step/, step_execution.error_message)
     assert_equal "paused", workflow.state
   end
+
+  test "sets finished_at when step completes successfully" do
+    BasicWorkflow.reset_tracking!
+    workflow = BasicWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution)
+    step_execution.reload
+
+    assert_equal "completed", step_execution.state
+    assert_not_nil step_execution.finished_at
+    assert_not_nil step_execution.completed_at
+    assert_in_delta step_execution.completed_at.to_f, step_execution.finished_at.to_f, 0.001
+  end
+
+  test "sets finished_at when step fails" do
+    workflow = ExceptionHandlingWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    assert_raises(PauseTestError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    step_execution.reload
+
+    assert_equal "failed", step_execution.state
+    assert_not_nil step_execution.finished_at
+    assert_not_nil step_execution.failed_at
+    assert_in_delta step_execution.failed_at.to_f, step_execution.finished_at.to_f, 0.001
+  end
+
+  test "sets finished_at when step is skipped" do
+    user = create_user(name: "Skip", email: "skip@example.com")
+    workflow = SkipIfWorkflow.create!(hero: user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution)
+    step_execution.reload
+
+    assert_equal "skipped", step_execution.state
+    assert_not_nil step_execution.finished_at
+    assert_not_nil step_execution.skipped_at
+    assert_in_delta step_execution.skipped_at.to_f, step_execution.finished_at.to_f, 0.001
+  end
+
+  test "sets finished_at when step is canceled" do
+    workflow = FlowControlWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution)
+    step_execution.reload
+
+    assert_equal "canceled", step_execution.state
+    assert_not_nil step_execution.finished_at
+    assert_not_nil step_execution.canceled_at
+    assert_in_delta step_execution.canceled_at.to_f, step_execution.finished_at.to_f, 0.001
+  end
 end

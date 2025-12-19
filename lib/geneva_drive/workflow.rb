@@ -408,8 +408,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     @tagged_logger ||= begin
       tagged_logger = ActiveSupport::TaggedLogging.new(super)
 
-      # Tag log entries with the workflow, including hero info if present
-      tag_parts = [self.class.name, " id=", to_param, " current_step=", current_step_name]
+      # Tag log entries with the workflow, including hero info if present.
+      # Step name is logged separately via the StepExecution logger.
+      tag_parts = [self.class.name, " id=", to_param]
       if hero_id.present?
         tag_parts.concat([" hero_type=", hero_type, " hero_id=", hero_id])
       end

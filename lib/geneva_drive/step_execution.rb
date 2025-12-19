@@ -151,7 +151,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   def logger
     @logger ||= begin
       workflow_tagged_logger = workflow.logger
-      workflow_tagged_logger.tagged("execution=#{id} step_name=#{step_name}")
+      workflow_tagged_logger.tagged("execution_id=#{id} step_name=#{step_name}")
     end
   end
 end

@@ -1,10 +1,10 @@
 # GenevaDrive Manual Outline
 
-## 1. Introduction
+## Introduction
 
-Brief statement of what GenevaDrive solves: durable, multi-step workflows in Rails. A paragraph about the fact that `async perfrormFunc` as "durable function" is a failed concept because the graph of steps and the code of the step should live in separate universes. Geneva drive delivers on that architecture.
+Brief statement of what GenevaDrive solves: durable, multi-step workflows in Rails. A paragraph about the fact that `async performFunc` as "durable function" is a failed concept because the graph of steps and the code of the step should live in separate universes. GenevaDrive delivers on that architecture.
 
-### 1.1 The Problem with Long-Running Processes
+### The Problem with Long-Running Processes
 
 - Web requests are ephemeral
 - Background jobs lack state continuity
@@ -12,7 +12,7 @@ Brief statement of what GenevaDrive solves: durable, multi-step workflows in Rai
 - Idempotency is hard to get right
 - ActiveJob does not provide a stable ID - retried ActiveJobs can create duplicate IDs even though jobs are distinct
 
-### 1.2 What GenevaDrive Provides
+### What GenevaDrive Provides
 
 Bullet list of guarantees:
 - One execution at a time per workflow
@@ -22,11 +22,11 @@ Bullet list of guarantees:
 
 ---
 
-## 2. Core Concepts
+## Core Concepts
 
-### 2.1 Workflows
+### Workflows
 
-A Workflow is an ActiveRecord model representing a durable process.
+A Workflow is an ActiveRecord model representing a durable process. For a complete example showing workflows in action, see the [User Onboarding Workflow](#user-onboarding-workflow) in the appendix.
 
 **Example: `SubscriptionRenewalWorkflow` - basic workflow with three steps**
 ```ruby
@@ -37,7 +37,7 @@ class SubscriptionRenewalWorkflow < GenevaDrive::Workflow
 end
 ```
 
-### 2.2 Steps
+### Steps
 
 Steps are units of work executed sequentially.
 
@@ -48,7 +48,7 @@ step :analyze_content, wait: 5.minutes do ...
 step :generate_summary, wait: 10.minutes do ...
 ```
 
-### 2.3 The Hero
+### The Hero
 
 The hero is the record the workflow operates on.
 
@@ -64,7 +64,7 @@ step :process do
 end
 ```
 
-### 2.4 Step Executions
+### Step Executions
 
 Step executions are the idempotency mechanism. Each attempt to run a step creates a StepExecution record.
 
@@ -83,9 +83,9 @@ end
 
 ---
 
-## 3. Defining Steps
+## Defining Steps
 
-### 3.1 Named Steps
+### Named Steps
 
 **Example: `AccountVerificationWorkflow` - explicitly named steps**
 ```ruby
@@ -94,7 +94,7 @@ step :verify_phone do ...
 step :verify_identity do ...
 ```
 
-### 3.2 Anonymous Steps
+### Anonymous Steps
 
 When step names don't matter (polling, retries).
 
@@ -105,7 +105,7 @@ step(wait: 1.minute) { check_status! }
 step(wait: 5.minutes) { check_status! }
 ```
 
-### 3.3 Instance Methods as Steps
+### Instance Methods as Steps
 
 **Example: `DataExportWorkflow` - using `step def` pattern**
 ```ruby
@@ -118,7 +118,7 @@ step def write_to_storage
 end
 ```
 
-### 3.4 Step Ordering with `before_step:` and `after_step:`
+### Step Ordering with `before_step:` and `after_step:`
 
 **Example: `ComplianceWorkflow` - inserting steps relative to others**
 ```ruby
@@ -129,15 +129,15 @@ step :audit_check, before_step: :submit_report do ...
 
 ---
 
-## 4. Flow Control
+## Flow Control
 
-### 4.1 Overview
+### Overview
 
 The five flow control methods: `cancel!`, `pause!`, `reattempt!`, `skip!`, `finished!`
 
-Explain throw/catch mechanism briefly.
+Explain throw/catch mechanism briefly. For a complete example showing flow control in a realistic scenario, see the [Payment Processing Workflow](#payment-processing-workflow) in the appendix.
 
-### 4.2 Canceling a Workflow
+### Canceling a Workflow
 
 **Example: `TrialConversionWorkflow` - cancel when user converts early**
 ```ruby
@@ -147,7 +147,7 @@ step :send_trial_reminder, wait: 7.days do
 end
 ```
 
-### 4.3 Pausing for Manual Intervention
+### Pausing for Manual Intervention
 
 **Example: `FraudReviewWorkflow` - pause for human review**
 ```ruby
@@ -161,7 +161,7 @@ end
 
 Explain: resuming with `workflow.resume!`
 
-### 4.4 Reattempting Steps
+### Reattempting Steps
 
 **Example: `ExternalApiWorkflow` - retry with backoff**
 ```ruby
@@ -171,7 +171,7 @@ step :sync_to_crm do
 end
 ```
 
-### 4.5 Skipping Steps
+### Skipping Steps
 
 **Example: `OnboardingWorkflow` - skip optional steps**
 ```ruby
@@ -181,7 +181,7 @@ step :request_phone_verification do
 end
 ```
 
-### 4.6 Early Completion
+### Early Completion
 
 **Example: `OrderFulfillmentWorkflow` - finish early when goal achieved**
 ```ruby
@@ -196,9 +196,9 @@ end
 
 ---
 
-## 5. Workflow States
+## Workflow States
 
-### 5.1 State Machine Diagram
+### State Machine Diagram
 
 ```mermaid
 stateDiagram-v2
@@ -211,7 +211,7 @@ stateDiagram-v2
     paused --> ready: resume!
 ```
 
-### 5.2 Step Execution States
+### Step Execution States
 
 Separate state machine for step executions:
 - scheduled
@@ -223,9 +223,11 @@ Separate state machine for step executions:
 
 ---
 
-## 6. Conditional Execution
+## Conditional Execution
 
-### 6.1 Skipping Steps with `skip_if:`
+### Skipping Steps with `skip_if:`
+
+For a complete example showing conditional steps in context, see the [User Onboarding Workflow](#user-onboarding-workflow) in the appendix.
 
 **Example: `NotificationWorkflow` - skip based on preferences**
 ```ruby
@@ -238,7 +240,7 @@ step :send_sms, skip_if: :sms_disabled? do
 end
 ```
 
-### 6.2 Blanket Cancellation with `cancel_if`
+### Blanket Cancellation with `cancel_if`
 
 **Example: `EngagementWorkflow` - cancel if hero becomes inactive**
 ```ruby
@@ -253,9 +255,9 @@ end
 
 ---
 
-## 7. The Asynchronous Execution Model
+## The Asynchronous Execution Model
 
-### 7.1 Key Assumptions
+### Key Assumptions
 
 Bullet list:
 - Every step runs on a different machine/process/thread
@@ -263,7 +265,7 @@ Bullet list:
 - The workflow is always loaded fresh from database
 - Steps may be separated by seconds or months
 
-### 7.2 No Shared State Between Steps
+### No Shared State Between Steps
 
 > [!WARNING] callout about instance variables not persisting
 
@@ -282,13 +284,13 @@ end
 
 ---
 
-## 8. Exception Handling
+## Exception Handling
 
-### 8.1 Default Behavior
+### Default Behavior
 
 By default, unhandled exceptions pause the workflow.
 
-### 8.2 Configuring Exception Policy
+### Configuring Exception Policy
 
 **Example: `ResilientApiWorkflow` - reattempt on exception**
 ```ruby
@@ -297,7 +299,9 @@ step :call_external_api, on_exception: :reattempt! do
 end
 ```
 
-### 8.3 Manual Exception Handling
+### Manual Exception Handling
+
+For a complete example showing granular exception handling, see the [Payment Processing Workflow](#payment-processing-workflow) in the appendix.
 
 **Example: `PaymentWorkflow` - granular error handling**
 ```ruby
@@ -313,7 +317,7 @@ rescue PaymentGateway::ServiceDown
 end
 ```
 
-### 8.4 Recovering Paused Workflows
+### Recovering Paused Workflows
 
 **Example: Console commands to find and resume**
 ```ruby
@@ -326,9 +330,9 @@ workflow.resume!
 
 ---
 
-## 9. Working with Heroes
+## Working with Heroes
 
-### 9.1 Choosing the Right Hero
+### Choosing the Right Hero
 
 Guidance: make the hero the business object being processed, not always the user.
 
@@ -338,7 +342,7 @@ invoice = user.invoices.create!(amount: 100)
 InvoiceWorkflow.create!(hero: invoice)
 ```
 
-### 9.2 Workflows Without Heroes
+### Workflows Without Heroes
 
 **Example: `SystemMaintenanceWorkflow` - no hero needed**
 ```ruby
@@ -353,15 +357,15 @@ end
 SystemMaintenanceWorkflow.create!
 ```
 
-### 9.3 When Heroes Disappear
+### When Heroes Disappear
 
-What happens if the hero is deleted mid-workflow. Default: workflow cancels.
+What happens if the hero is deleted mid-workflow. Default: workflow cancels. For an example of a workflow that handles data deletion carefully, see the [Data Retention Workflow](#data-retention-workflow) in the appendix.
 
 ---
 
-## 10. Installation and Setup
+## Installation and Setup
 
-### 10.1 Adding the Gem
+### Adding the Gem
 
 ```bash
 bundle add geneva_drive
@@ -369,13 +373,13 @@ bin/rails generate geneva_drive:install
 bin/rails db:migrate
 ```
 
-### 10.2 Database Tables
+### Database Tables
 
 Explain the two-table design:
 - `geneva_drive_workflows` - the workflow records
 - `geneva_drive_step_executions` - the idempotency keys
 
-### 10.3 UUID Primary Keys
+### UUID Primary Keys
 
 ```bash
 bin/rails generate geneva_drive:install --uuid
@@ -383,13 +387,13 @@ bin/rails generate geneva_drive:install --uuid
 
 ---
 
-## 11. ActiveJob Integration
+## ActiveJob Integration
 
-### 11.1 How Steps Are Scheduled
+### How Steps Are Scheduled
 
 Explain: each step execution enqueues a `PerformStepJob`.
 
-### 11.2 Recommended Queue Adapters
+### Recommended Queue Adapters
 
 - Solid Queue
 - GoodJob
@@ -397,7 +401,7 @@ Explain: each step execution enqueues a `PerformStepJob`.
 
 Explain co-committing and why it matters.
 
-### 11.3 Custom Job Options
+### Custom Job Options
 
 **Example: `HighPriorityWorkflow` - custom queue and priority**
 ```ruby
@@ -410,15 +414,15 @@ end
 
 ---
 
-## 12. Housekeeping
+## Housekeeping
 
-### 12.1 The Housekeeping Job
+### The Housekeeping Job
 
 What it does:
 - Cleans up old completed workflows
 - Recovers stuck step executions
 
-### 12.2 Configuration
+### Configuration
 
 **Example: Configure cleanup and stuck thresholds**
 ```ruby
@@ -427,7 +431,7 @@ GenevaDrive.stuck_in_progress_threshold = 1.hour
 GenevaDrive.stuck_scheduled_threshold = 1.hour
 ```
 
-### 12.3 Running Housekeeping
+### Running Housekeeping
 
 ```ruby
 GenevaDrive::HousekeepingJob.perform_later
@@ -435,15 +439,15 @@ GenevaDrive::HousekeepingJob.perform_later
 
 ---
 
-## 13. Testing
+## Testing
 
-### 13.1 Test Helpers
+### Test Helpers
 
 ```ruby
 include GenevaDrive::TestHelpers
 ```
 
-### 13.2 Running Workflows Synchronously
+### Running Workflows Synchronously
 
 **Example: Testing a complete workflow**
 ```ruby
@@ -458,7 +462,7 @@ test "subscription workflow sends emails" do
 end
 ```
 
-### 13.3 Testing Individual Steps
+### Testing Individual Steps
 
 **Example: Testing a single step in isolation**
 ```ruby
@@ -475,13 +479,13 @@ end
 
 ---
 
-## 14. Observability
+## Observability
 
-### 14.1 Logging
+### Logging
 
 Explain tagged logging: workflow class, id, hero, step name.
 
-### 14.2 ActiveSupport Instrumentation
+### ActiveSupport Instrumentation
 
 Events emitted:
 - `step.geneva_drive`
@@ -497,25 +501,38 @@ end
 
 ---
 
-## Appendix A: Complete Example Workflows
+## Appendix
 
-### A.1 User Onboarding Workflow
+### Complete Example Workflows
 
-Full example with multiple steps, waits, conditions.
+#### User Onboarding Workflow
 
-### A.2 Payment Processing Workflow
+Full example with multiple steps, waits, conditions. Demonstrates:
+- Named steps with wait times
+- `skip_if:` for optional steps
+- `cancel_if` blanket conditions
+- Realistic onboarding scenario
 
-Full example with external API, error handling, retries.
+#### Payment Processing Workflow
 
-### A.3 Data Retention Workflow
+Full example with external API, error handling, retries. Demonstrates:
+- Manual exception handling with rescue
+- `reattempt!` with dynamic wait times
+- `pause!` for manual intervention
+- `cancel!` for unrecoverable errors
+- Polling pattern with `finished!`
 
-Full example with GDPR-style erasure, multiple phases.
+#### Data Retention Workflow
 
----
+Full example with GDPR-style erasure, multiple phases. Demonstrates:
+- Workflow where hero is deleted during execution
+- `may_proceed_without_hero!`
+- Sequential dependencies between steps
+- Archival before deletion pattern
 
-## Appendix B: Quick Reference
+### Quick Reference
 
-### Flow Control Methods
+#### Flow Control Methods
 
 | Method | Effect |
 |--------|--------|
@@ -525,7 +542,7 @@ Full example with GDPR-style erasure, multiple phases.
 | `skip!` | Skip current step, proceed to next |
 | `finished!` | Complete workflow early |
 
-### Workflow States
+#### Workflow States
 
 | State | Meaning |
 |-------|---------|
@@ -535,7 +552,7 @@ Full example with GDPR-style erasure, multiple phases.
 | `canceled` | Workflow was canceled |
 | `paused` | Awaiting manual intervention |
 
-### Step Execution States
+#### Step Execution States
 
 | State | Meaning |
 |-------|---------|

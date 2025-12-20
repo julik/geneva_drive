@@ -105,6 +105,56 @@ step(wait: 1.minute) { check_status! }
 step(wait: 5.minutes) { check_status! }
 ```
 
+### Polling with Programmatic Steps
+
+Ruby executes at class load time, so you can use loops to generate steps. This is useful for polling patterns where you want repeating or staggered intervals.
+
+**Example: `WebhookDeliveryWorkflow` - staggered retry schedule**
+```ruby
+class WebhookDeliveryWorkflow < GenevaDrive::Workflow
+  # Immediate first attempt
+  step { attempt_delivery! }
+
+  # Retry every 30 seconds for 2 minutes
+  4.times do
+    step(wait: 30.seconds) { attempt_delivery! }
+  end
+
+  # Then every 5 minutes for 30 minutes
+  6.times do
+    step(wait: 5.minutes) { attempt_delivery! }
+  end
+
+  # Then hourly for 6 hours
+  6.times do
+    step(wait: 1.hour) { attempt_delivery! }
+  end
+
+  # Final step: mark as failed
+  step :mark_undeliverable do
+    hero.update!(delivery_status: :failed)
+    WebhookFailureNotifier.notify(hero)
+  end
+
+  private
+
+  def attempt_delivery!
+    response = HttpClient.post(hero.endpoint_url, hero.payload)
+    if response.success?
+      hero.update!(delivery_status: :delivered, delivered_at: Time.current)
+      finished!
+    end
+    # Otherwise, fall through to next step
+  end
+end
+```
+
+Explain:
+- Steps are generated at class load time
+- The loop bodies execute once when Ruby loads the class
+- Each iteration adds a new step to the workflow definition
+- Use `finished!` to exit early when the goal is achieved
+
 ### Instance Methods as Steps
 
 **Example: `DataExportWorkflow` - using `step def` pattern**

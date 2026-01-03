@@ -1,13 +1,7 @@
 #!/usr/bin/env ruby
 # frozen_string_literal: true
 
-# Converts a Markdown file to a styled HTML document with syntax highlighting.
-# Uses Redcarpet for GFM parsing and Prism.js for client-side syntax highlighting.
-#
-# Usage:
-#   bin/md2html input.md              # outputs to input.html
-#   bin/md2html input.md output.html  # outputs to specified file
-
+require "optparse"
 require "bundler/inline"
 
 gemfile do
@@ -388,11 +382,34 @@ def convert_markdown_to_html(input_path, output_path = nil)
 end
 
 if __FILE__ == $0
+  options = {open: true}
+
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$0} [options] INPUT.md [OUTPUT.html]"
+    opts.separator ""
+    opts.separator "Converts a GitHub-Flavored Markdown file to styled HTML with:"
+    opts.separator "  - Prism.js syntax highlighting"
+    opts.separator "  - Mermaid.js diagram rendering"
+    opts.separator "  - Print-optimized CSS with page numbers"
+    opts.separator ""
+    opts.separator "If OUTPUT is not specified, uses INPUT filename with .html extension."
+    opts.separator ""
+    opts.separator "Options:"
+
+    opts.on("--no-open", "Don't open the result in the browser") do
+      options[:open] = false
+    end
+
+    opts.on("-h", "--help", "Show this help message") do
+      puts opts
+      exit
+    end
+  end
+
+  parser.parse!
+
   if ARGV.empty?
-    puts "Usage: #{$0} input.md [output.html]"
-    puts
-    puts "Converts a Markdown file to styled HTML with syntax highlighting."
-    puts "If output path is not specified, uses input filename with .html extension."
+    puts parser
     exit 1
   end
 
@@ -401,8 +418,8 @@ if __FILE__ == $0
 
   result_path = convert_markdown_to_html(input_path, output_path)
 
-  # Open in browser if on macOS
-  if RUBY_PLATFORM =~ /darwin/
+  # Open in browser if on macOS and not disabled
+  if options[:open] && RUBY_PLATFORM =~ /darwin/
     system("open", result_path)
   end
 end

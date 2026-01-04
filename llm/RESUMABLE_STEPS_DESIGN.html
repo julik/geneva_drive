@@ -1,0 +1,1325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Resumable Steps for GenevaDrive</title>
+
+  <!-- Prism.js for syntax highlighting -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+  <style>
+    :root {
+      --text-color: #24292e;
+      --bg-color: #ffffff;
+      --code-bg: #f6f8fa;
+      --border-color: #eaecef;
+      --link-color: #0366d6;
+      --heading-border: #eaecef;
+      --table-border: #dfe2e5;
+      --blockquote-color: #6a737d;
+      --blockquote-border: #dfe2e5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem;
+      color: var(--text-color);
+      background-color: var(--bg-color);
+    }
+
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+
+    h1 {
+      font-size: 2em;
+      border-bottom: 1px solid var(--heading-border);
+      padding-bottom: 0.3em;
+    }
+
+    h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid var(--heading-border);
+      padding-bottom: 0.3em;
+    }
+
+    h3 { font-size: 1.25em; }
+    h4 { font-size: 1em; }
+
+    /* Inline code */
+    code:not([class*="language-"]) {
+      background-color: rgba(27, 31, 35, 0.05);
+      border-radius: 3px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 85%;
+      padding: 0.2em 0.4em;
+    }
+
+    /* Code blocks */
+    pre {
+      background-color: var(--code-bg);
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.45;
+      overflow: auto;
+      padding: 16px;
+      margin: 1em 0;
+    }
+
+    pre code {
+      background-color: transparent;
+      padding: 0;
+      font-size: inherit;
+      border-radius: 0;
+    }
+
+    /* Override Prism background */
+    pre[class*="language-"],
+    code[class*="language-"] {
+      background: var(--code-bg);
+    }
+
+    /* Tables */
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+      overflow: auto;
+      display: block;
+    }
+
+    th, td {
+      border: 1px solid var(--table-border);
+      padding: 6px 13px;
+      text-align: left;
+    }
+
+    th {
+      background-color: var(--code-bg);
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) {
+      background-color: var(--code-bg);
+    }
+
+    /* Blockquotes */
+    blockquote {
+      border-left: 4px solid var(--blockquote-border);
+      color: var(--blockquote-color);
+      margin: 1em 0;
+      padding: 0 1em;
+    }
+
+    blockquote > :first-child {
+      margin-top: 0;
+    }
+
+    blockquote > :last-child {
+      margin-bottom: 0;
+    }
+
+    /* Horizontal rules */
+    hr {
+      border: 0;
+      border-top: 1px solid var(--border-color);
+      margin: 2em 0;
+    }
+
+    /* Lists */
+    ul, ol {
+      padding-left: 2em;
+      margin: 1em 0;
+    }
+
+    li + li {
+      margin-top: 0.25em;
+    }
+
+    li > ul,
+    li > ol {
+      margin: 0.25em 0;
+    }
+
+    /* Links */
+    a {
+      color: var(--link-color);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Emphasis */
+    strong {
+      font-weight: 600;
+    }
+
+    em {
+      font-style: italic;
+    }
+
+    /* Paragraphs */
+    p {
+      margin: 1em 0;
+    }
+
+    /* Images */
+    img {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Mermaid diagrams */
+    pre.mermaid {
+      background: transparent;
+      border: none;
+      text-align: center;
+      padding: 1em 0;
+    }
+
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Print footer element - not needed with @page margin boxes */
+    .print-footer {
+      display: none;
+    }
+
+    /* Print styles - using Chrome 131+ @page margin boxes */
+    @media print {
+      @page {
+        margin: 1.5cm;
+        margin-bottom: 2cm;
+
+        @bottom-center {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 9pt;
+          color: #666;
+        }
+
+        @bottom-right {
+          content: var(--print-date, "");
+          font-size: 9pt;
+          color: #666;
+        }
+      }
+
+      body {
+        max-width: none;
+        padding: 0;
+        font-size: 11pt;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        border: 1px solid #ddd;
+      }
+
+      pre code {
+        font-size: 9pt;
+      }
+
+      h1, h2, h3, h4 {
+        page-break-after: avoid;
+      }
+
+      pre, blockquote, table, figure {
+        page-break-inside: avoid;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: underline;
+      }
+    }
+  </style>
+</head>
+<body>
+<h1 id="resumable-steps-for-genevadrive">Resumable Steps for GenevaDrive</h1>
+
+<h2 id="executive-summary">Executive Summary</h2>
+
+<p>This document proposes adding a <code>resumable_step</code> DSL to GenevaDrive that allows steps to iterate over large collections with cursor-based resumption. The block receives an <strong>IterableStep object</strong> with an API compatible with Rails 8.1&#39;s <code>ActiveJob::Continuation::Step</code>, providing familiar semantics for cursor management and checkpointing.</p>
+
+<hr>
+
+<h2 id="1-background">1. Background</h2>
+
+<h3 id="1-1-prior-art">1.1 Prior Art</h3>
+
+<p>Two existing solutions inform this design:</p>
+
+<p><strong>Shopify&#39;s <a href="https://github.com/Shopify/job-iteration">job-iteration</a></strong>:</p>
+
+<ul>
+<li>Separates enumeration setup from iteration logic</li>
+<li>Enumerator yields <code>[object, cursor]</code> pairs</li>
+<li>Automatic checkpointing between iterations</li>
+</ul>
+
+<p><strong>Rails 8.1&#39;s <a href="https://github.com/rails/rails/pull/55127">ActiveJob::Continuable</a></strong>:</p>
+
+<ul>
+<li>Block receives a <code>step</code> object with <code>cursor</code>, <code>set!</code>, <code>advance!</code>, <code>checkpoint!</code></li>
+<li>User controls when to checkpoint</li>
+<li>Clean, explicit API</li>
+</ul>
+
+<h3 id="1-2-why-match-rails-8-1s-step-api">1.2 Why Match Rails 8.1&#39;s Step API?</h3>
+
+<p>We provide a <code>GenevaDrive::IterableStep</code> class that&#39;s <strong>API-compatible</strong> with <code>ActiveJob::Continuation::Step</code>:</p>
+
+<ol>
+<li><strong>Familiarity</strong> - Rails 8.1 users already know <code>set!</code>, <code>advance!</code>, <code>checkpoint!</code>, <code>cursor</code>, <code>resumed?</code></li>
+<li><strong>Documentation reuse</strong> - can reference Rails docs for core API semantics</li>
+<li><strong>Muscle memory</strong> - same patterns work in both contexts</li>
+<li><strong>No dependency</strong> - works with Rails 7.x+, doesn&#39;t require Rails 8.1</li>
+</ol>
+
+<p>We add GenevaDrive-specific extensions (like <code>iter.iterate_over</code>) on top of the compatible base.</p>
+
+<h3 id="1-3-why-not-fibers">1.3 Why Not Fibers?</h3>
+
+<p>While Ruby Fibers can suspend execution mid-block, they have critical limitations:</p>
+
+<ul>
+<li><strong>Fiber state cannot be serialized</strong>: Can&#39;t persist to database, can&#39;t survive process restart</li>
+<li><strong>Fibers are bound to threads</strong>: Can&#39;t resume in a different job worker process</li>
+</ul>
+
+<p>The cursor pattern is simpler: on resume, user code rebuilds iteration state using the stored cursor (e.g., <code>WHERE id &gt; cursor</code>).</p>
+
+<hr>
+
+<h2 id="2-design-principles">2. Design Principles</h2>
+
+<h3 id="genevadrive-constraints">GenevaDrive Constraints</h3>
+
+<ol>
+<li><strong>Step executions are idempotent</strong>: Pessimistic locking ensures no duplicate execution</li>
+<li><strong>One active execution per workflow</strong>: Unique constraint in database</li>
+<li><strong>Flow control via throw/catch</strong>: Existing mechanism for step interruption</li>
+<li><strong>State stored in database</strong>: Not in job serialization (unlike job-iteration)</li>
+<li><strong>Steps are the atomic unit</strong>: Resumable steps must remain steps, not become sub-workflows</li>
+</ol>
+
+<h3 id="new-constraints-for-resumable-steps">New Constraints for Resumable Steps</h3>
+
+<ol>
+<li><strong>Checkpoint persists cursor</strong>: Each <code>checkpoint!</code> call saves cursor to database</li>
+<li><strong>Track completed iterations</strong>: Enables detection of infinitely looping steps</li>
+<li><strong>Cursor preserved on reattempt</strong>: By default, <code>reattempt!</code> continues from cursor position</li>
+<li><strong>Optional rewind</strong>: Use <code>reattempt!(rewind: true)</code> to restart from beginning</li>
+</ol>
+
+<hr>
+
+<h2 id="3-the-iterablestep-object-api">3. The IterableStep Object API</h2>
+
+<h3 id="3-1-rails-8-1-compatible-core">3.1 Rails 8.1 Compatible Core</h3>
+
+<p>The block receives a <code>GenevaDrive::IterableStep</code> object with the same core API as <code>ActiveJob::Continuation::Step</code>:</p>
+
+<table><thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead><tbody>
+<tr>
+<td><code>iter.cursor</code></td>
+<td>Current cursor value (<code>nil</code> on first run)</td>
+</tr>
+<tr>
+<td><code>iter.resumed?</code></td>
+<td><code>true</code> if resuming from prior suspension</td>
+</tr>
+<tr>
+<td><code>iter.advanced?</code></td>
+<td><code>true</code> if cursor changed during this run</td>
+</tr>
+<tr>
+<td><code>iter.set!(value)</code></td>
+<td>Set cursor to any value, then checkpoint</td>
+</tr>
+<tr>
+<td><code>iter.advance!</code></td>
+<td>Increment integer cursor via <code>+ 1</code>, then checkpoint. <strong>Integers only.</strong></td>
+</tr>
+<tr>
+<td><code>iter.checkpoint!</code></td>
+<td>Persist cursor to DB, check for interruption</td>
+</tr>
+</tbody></table>
+
+<h3 id="3-2-cursor-types">3.2 Cursor Types</h3>
+
+<p>The cursor can be <strong>any JSON-serializable value</strong>:</p>
+
+<ul>
+<li><strong>Integer cursors</strong>: Use <code>set!</code> or <code>advance!</code></li>
+<li><strong>Opaque tokens</strong> (API pagination tokens, UUIDs): Use <code>set!</code> only</li>
+<li><strong>Dates/Times</strong>: Store as ISO8601 strings, parse on read</li>
+</ul>
+<pre><code class="language-ruby"># Integer cursor - advance! works
+iter.advance!  # cursor 42 becomes 43
+
+# Opaque token - use set! directly
+iter.set!(response.next_page_token)  # &quot;CiAKGjBpNDd2Nmp...&quot;
+
+# Date cursor - store as string, parse on read
+current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
+process_day(current)
+iter.set!((current + 1).iso8601)
+</code></pre>
+<p>The <code>advance!</code> method raises <code>ArgumentError</code> if the cursor is not an <code>Integer</code>.</p>
+
+<h3 id="3-3-genevadrive-extensions">3.3 GenevaDrive Extensions</h3>
+
+<table><thead>
+<tr>
+<th>Method</th>
+<th>Description</th>
+</tr>
+</thead><tbody>
+<tr>
+<td><code>iter.iterate_over(array)</code></td>
+<td>Iterate over stable array; uses index as cursor</td>
+</tr>
+<tr>
+<td><code>iter.iterate_over_records(relation, cursor: :id)</code></td>
+<td>Iterate over AR relation; uses <code>find_each</code>, column as cursor</td>
+</tr>
+<tr>
+<td><code>iter.iterate_over_record_batches(relation, batch_size:, cursor: :id)</code></td>
+<td>Iterate over batches; yields AR relation per batch</td>
+</tr>
+<tr>
+<td><code>iter.skip_to!(value, wait: nil)</code></td>
+<td>Set cursor, persist, suspend. Optional <code>wait:</code> for delayed re-enqueue</td>
+</tr>
+</tbody></table>
+
+<hr>
+
+<h2 id="4-proposed-dsl">4. Proposed DSL</h2>
+
+<h3 id="4-1-basic-usage-manual-cursor-control">4.1 Basic Usage - Manual Cursor Control</h3>
+<pre><code class="language-ruby">class BulkNotificationWorkflow &lt; GenevaDrive::Workflow
+  belongs_to :campaign, class_name: &quot;MarketingCampaign&quot;, foreign_key: :hero_id
+
+  step :prepare_campaign do
+    hero.update!(status: &quot;sending&quot;)
+  end
+
+  resumable_step :send_notifications do |iter|
+    hero.subscribers.where(&quot;id &gt; ?&quot;, iter.cursor || 0).find_each do |subscriber|
+      NotificationMailer.campaign(hero, subscriber).deliver_later
+      iter.set!(subscriber.id)
+    end
+  end
+
+  step :finalize do
+    hero.update!(status: &quot;sent&quot;, completed_at: Time.current)
+  end
+end
+</code></pre>
+<h3 id="4-2-iterating-over-records">4.2 Iterating Over Records</h3>
+
+<p>For ActiveRecord relations, use <code>iterate_over_records</code>:</p>
+<pre><code class="language-ruby">resumable_step :send_notifications do |iter|
+  iter.iterate_over_records(hero.subscribers) do |subscriber|
+    NotificationMailer.campaign(hero, subscriber).deliver_later
+  end
+end
+</code></pre>
+<p>This:</p>
+
+<ul>
+<li>Uses <code>find_each</code> for memory-efficient batching</li>
+<li>Applies <code>WHERE id &gt; cursor ORDER BY id</code></li>
+<li>Auto-checkpoints after each record</li>
+<li>Checks for interruption after each record</li>
+</ul>
+
+<p>With explicit cursor column:</p>
+<pre><code class="language-ruby">iter.iterate_over_records(hero.subscribers, cursor: :created_at) do |subscriber|
+  # ...
+end
+</code></pre>
+<h3 id="4-3-iterating-over-record-batches">4.3 Iterating Over Record Batches</h3>
+
+<p>For bulk operations, use <code>iterate_over_record_batches</code>. Each batch is an ActiveRecord relation, enabling efficient bulk operations:</p>
+<pre><code class="language-ruby">resumable_step :bulk_insert_notifications do |iter|
+  iter.iterate_over_record_batches(hero.subscribers, batch_size: 500) do |batch_relation|
+    # batch_relation is an AR relation - use bulk operations
+    Notification.insert_all(
+      batch_relation.pluck(:id).map { |id| { subscriber_id: id, campaign_id: hero.id } }
+    )
+  end
+end
+
+resumable_step :bulk_update_status do |iter|
+  iter.iterate_over_record_batches(hero.subscribers, batch_size: 1000) do |batch_relation|
+    # Can call update_all directly on the relation
+    batch_relation.update_all(notified_at: Time.current)
+  end
+end
+</code></pre>
+<h3 id="4-4-iterating-over-arrays">4.4 Iterating Over Arrays</h3>
+
+<p>For stable, in-memory arrays, use <code>iterate_over</code>:</p>
+<pre><code class="language-ruby">iter.iterate_over(items_array) do |item|
+  process(item)
+end
+</code></pre>
+<p>Uses index as cursor. <strong>Only for stable arrays</strong> - if the array changes between suspensions, the index will point to wrong items.</p>
+
+<p>For date ranges or other sequences where items have natural cursor values, use manual loops (see section 4.6).</p>
+
+<h3 id="4-5-opaque-token-pagination-e-g-google-apis">4.5 Opaque Token Pagination (e.g., Google APIs)</h3>
+
+<p>For APIs that return opaque page tokens, use a plain <code>loop</code> with <code>set!</code> and <code>skip_to!</code>:</p>
+<pre><code class="language-ruby">resumable_step :sync_gmail do |iter|
+  loop do
+    response = gmail.list_messages(page_token: iter.cursor)
+
+    # skip_to! suspends and re-enqueues - no need for `next`
+    iter.skip_to!(response.next_page_token) if response.empty_page?
+
+    response.messages.each { |msg| process(msg) }
+
+    break unless response.next_page_token
+    iter.set!(response.next_page_token)
+  end
+end
+</code></pre>
+<p>The <code>skip_to!(value, wait: nil)</code> method:</p>
+
+<ul>
+<li>Sets and persists the cursor</li>
+<li>Throws <code>:interrupt</code> to suspend the step</li>
+<li>Re-enqueues for continuation from the new cursor</li>
+<li>Optional <code>wait:</code> delays the re-enqueue (for rate limiting)</li>
+<li>No need to remember <code>break</code> or <code>next</code></li>
+</ul>
+
+<h3 id="4-6-using-advance-for-integer-cursors">4.6 Using advance! for Integer Cursors</h3>
+
+<p>For simple integer-based pagination:</p>
+<pre><code class="language-ruby">resumable_step :process_batches do |iter|
+  total_batches = 100
+  current = iter.cursor || 0
+
+  while current &lt; total_batches
+    process_batch(current)
+    iter.advance!  # cursor 0 becomes 1, etc.
+  end
+end
+</code></pre>
+<p><code>advance!</code> only works with integers. For dates, use <code>set!</code> with explicit conversion:</p>
+<pre><code class="language-ruby">resumable_step :process_days do |iter|
+  current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
+
+  while current &lt;= Date.current
+    process_day(current)
+    current += 1
+    iter.set!(current.iso8601)
+  end
+end
+</code></pre>
+<h3 id="4-7-rate-limited-apis-with-delayed-retry">4.7 Rate-Limited APIs with Delayed Retry</h3>
+
+<p>For rate-limited APIs, use <code>skip_to!</code> with the <code>wait:</code> parameter:</p>
+<pre><code class="language-ruby">resumable_step :sync_external_api do |iter|
+  page = iter.cursor || 1
+
+  loop do
+    response = ExternalApi.fetch(page: page)
+
+    if response.rate_limited?
+      # Suspend and retry after the rate limit expires
+      iter.skip_to!(page, wait: response.retry_after)
+    end
+
+    break if response.empty?
+    response.items.each { |item| process(item) }
+    page += 1
+    iter.set!(page)
+  end
+end
+</code></pre>
+<p>The <code>wait:</code> parameter:</p>
+
+<ul>
+<li>Persists the cursor immediately</li>
+<li>Suspends the step</li>
+<li>Re-enqueues the job with the specified delay</li>
+<li>Uses the same <code>throw :interrupt</code> mechanism as immediate <code>skip_to!</code></li>
+</ul>
+
+<p>This is consistent with GenevaDrive&#39;s flow control philosophy - all control flow uses <code>throw</code>, not exceptions.</p>
+
+<h3 id="4-8-dsl-method-signature">4.8 DSL Method Signature</h3>
+<pre><code class="language-ruby">resumable_step(name = nil,
+  max_iterations: nil,         # Optional: interrupt after N total iterations
+  max_runtime: nil,            # Optional: interrupt after duration
+  on_exception: :pause!,       # Existing option
+  **options,                   # Other step options (wait:, skip_if:, etc.)
+  &amp;block)                      # Required: block receiving step object
+</code></pre>
+<hr>
+
+<h2 id="5-database-schema-changes">5. Database Schema Changes</h2>
+
+<h3 id="5-1-migration">5.1 Migration</h3>
+<pre><code class="language-ruby">class AddResumableStepSupport &lt; ActiveRecord::Migration[7.1]
+  def change
+    add_column :geneva_drive_step_executions, :cursor, :text
+    add_column :geneva_drive_step_executions, :completed_iterations, :integer, default: 0
+
+    # Update unique constraint to include &#39;suspended&#39; as an active state
+    # The constraint ensures only one active step execution per workflow
+    #
+    # PostgreSQL:
+    #   DROP INDEX index_step_executions_one_active_per_workflow;
+    #   CREATE UNIQUE INDEX index_step_executions_one_active_per_workflow
+    #   ON geneva_drive_step_executions (workflow_id)
+    #   WHERE state IN (&#39;scheduled&#39;, &#39;in_progress&#39;, &#39;suspended&#39;);
+    #
+    # MySQL: Update the generated column expression
+    # SQLite: Recreate the partial index with the new WHERE clause
+  end
+end
+</code></pre>
+<p><strong>Why TEXT for cursor instead of JSONB?</strong></p>
+
+<ul>
+<li>Compatible with SQLite, MySQL, and PostgreSQL (GenevaDrive supports all three)</li>
+<li>Cursor is serialized/deserialized as JSON in Ruby</li>
+</ul>
+
+<h3 id="5-2-fast-checkpoint-updates">5.2 Fast Checkpoint Updates</h3>
+
+<p>Checkpointing happens after every iteration, so it must be fast. Use <code>update_all</code> to bypass ActiveRecord callbacks and validations:</p>
+<pre><code class="language-ruby">def checkpoint!(new_cursor)
+  GenevaDrive::StepExecution
+    .where(id: @step_execution.id)
+    .update_all(
+      cursor: JSON.generate(new_cursor),
+      completed_iterations: Arel.sql(&quot;completed_iterations + 1&quot;)
+    )
+end
+</code></pre>
+<p><strong>Why <code>update_all</code>?</strong></p>
+
+<ul>
+<li>Bypasses AR instantiation, callbacks, and validations</li>
+<li>Single SQL statement: <code>UPDATE ... SET cursor = ?, completed_iterations = completed_iterations + 1 WHERE id = ?</code></li>
+<li>No <code>with_lock</code> needed—atomic increment via SQL</li>
+<li>Critical for high-throughput iteration (thousands of items per second)</li>
+</ul>
+
+<h3 id="5-3-new-state-suspended">5.3 New State: <code>suspended</code></h3>
+
+<p>Add to the <code>STATES</code> enum in <code>StepExecution</code>:</p>
+<pre><code class="language-ruby">class GenevaDrive::StepExecution &lt; ActiveRecord::Base
+  enum :state, {
+    scheduled: &quot;scheduled&quot;,
+    in_progress: &quot;in_progress&quot;,
+    suspended: &quot;suspended&quot;,      # NEW: paused between iterations
+    completed: &quot;completed&quot;,
+    failed: &quot;failed&quot;,
+    canceled: &quot;canceled&quot;,
+    skipped: &quot;skipped&quot;
+  }
+end
+</code></pre>
+<h3 id="5-4-cursor-serialization">5.4 Cursor Serialization</h3>
+<pre><code class="language-ruby"># StepExecution additions
+class GenevaDrive::StepExecution &lt; ActiveRecord::Base
+  def cursor_value
+    cursor.present? ? JSON.parse(cursor) : nil
+  end
+
+  def cursor_value=(value)
+    self.cursor = value.nil? ? nil : JSON.generate(value)
+  end
+end
+</code></pre>
+<hr>
+
+<h2 id="6-execution-model">6. Execution Model</h2>
+
+<h3 id="6-1-new-step-state-suspended">6.1 New Step State: <code>suspended</code></h3>
+
+<p>Resumable steps introduce a new step execution state: <strong><code>suspended</code></strong>.</p>
+
+<p><strong>Current states</strong>: <code>scheduled</code>, <code>in_progress</code>, <code>completed</code>, <code>failed</code>, <code>canceled</code>, <code>skipped</code></p>
+
+<p><strong>New state</strong>: <code>suspended</code> - The step has been paused between iterations with cursor saved, awaiting re-execution.</p>
+
+<p>This provides:</p>
+
+<ul>
+<li><strong>Clear semantics</strong>: Distinguishes &quot;actively running right now&quot; from &quot;paused between iterations&quot;</li>
+<li><strong>Better housekeeping</strong>: Stuck <code>suspended</code> steps (job lost) are handled differently than stuck <code>in_progress</code> (process crashed mid-iteration)</li>
+<li><strong>Observability</strong>: Query <code>step_executions.suspended</code> to see all paused resumable steps</li>
+</ul>
+
+<p><strong>Active states for unique constraint</strong>: <code>scheduled</code>, <code>in_progress</code>, <code>suspended</code></p>
+
+<h3 id="6-2-state-diagram">6.2 State Diagram</h3>
+<pre class="mermaid">
+stateDiagram-v2
+    [*] --> scheduled : Job enqueued
+    scheduled --> in_progress : Job starts
+    suspended --> in_progress : Job resumes
+
+    in_progress --> suspended : Interrupt between iterations
+    in_progress --> completed : Enumeration exhausted
+    in_progress --> failed : Exception with pause
+    in_progress --> completed : Exception with skip
+
+    completed --> [*]
+    failed --> [*]
+</pre>
+<h3 id="6-3-full-execution-flow">6.3 Full Execution Flow</h3>
+<pre class="mermaid">
+flowchart TD
+    A[Job receives step_execution_id] --> B{State is scheduled or suspended?}
+    B -->|No| Z[Exit - wrong state]
+    B -->|Yes| C[Transition to in_progress]
+
+    C --> D[Create IterableStep with cursor]
+    D --> E[Execute block with IterableStep]
+
+    E --> F{Block completes?}
+    F -->|Yes| G[Mark completed, schedule next step]
+    F -->|No - interrupt thrown| H{Has wait value?}
+    H -->|Yes| M2[Mark suspended, re-enqueue with delay]
+    H -->|No| M[Mark suspended, re-enqueue immediately]
+
+    E --> I{Exception?}
+    I -->|Yes| J[Handle via on_exception policy]
+
+    J --> O{Policy}
+    O -->|pause!| P[Mark failed, pause workflow]
+    O -->|cancel!| Q[Mark canceled, cancel workflow]
+    O -->|skip!| R[Mark skipped, schedule next]
+    O -->|reattempt!| S{rewind: true?}
+    S -->|Yes| T[Clear cursor, mark suspended]
+    S -->|No| M
+
+    M --> N[Exit - will resume later]
+    M2 --> N
+    G --> Z2[Done]
+</pre>
+<h3 id="6-4-interruption-conditions">6.4 Interruption Conditions</h3>
+
+<p>The step suspends and re-enqueues when any of these are true:</p>
+
+<ol>
+<li><strong>max_iterations reached</strong>: Configurable limit per step</li>
+<li><strong>max_runtime exceeded</strong>: Time-based limit</li>
+<li><strong>Queue adapter signals shutdown</strong>: Sidekiq SIGTERM, etc.</li>
+<li><strong>Workflow externally paused/canceled</strong>: Checked periodically</li>
+</ol>
+
+<hr>
+
+<h2 id="7-core-implementation">7. Core Implementation</h2>
+
+<h3 id="7-1-resumablestepdefinition">7.1 ResumableStepDefinition</h3>
+<pre><code class="language-ruby">class GenevaDrive::ResumableStepDefinition &lt; GenevaDrive::StepDefinition
+  attr_reader :block, :max_iterations, :max_runtime
+
+  def initialize(name:, max_iterations: nil, max_runtime: nil, **options, &amp;block)
+    @block = block
+    @max_iterations = max_iterations
+    @max_runtime = max_runtime
+    super(name: name, callable: nil, **options)
+  end
+
+  def resumable?
+    true
+  end
+end
+</code></pre>
+<h3 id="7-2-dsl-addition-to-workflow">7.2 DSL Addition to Workflow</h3>
+<pre><code class="language-ruby">class GenevaDrive::Workflow &lt; ActiveRecord::Base
+  class &lt;&lt; self
+    def resumable_step(name = nil, **options, &amp;block)
+      raise ArgumentError, &quot;resumable_step requires a block&quot; unless block_given?
+
+      name ||= generate_step_name
+
+      definition = ResumableStepDefinition.new(
+        name: name.to_s,
+        **options,
+        &amp;block
+      )
+
+      steps.add(definition)
+    end
+  end
+end
+</code></pre>
+<h3 id="7-3-genevadrive-iterablestep-class">7.3 GenevaDrive::IterableStep Class</h3>
+
+<p>Rails 8.1 API-compatible object passed to resumable step blocks:</p>
+<pre><code class="language-ruby">class GenevaDrive::IterableStep
+  attr_reader :name, :cursor
+
+  def initialize(name, cursor, execution:, resumed:, executor:)
+    @name = name.to_sym
+    @cursor = cursor
+    @execution = execution
+    @resumed = resumed
+    @executor = executor
+    @advanced = false
+  end
+
+  # === Rails 8.1 ActiveJob::Continuation::Step compatible API ===
+
+  def resumed? = @resumed
+  def advanced? = @advanced
+
+  # Set cursor to any value (integer, string, opaque token, etc.)
+  def set!(value)
+    @cursor = value
+    @advanced = true
+    checkpoint!
+  end
+
+  # Convenience for integer cursors only
+  # Raises ArgumentError if cursor is not an Integer
+  def advance!
+    raise ArgumentError, &quot;advance! requires integer cursor, got #{@cursor.inspect}&quot; unless @cursor.is_a?(Integer)
+    set!(@cursor + 1)
+  end
+
+  def checkpoint!
+    persist_cursor!
+    check_interruption!
+  end
+
+  def to_a = [name.to_s, cursor]
+  def description = &quot;at &#39;#{name}&#39;, cursor &#39;#{cursor.inspect}&#39;&quot;
+
+  # === GenevaDrive Extensions ===
+
+  # Skip to a new cursor position and suspend (re-enqueue job)
+  # Use this in manual loops to jump ahead without forgetting `next` or `break`
+  # Optional `wait:` parameter delays the re-enqueue (for rate limiting)
+  def skip_to!(value, wait: nil)
+    @cursor = value
+    @advanced = true
+    persist_cursor!
+    throw :interrupt, wait  # nil or duration - force suspension and re-enqueue
+  end
+
+  # Iterate over any Enumerable (array, range, etc.) using index as cursor
+  def iterate_over(enumerable)
+    raise ArgumentError, &quot;Must respond to #each&quot; unless enumerable.respond_to?(:each)
+
+    start_index = @cursor || 0
+    enumerable.each_with_index do |element, index|
+      next if index &lt; start_index
+      yield element
+      set!(index + 1)
+    end
+  end
+
+  # Iterate over AR relation using find_each, column value as cursor
+  def iterate_over_records(relation, cursor: :id)
+    filtered = if @cursor
+      relation.where(&quot;#{cursor} &gt; ?&quot;, @cursor).order(cursor =&gt; :asc)
+    else
+      relation.order(cursor =&gt; :asc)
+    end
+
+    filtered.find_each do |record|
+      yield record
+      set!(record.public_send(cursor))
+    end
+  end
+
+  # Iterate over AR relation in batches, yielding each batch as an AR relation
+  def iterate_over_record_batches(relation, batch_size:, cursor: :id)
+    filtered = if @cursor
+      relation.where(&quot;#{cursor} &gt; ?&quot;, @cursor).order(cursor =&gt; :asc)
+    else
+      relation.order(cursor =&gt; :asc)
+    end
+
+    filtered.in_batches(of: batch_size) do |batch_relation|
+      yield batch_relation
+      # Get the max cursor value from this batch
+      last_cursor = batch_relation.maximum(cursor)
+      set!(last_cursor) if last_cursor
+    end
+  end
+
+  private
+
+  def persist_cursor!
+    # Fast update bypassing AR callbacks - critical for high-throughput iteration
+    GenevaDrive::StepExecution
+      .where(id: @execution.id)
+      .update_all(
+        cursor: @cursor.nil? ? nil : JSON.generate(@cursor),
+        completed_iterations: Arel.sql(&quot;completed_iterations + 1&quot;)
+      )
+  end
+
+  def check_interruption!
+    throw :interrupt if @executor.should_interrupt?
+  end
+end
+</code></pre>
+<h3 id="7-4-resumablestepexecutor">7.4 ResumableStepExecutor</h3>
+
+<p>Orchestrates execution and passes IterableStep object to the block:</p>
+<pre><code class="language-ruby">class GenevaDrive::ResumableStepExecutor
+  def initialize(step_execution)
+    @step_execution = step_execution
+    @workflow = step_execution.workflow
+    @step_definition = @workflow.class.steps.named(step_execution.step_name)
+    @start_time = nil
+  end
+
+  def execute!
+    return unless valid_for_execution?
+
+    transition_to_in_progress!
+    @start_time = Time.current
+
+    iter = GenevaDrive::IterableStep.new(
+      @step_definition.name,
+      @step_execution.cursor_value,
+      execution: @step_execution,
+      resumed: @step_execution.suspended?,
+      executor: self
+    )
+
+    # catch(:interrupt) returns:
+    # - :completed if block finishes normally
+    # - nil if throw :interrupt (immediate re-enqueue)
+    # - Duration/Numeric if throw :interrupt, wait (delayed re-enqueue)
+    result = catch(:interrupt) do
+      @workflow.instance_exec(iter, &amp;@step_definition.block)
+      :completed
+    end
+
+    case result
+    when :completed
+      complete_step!
+    when ActiveSupport::Duration, Numeric
+      suspend_and_continue!(wait: result)
+    else
+      suspend_and_continue!
+    end
+
+  rescue =&gt; e
+    handle_exception(e)
+  end
+
+  def should_interrupt?
+    return true if max_iterations_reached?
+    return true if max_runtime_exceeded?
+    return true if job_should_exit?
+    return true if workflow_interrupted?
+    false
+  end
+
+  private
+
+  def valid_for_execution?
+    @step_execution.scheduled? || @step_execution.suspended?
+  end
+
+  def transition_to_in_progress!
+    @step_execution.with_lock do
+      @step_execution.update!(
+        state: &quot;in_progress&quot;,
+        started_at: @step_execution.started_at || Time.current
+      )
+    end
+  end
+
+  def max_iterations_reached?
+    return false unless @step_definition.max_iterations
+    @step_execution.reload.completed_iterations &gt;= @step_definition.max_iterations
+  end
+
+  def max_runtime_exceeded?
+    return false unless @step_definition.max_runtime
+    Time.current - @start_time &gt; @step_definition.max_runtime
+  end
+
+  def job_should_exit?
+    Thread.current[:geneva_drive_should_exit] ||
+      (defined?(Sidekiq) &amp;&amp; Sidekiq.const_defined?(:CLI) &amp;&amp;
+       Sidekiq::CLI.instance&amp;.stopping?)
+  end
+
+  def workflow_interrupted?
+    @workflow.reload
+    @workflow.paused? || @workflow.canceled?
+  end
+
+  def suspend_and_continue!(wait: nil)
+    @step_execution.with_lock do
+      @step_execution.update!(state: &quot;suspended&quot;)
+    end
+
+    job_options = @workflow.class.step_job_options
+    job_options = job_options.merge(wait: wait) if wait
+
+    GenevaDrive::PerformStepJob
+      .set(job_options)
+      .perform_later(@step_execution.id)
+  end
+
+  def complete_step!
+    @step_execution.with_lock do
+      @step_execution.update!(
+        cursor: nil,
+        state: &quot;completed&quot;,
+        outcome: &quot;success&quot;,
+        completed_at: Time.current
+      )
+    end
+    @workflow.schedule_next_step!
+  end
+end
+</code></pre>
+<hr>
+
+<h2 id="8-flow-control-integration">8. Flow Control Integration</h2>
+
+<h3 id="8-1-enhanced-reattempt">8.1 Enhanced reattempt!</h3>
+<pre><code class="language-ruby">module GenevaDrive::FlowControl
+  def reattempt!(wait: nil, rewind: false)
+    if rewind &amp;&amp; current_execution
+      current_execution.update!(cursor: nil, completed_iterations: 0)
+    end
+    throw :flow_control, FlowControlSignal.new(:reattempt, wait: wait)
+  end
+end
+</code></pre>
+<h3 id="8-2-new-suspend-method">8.2 New suspend! Method</h3>
+
+<p>For manual suspension within iteration:</p>
+<pre><code class="language-ruby">module GenevaDrive::FlowControl
+  def suspend!
+    throw :flow_control, FlowControlSignal.new(:suspend)
+  end
+end
+</code></pre>
+<h3 id="8-3-existing-flow-control-still-works">8.3 Existing Flow Control Still Works</h3>
+
+<p>Inside resumable steps, existing flow control methods work as expected:</p>
+<pre><code class="language-ruby">resumable_step :process_items do |iter|
+  iter.iterate_over_records(hero.items) do |item|
+    if item.invalid?
+      skip!  # Skips entire step, moves to next step
+    end
+
+    if emergency_stop_requested?
+      pause!  # Pauses entire workflow
+    end
+
+    process(item)
+  end
+end
+</code></pre>
+<hr>
+
+<h2 id="9-edge-cases">9. Edge Cases</h2>
+
+<h3 id="9-1-empty-collection">9.1 Empty Collection</h3>
+
+<p>If the collection is empty, the step completes immediately with zero iterations:</p>
+<pre><code class="language-ruby">resumable_step :process_items do |iter|
+  iter.iterate_over_records(hero.items) do |item|  # If empty, block never executes
+    process(item)
+  end
+end  # Step completes successfully
+</code></pre>
+<h3 id="9-2-first-run-vs-resume">9.2 First-Run vs Resume</h3>
+
+<p>Use <code>iter.resumed?</code> to detect resumption:</p>
+<pre><code class="language-ruby">resumable_step :import do |iter|
+  if iter.resumed?
+    Rails.logger.info &quot;Resuming import from cursor #{iter.cursor}&quot;
+  else
+    Rails.logger.info &quot;Starting import from beginning&quot;
+  end
+
+  iter.iterate_over_records(records) { |r| import(r) }
+end
+</code></pre>
+<h3 id="9-3-cursor-validation">9.3 Cursor Validation</h3>
+
+<p>Handle deleted records gracefully with manual iteration:</p>
+<pre><code class="language-ruby">resumable_step :process_records do |iter|
+  start_id = iter.cursor || 0
+
+  # Verify cursor is still valid (record might have been deleted)
+  if iter.cursor &amp;&amp; !Record.exists?(id: iter.cursor)
+    Rails.logger.warn &quot;Cursor record #{iter.cursor} deleted, finding next&quot;
+    start_id = Record.where(&quot;id &gt; ?&quot;, iter.cursor).minimum(:id) || iter.cursor
+  end
+
+  Record.where(&quot;id &gt; ?&quot;, start_id).find_each do |record|
+    process(record)
+    iter.set!(record.id)
+  end
+end
+</code></pre>
+<h3 id="9-4-infinite-loop-detection">9.4 Infinite Loop Detection</h3>
+
+<p>With <code>completed_iterations</code> tracking, configure limits:</p>
+<pre><code class="language-ruby">resumable_step :process_items, max_iterations: 1_000_000 do |iter|
+  iter.iterate_over_records(huge_collection) { |item| process(item) }
+end
+</code></pre>
+<p>When exceeded, the step suspends. Housekeeping can detect and handle stuck steps.</p>
+
+<hr>
+
+<h2 id="10-testing-helpers">10. Testing Helpers</h2>
+
+<h3 id="10-1-extensions-to-testhelpers">10.1 Extensions to TestHelpers</h3>
+<pre><code class="language-ruby">module GenevaDrive::TestHelpers
+  # Run resumable step completely without interruption
+  def speedrun_resumable_step(workflow, step_name)
+    execution = workflow.current_execution
+    with_interruption_disabled do
+      ResumableStepExecutor.new(execution).execute!
+    end
+  end
+
+  # Run N iterations then interrupt
+  def run_iterations(workflow, step_name, count:)
+    execution = workflow.current_execution
+    with_max_iterations(count) do
+      ResumableStepExecutor.new(execution).execute!
+    end
+  end
+
+  # Assert cursor position
+  def assert_cursor(workflow, expected_cursor)
+    actual = workflow.current_execution&amp;.cursor_value
+    assert_equal expected_cursor, actual,
+      &quot;Expected cursor #{expected_cursor.inspect}, got #{actual.inspect}&quot;
+  end
+
+  # Assert iteration count
+  def assert_iterations(workflow, expected_count)
+    actual = workflow.current_execution&amp;.completed_iterations || 0
+    assert_equal expected_count, actual,
+      &quot;Expected #{expected_count} iterations, got #{actual}&quot;
+  end
+end
+</code></pre>
+<hr>
+
+<h2 id="11-comparison">11. Comparison</h2>
+
+<table><thead>
+<tr>
+<th>Aspect</th>
+<th>job-iteration</th>
+<th>Rails 8.1 Continuable</th>
+<th>GenevaDrive</th>
+</tr>
+</thead><tbody>
+<tr>
+<td><strong>API Style</strong></td>
+<td><code>build_enumerator</code> + <code>each_iteration</code></td>
+<td><code>step</code> object in block</td>
+<td><code>IterableStep</code> object (Rails 8.1 compatible)</td>
+</tr>
+<tr>
+<td><strong>Scope</strong></td>
+<td>Any ActiveJob</td>
+<td>Any ActiveJob</td>
+<td>Workflow steps only</td>
+</tr>
+<tr>
+<td><strong>State Storage</strong></td>
+<td>Job serialization</td>
+<td>Job serialization</td>
+<td><code>step_executions</code> table</td>
+</tr>
+<tr>
+<td><strong>Checkpoint</strong></td>
+<td>Configurable</td>
+<td>Manual <code>set!</code>/<code>advance!</code></td>
+<td>Manual or auto via <code>iterate_over_*</code></td>
+</tr>
+<tr>
+<td><strong>Cursor Type</strong></td>
+<td>Primitives only</td>
+<td>Any serializable</td>
+<td>Primitives (JSON)</td>
+</tr>
+<tr>
+<td><strong>Flow Control</strong></td>
+<td>Limited</td>
+<td>Limited</td>
+<td>Full (cancel!, pause!, skip!, reattempt!)</td>
+</tr>
+<tr>
+<td><strong>Rewind Support</strong></td>
+<td>N/A</td>
+<td>N/A</td>
+<td><code>reattempt!(rewind: true)</code></td>
+</tr>
+</tbody></table>
+
+<hr>
+
+<h2 id="12-implementation-plan">12. Implementation Plan</h2>
+
+<h3 id="phase-1-foundation">Phase 1: Foundation</h3>
+
+<ol>
+<li>Add migration for <code>cursor</code> and <code>completed_iterations</code> columns</li>
+<li>Add <code>suspended</code> state to <code>StepExecution</code></li>
+<li>Update unique constraint to include <code>suspended</code> state</li>
+<li>Add cursor serialization helpers to <code>StepExecution</code></li>
+</ol>
+
+<h3 id="phase-2-iterablestep-class">Phase 2: IterableStep Class</h3>
+
+<ol>
+<li>Create <code>GenevaDrive::IterableStep</code> class (Rails 8.1 API compatible)</li>
+<li>Implement <code>cursor</code>, <code>set!</code>, <code>advance!</code>, <code>checkpoint!</code>, <code>resumed?</code>, <code>advanced?</code></li>
+<li>Implement <code>skip_to!(value, wait:)</code> for cursor jump with optional delayed re-enqueue</li>
+<li>Implement <code>iterate_over</code> for Enumerables</li>
+<li>Implement <code>iterate_over_records</code> for AR relations</li>
+<li>Implement <code>iterate_over_record_batches</code> for batch processing</li>
+</ol>
+
+<h3 id="phase-3-flow-control">Phase 3: Flow Control</h3>
+
+<ol>
+<li>Enhance <code>reattempt!</code> with <code>rewind:</code> option</li>
+<li>Add <code>suspend!</code> flow control method</li>
+</ol>
+
+<h3 id="phase-4-testing">Phase 4: Testing</h3>
+
+<ol>
+<li>Extend <code>TestHelpers</code> for resumable steps</li>
+<li>Add comprehensive test suite</li>
+</ol>
+
+<h3 id="phase-5-documentation">Phase 5: Documentation</h3>
+
+<ol>
+<li>Document DSL usage</li>
+<li>Add examples for common patterns</li>
+</ol>
+
+<hr>
+
+<h2 id="13-open-questions">13. Open Questions</h2>
+
+<ol>
+<li><p><strong>Should there be a <code>progress</code> callback?</strong></p>
+
+<ul>
+<li>Could report <code>(current_iteration, cursor)</code> for progress tracking</li>
+<li>Useful for UI progress bars</li>
+</ul></li>
+<li><p><strong>Should we support nested cursors?</strong></p>
+
+<ul>
+<li>For multi-level iteration (e.g., iterate accounts, then transactions per account)</li>
+<li>Cursor becomes an array of positions <code>[account_id, transaction_id]</code></li>
+<li>Adds complexity—perhaps defer to v2</li>
+</ul></li>
+<li><p><strong>Should <code>iterate_over</code> support <code>[item, cursor]</code> pairs from Enumerators?</strong></p>
+
+<ul>
+<li>Would allow custom Enumerators to specify their own cursor values</li>
+<li>Currently uses index as cursor for all Enumerables</li>
+</ul></li>
+</ol>
+
+<hr>
+
+<h2 id="14-summary">14. Summary</h2>
+
+<p>This design brings job-iteration&#39;s proven resumable iteration pattern to GenevaDrive while:</p>
+
+<ul>
+<li>Maintaining GenevaDrive&#39;s database-centric state model</li>
+<li>Preserving all existing flow control capabilities</li>
+<li>Guaranteeing safe resumption via per-iteration checkpointing</li>
+<li>Enabling infinite loop detection via iteration counting</li>
+<li>Providing a clean DSL that mirrors the existing <code>step</code> definition pattern</li>
+</ul>
+
+<p>The <code>rewind: true</code> option for <code>reattempt!</code> gives developers explicit control over whether to continue from the cursor or start fresh—a capability job-iteration doesn&#39;t offer.</p>
+
+
+<!-- Prism.js for syntax highlighting -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+
+<!-- Mermaid.js for diagrams -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true,
+        curve: 'basis'
+      }
+    });
+
+    // Set print date CSS custom property before printing
+    window.addEventListener('beforeprint', function() {
+      var now = new Date();
+      var options = {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      };
+      var dateStr = 'Printed: ' + now.toLocaleDateString(undefined, options);
+      document.documentElement.style.setProperty('--print-date', '"' + dateStr + '"');
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,425 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+require "optparse"
+require "bundler/inline"
+
+gemfile do
+  source "https://rubygems.org"
+  gem "redcarpet"
+end
+
+require "redcarpet"
+require "cgi"
+require "erb"
+
+class SyntaxHighlightingHTML < Redcarpet::Render::HTML
+  def block_code(code, language)
+    language = language&.strip
+    language = "plaintext" if language.nil? || language.empty?
+
+    # Mermaid diagrams get special treatment
+    if language == "mermaid"
+      return %(<pre class="mermaid">\n#{code}</pre>)
+    end
+
+    # Map common language aliases
+    lang_map = {
+      "rb" => "ruby",
+      "js" => "javascript",
+      "ts" => "typescript",
+      "py" => "python",
+      "sh" => "bash",
+      "shell" => "bash",
+      "yml" => "yaml"
+    }
+    language = lang_map[language] || language
+
+    escaped_code = CGI.escapeHTML(code)
+    %(<pre><code class="language-#{language}">#{escaped_code}</code></pre>)
+  end
+end
+
+def html_template(title, content)
+  <<~HTML
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>#{CGI.escapeHTML(title)}</title>
+
+  <!-- Prism.js for syntax highlighting -->
+  <link href="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/themes/prism.min.css" rel="stylesheet" />
+
+  <style>
+    :root {
+      --text-color: #24292e;
+      --bg-color: #ffffff;
+      --code-bg: #f6f8fa;
+      --border-color: #eaecef;
+      --link-color: #0366d6;
+      --heading-border: #eaecef;
+      --table-border: #dfe2e5;
+      --blockquote-color: #6a737d;
+      --blockquote-border: #dfe2e5;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
+      font-size: 16px;
+      line-height: 1.6;
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 2rem;
+      color: var(--text-color);
+      background-color: var(--bg-color);
+    }
+
+    /* Headings */
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.5em;
+      margin-bottom: 0.5em;
+      font-weight: 600;
+      line-height: 1.25;
+    }
+
+    h1 {
+      font-size: 2em;
+      border-bottom: 1px solid var(--heading-border);
+      padding-bottom: 0.3em;
+    }
+
+    h2 {
+      font-size: 1.5em;
+      border-bottom: 1px solid var(--heading-border);
+      padding-bottom: 0.3em;
+    }
+
+    h3 { font-size: 1.25em; }
+    h4 { font-size: 1em; }
+
+    /* Inline code */
+    code:not([class*="language-"]) {
+      background-color: rgba(27, 31, 35, 0.05);
+      border-radius: 3px;
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+      font-size: 85%;
+      padding: 0.2em 0.4em;
+    }
+
+    /* Code blocks */
+    pre {
+      background-color: var(--code-bg);
+      border-radius: 6px;
+      font-size: 14px;
+      line-height: 1.45;
+      overflow: auto;
+      padding: 16px;
+      margin: 1em 0;
+    }
+
+    pre code {
+      background-color: transparent;
+      padding: 0;
+      font-size: inherit;
+      border-radius: 0;
+    }
+
+    /* Override Prism background */
+    pre[class*="language-"],
+    code[class*="language-"] {
+      background: var(--code-bg);
+    }
+
+    /* Tables */
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      margin: 1em 0;
+      overflow: auto;
+      display: block;
+    }
+
+    th, td {
+      border: 1px solid var(--table-border);
+      padding: 6px 13px;
+      text-align: left;
+    }
+
+    th {
+      background-color: var(--code-bg);
+      font-weight: 600;
+    }
+
+    tr:nth-child(even) {
+      background-color: var(--code-bg);
+    }
+
+    /* Blockquotes */
+    blockquote {
+      border-left: 4px solid var(--blockquote-border);
+      color: var(--blockquote-color);
+      margin: 1em 0;
+      padding: 0 1em;
+    }
+
+    blockquote > :first-child {
+      margin-top: 0;
+    }
+
+    blockquote > :last-child {
+      margin-bottom: 0;
+    }
+
+    /* Horizontal rules */
+    hr {
+      border: 0;
+      border-top: 1px solid var(--border-color);
+      margin: 2em 0;
+    }
+
+    /* Lists */
+    ul, ol {
+      padding-left: 2em;
+      margin: 1em 0;
+    }
+
+    li + li {
+      margin-top: 0.25em;
+    }
+
+    li > ul,
+    li > ol {
+      margin: 0.25em 0;
+    }
+
+    /* Links */
+    a {
+      color: var(--link-color);
+      text-decoration: none;
+    }
+
+    a:hover {
+      text-decoration: underline;
+    }
+
+    /* Emphasis */
+    strong {
+      font-weight: 600;
+    }
+
+    em {
+      font-style: italic;
+    }
+
+    /* Paragraphs */
+    p {
+      margin: 1em 0;
+    }
+
+    /* Images */
+    img {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Mermaid diagrams */
+    pre.mermaid {
+      background: transparent;
+      border: none;
+      text-align: center;
+      padding: 1em 0;
+    }
+
+    .mermaid svg {
+      max-width: 100%;
+      height: auto;
+    }
+
+    /* Print footer element - not needed with @page margin boxes */
+    .print-footer {
+      display: none;
+    }
+
+    /* Print styles - using Chrome 131+ @page margin boxes */
+    @media print {
+      @page {
+        margin: 1.5cm;
+        margin-bottom: 2cm;
+
+        @bottom-center {
+          content: "Page " counter(page) " of " counter(pages);
+          font-size: 9pt;
+          color: #666;
+        }
+
+        @bottom-right {
+          content: var(--print-date, "");
+          font-size: 9pt;
+          color: #666;
+        }
+      }
+
+      body {
+        max-width: none;
+        padding: 0;
+        font-size: 11pt;
+      }
+
+      pre {
+        white-space: pre-wrap;
+        word-wrap: break-word;
+        border: 1px solid #ddd;
+      }
+
+      pre code {
+        font-size: 9pt;
+      }
+
+      h1, h2, h3, h4 {
+        page-break-after: avoid;
+      }
+
+      pre, blockquote, table, figure {
+        page-break-inside: avoid;
+      }
+
+      a {
+        color: inherit;
+        text-decoration: underline;
+      }
+    }
+  </style>
+</head>
+<body>
+#{content}
+
+<!-- Prism.js for syntax highlighting -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/plugins/autoloader/prism-autoloader.min.js"></script>
+
+<!-- Mermaid.js for diagrams -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/mermaid/10.6.1/mermaid.min.js"></script>
+<script>
+  document.addEventListener('DOMContentLoaded', function() {
+    mermaid.initialize({
+      startOnLoad: true,
+      theme: 'default',
+      securityLevel: 'loose',
+      flowchart: {
+        useMaxWidth: true,
+        htmlLabels: true,
+        curve: 'basis'
+      }
+    });
+
+    // Set print date CSS custom property before printing
+    window.addEventListener('beforeprint', function() {
+      var now = new Date();
+      var options = {
+        year: 'numeric',
+        month: 'long',
+        day: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit'
+      };
+      var dateStr = 'Printed: ' + now.toLocaleDateString(undefined, options);
+      document.documentElement.style.setProperty('--print-date', '"' + dateStr + '"');
+    });
+  });
+</script>
+</body>
+</html>
+  HTML
+end
+
+def convert_markdown_to_html(input_path, output_path = nil)
+  unless File.exist?(input_path)
+    abort "Error: File not found: #{input_path}"
+  end
+
+  output_path ||= input_path.sub(/\.md$/i, ".html")
+
+  markdown_content = File.read(input_path)
+
+  # Extract title from first H1 or filename
+  title = if markdown_content =~ /^#\s+(.+)$/
+    $1.strip
+  else
+    File.basename(input_path, ".*")
+  end
+
+  renderer = SyntaxHighlightingHTML.new(
+    with_toc_data: true,
+    hard_wrap: false
+  )
+
+  markdown = Redcarpet::Markdown.new(renderer, {
+    tables: true,
+    fenced_code_blocks: true,
+    autolink: true,
+    strikethrough: true,
+    lax_spacing: true,
+    space_after_headers: true,
+    superscript: true,
+    underline: true,
+    highlight: true,
+    no_intra_emphasis: true
+  })
+
+  html_body = markdown.render(markdown_content)
+  html_document = html_template(title, html_body)
+
+  File.write(output_path, html_document)
+  puts "Created: #{output_path}"
+
+  output_path
+end
+
+if __FILE__ == $0
+  options = {open: true}
+
+  parser = OptionParser.new do |opts|
+    opts.banner = "Usage: #{$0} [options] INPUT.md [OUTPUT.html]"
+    opts.separator ""
+    opts.separator "Converts a GitHub-Flavored Markdown file to styled HTML with:"
+    opts.separator "  - Prism.js syntax highlighting"
+    opts.separator "  - Mermaid.js diagram rendering"
+    opts.separator "  - Print-optimized CSS with page numbers"
+    opts.separator ""
+    opts.separator "If OUTPUT is not specified, uses INPUT filename with .html extension."
+    opts.separator ""
+    opts.separator "Options:"
+
+    opts.on("--no-open", "Don't open the result in the browser") do
+      options[:open] = false
+    end
+
+    opts.on("-h", "--help", "Show this help message") do
+      puts opts
+      exit
+    end
+  end
+
+  parser.parse!
+
+  if ARGV.empty?
+    puts parser
+    exit 1
+  end
+
+  input_path = ARGV[0]
+  output_path = ARGV[1]
+
+  result_path = convert_markdown_to_html(input_path, output_path)
+
+  # Open in browser if on macOS and not disabled
+  if options[:open] && RUBY_PLATFORM =~ /darwin/
+    system("open", result_path)
+  end
+end

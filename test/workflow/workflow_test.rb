@@ -290,4 +290,65 @@ class WorkflowTest < ActiveSupport::TestCase
     assert_nil workflow.current_step_name
     assert_nil workflow.next_step_name
   end
+
+  # previous_step_name tests
+  test "previous_step_name returns nil when at first step" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    assert_equal "first", workflow.next_step_name
+    assert_nil workflow.previous_step_name
+  end
+
+  test "previous_step_name returns first step when at second step" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    # Execute first step - schedules second step
+    workflow.step_executions.first.execute!
+    workflow.reload
+
+    assert_equal "second", workflow.next_step_name
+    assert_equal "first", workflow.previous_step_name
+  end
+
+  test "previous_step_name returns second step when at third step" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    # Execute first two steps
+    workflow.step_executions.first.execute!
+    workflow.reload
+    workflow.step_executions.where(step_name: "second").first.execute!
+    workflow.reload
+
+    assert_equal "third", workflow.next_step_name
+    assert_equal "second", workflow.previous_step_name
+  end
+
+  test "previous_step_name returns last step when finished" do
+    workflow = ThreeStepWorkflow.create!(hero: @user)
+
+    # Execute all steps
+    workflow.step_executions.first.execute!
+    workflow.reload
+    workflow.step_executions.where(step_name: "second").first.execute!
+    workflow.reload
+    workflow.step_executions.where(step_name: "third").first.execute!
+    workflow.reload
+
+    assert_equal "finished", workflow.state
+    assert_nil workflow.next_step_name
+    assert_equal "third", workflow.previous_step_name
+  end
+
+  # Workflow with no steps for edge case testing
+  class EmptyWorkflow < GenevaDrive::Workflow
+  end
+
+  test "previous_step_name returns nil for empty workflow when finished" do
+    workflow = EmptyWorkflow.create!(hero: @user)
+    # Empty workflow finishes immediately
+    workflow.reload
+
+    assert_equal "finished", workflow.state
+    assert_nil workflow.previous_step_name
+  end
 end

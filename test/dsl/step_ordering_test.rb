@@ -300,6 +300,91 @@ class StepOrderingTest < ActiveSupport::TestCase
     assert_nil collection.next_after("third")
   end
 
+  test "step collection previous_before works with ordered steps" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :first do
+      end
+
+      step :third do
+      end
+
+      step :second, after_step: :first do
+      end
+    end
+
+    collection = workflow_class.steps
+
+    assert_nil collection.previous_before("first")
+    assert_equal "first", collection.previous_before("second").name
+    assert_equal "second", collection.previous_before("third").name
+  end
+
+  test "previous_before returns nil for first step" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :first do
+      end
+
+      step :second do
+      end
+    end
+
+    collection = workflow_class.steps
+    assert_nil collection.previous_before("first")
+  end
+
+  test "previous_before returns correct step" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :step_1 do
+      end
+
+      step :step_2 do
+      end
+
+      step :step_3 do
+      end
+    end
+
+    collection = workflow_class.steps
+    previous = collection.previous_before("step_2")
+    assert_equal "step_1", previous.name
+
+    previous = collection.previous_before("step_3")
+    assert_equal "step_2", previous.name
+  end
+
+  test "previous_before returns nil for nil input" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :first do
+      end
+    end
+
+    collection = workflow_class.steps
+    assert_nil collection.previous_before(nil)
+  end
+
+  test "previous_before returns nil for unknown step" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :first do
+      end
+    end
+
+    collection = workflow_class.steps
+    assert_nil collection.previous_before("unknown_step")
+  end
+
+  test "previous_before accepts symbol input" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :first do
+      end
+
+      step :second do
+      end
+    end
+
+    collection = workflow_class.steps
+    assert_equal "first", collection.previous_before(:second).name
+  end
+
   test "step collection named works with ordered steps" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       step :first do

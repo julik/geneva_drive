@@ -283,6 +283,26 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     self.class.steps
   end
 
+  # Returns the name of the previously executed step.
+  #
+  # Logic:
+  # - If `current_step_name` is set (currently executing), returns the step before it
+  # - If only `next_step_name` is set (waiting for next step), returns the step before it
+  # - If workflow is finished (no next step), returns the last step in the sequence
+  # - Returns nil if this is the first step or no steps have been executed
+  #
+  # @return [String, nil] the previous step name or nil
+  def previous_step_name
+    reference_step = current_step_name || next_step_name
+
+    if reference_step
+      previous_step = steps.previous_before(reference_step)
+      previous_step&.name
+    elsif finished?
+      steps.last&.name
+    end
+  end
+
   # Hook called before each step starts executing.
   # Override in subclasses to add custom behavior.
   #

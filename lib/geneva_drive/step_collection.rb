@@ -78,6 +78,19 @@ class GenevaDrive::StepCollection
     self[current_index + 1]
   end
 
+  # Returns the step before the given step name in the ordered sequence.
+  #
+  # @param current_name [String, Symbol, nil] the current step name
+  # @return [StepDefinition, nil] the previous step or nil if at beginning
+  def previous_before(current_name)
+    return nil if current_name.nil?
+
+    current_index = find_index { |s| s.name == current_name.to_s }
+    return nil unless current_index && current_index > 0
+
+    self[current_index - 1]
+  end
+
   # Checks if a step exists with the given name.
   # Does not trigger ordering computation.
   #

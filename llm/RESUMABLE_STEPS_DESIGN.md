@@ -74,11 +74,29 @@ The block receives a `GenevaDrive::IterableStep` object with the same core API a
 | `iter.cursor` | Current cursor value (`nil` on first run) |
 | `iter.resumed?` | `true` if resuming from prior suspension |
 | `iter.advanced?` | `true` if cursor changed during this run |
-| `iter.set!(value)` | Set cursor to any value, then checkpoint |
+| `iter.set!(value)` | Set cursor for the **next** iteration, then checkpoint |
 | `iter.advance!` | Increment integer cursor via `+ 1`, then checkpoint. **Integers only.** |
 | `iter.checkpoint!` | Persist cursor to DB, check for interruption |
 
-### 3.2 Cursor Types
+### 3.2 Cursor Semantics
+
+**The cursor is the value you'll receive on the next iteration.** When you call `set!(x)`, on resume `iter.cursor` returns exactly `x`. You decide what `x` means for your use case:
+
+```ruby
+# Record IDs: save last processed ID, query with > on resume
+records.where("id > ?", iter.cursor || 0).find_each do |record|
+  process(record)
+  iter.set!(record.id)  # Next iteration will see this ID, query > it
+end
+
+# Page numbers: save the next page to fetch
+iter.set!(page + 1)  # Next iteration starts from this page
+
+# Opaque tokens: save the token for the next API call
+iter.set!(response.next_page_token)  # Next iteration uses this token
+```
+
+### 3.3 Cursor Types
 
 The cursor can be **any JSON-serializable value**:
 
@@ -96,12 +114,12 @@ iter.set!(response.next_page_token)  # "CiAKGjBpNDd2Nmp..."
 # Date cursor - store as string, parse on read
 current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
 process_day(current)
-iter.set!((current + 1).iso8601)
+iter.set!((current + 1).iso8601)  # Next iteration starts from this date
 ```
 
 The `advance!` method raises `ArgumentError` if the cursor is not an `Integer`.
 
-### 3.3 GenevaDrive Extensions
+### 3.4 GenevaDrive Extensions
 
 | Method | Description |
 |--------|-------------|

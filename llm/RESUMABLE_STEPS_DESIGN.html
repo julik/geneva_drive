@@ -358,7 +358,7 @@
 </tr>
 <tr>
 <td><code>iter.set!(value)</code></td>
-<td>Set cursor to any value, then checkpoint</td>
+<td>Set cursor for the <strong>next</strong> iteration, then checkpoint</td>
 </tr>
 <tr>
 <td><code>iter.advance!</code></td>
@@ -370,7 +370,22 @@
 </tr>
 </tbody></table>
 
-<h3 id="3-2-cursor-types">3.2 Cursor Types</h3>
+<h3 id="3-2-cursor-semantics">3.2 Cursor Semantics</h3>
+
+<p><strong>The cursor is the value you&#39;ll receive on the next iteration.</strong> When you call <code>set!(x)</code>, on resume <code>iter.cursor</code> returns exactly <code>x</code>. You decide what <code>x</code> means for your use case:</p>
+<pre><code class="language-ruby"># Record IDs: save last processed ID, query with &gt; on resume
+records.where(&quot;id &gt; ?&quot;, iter.cursor || 0).find_each do |record|
+  process(record)
+  iter.set!(record.id)  # Next iteration will see this ID, query &gt; it
+end
+
+# Page numbers: save the next page to fetch
+iter.set!(page + 1)  # Next iteration starts from this page
+
+# Opaque tokens: save the token for the next API call
+iter.set!(response.next_page_token)  # Next iteration uses this token
+</code></pre>
+<h3 id="3-3-cursor-types">3.3 Cursor Types</h3>
 
 <p>The cursor can be <strong>any JSON-serializable value</strong>:</p>
 
@@ -388,11 +403,11 @@ iter.set!(response.next_page_token)  # &quot;CiAKGjBpNDd2Nmp...&quot;
 # Date cursor - store as string, parse on read
 current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
 process_day(current)
-iter.set!((current + 1).iso8601)
+iter.set!((current + 1).iso8601)  # Next iteration starts from this date
 </code></pre>
 <p>The <code>advance!</code> method raises <code>ArgumentError</code> if the cursor is not an <code>Integer</code>.</p>
 
-<h3 id="3-3-genevadrive-extensions">3.3 GenevaDrive Extensions</h3>
+<h3 id="3-4-genevadrive-extensions">3.4 GenevaDrive Extensions</h3>
 
 <table><thead>
 <tr>

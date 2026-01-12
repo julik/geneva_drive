@@ -387,12 +387,13 @@ iter.set!(response.next_page_token)  # Next iteration uses this token
 </code></pre>
 <h3 id="3-3-cursor-types">3.3 Cursor Types</h3>
 
-<p>The cursor can be <strong>any JSON-serializable value</strong>:</p>
+<p>Cursors are serialized using <strong>ActiveJob serializers</strong>, so any type ActiveJob can serialize works automatically:</p>
 
 <ul>
-<li><strong>Integer cursors</strong>: Use <code>set!</code> or <code>advance!</code></li>
-<li><strong>Opaque tokens</strong> (API pagination tokens, UUIDs): Use <code>set!</code> only</li>
-<li><strong>Dates/Times</strong>: Store as ISO8601 strings, parse on read</li>
+<li><strong>Integers, Strings</strong>: Work directly</li>
+<li><strong>Opaque tokens</strong> (API pagination tokens, UUIDs): Work directly</li>
+<li><strong>Date, Time, DateTime</strong>: Serialized/deserialized automatically</li>
+<li><strong>BigDecimal, ActiveSupport::Duration</strong>: Supported via AJ serializers</li>
 </ul>
 <pre><code class="language-ruby"># Integer cursor - advance! works
 iter.advance!  # cursor 42 becomes 43
@@ -400,10 +401,10 @@ iter.advance!  # cursor 42 becomes 43
 # Opaque token - use set! directly
 iter.set!(response.next_page_token)  # &quot;CiAKGjBpNDd2Nmp...&quot;
 
-# Date cursor - store as string, parse on read
-current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
+# Date cursor - just works, no manual conversion needed
+current = iter.cursor || Date.new(2024, 1, 1)
 process_day(current)
-iter.set!((current + 1).iso8601)  # Next iteration starts from this date
+iter.set!(current + 1)  # Date is serialized automatically
 </code></pre>
 <p>The <code>advance!</code> method raises <code>ArgumentError</code> if the cursor is not an <code>Integer</code>.</p>
 
@@ -550,14 +551,14 @@ end
   end
 end
 </code></pre>
-<p><code>advance!</code> only works with integers. For dates, use <code>set!</code> with explicit conversion:</p>
+<p><code>advance!</code> only works with integers. For dates, use <code>set!</code> directly (ActiveJob serializers handle Date automatically):</p>
 <pre><code class="language-ruby">resumable_step :process_days do |iter|
-  current = iter.cursor ? Date.parse(iter.cursor) : Date.new(2024, 1, 1)
+  current = iter.cursor || Date.new(2024, 1, 1)
 
   while current &lt;= Date.current
     process_day(current)
     current += 1
-    iter.set!(current.iso8601)
+    iter.set!(current)  # Date is serialized automatically
   end
 end
 </code></pre>
@@ -669,16 +670,33 @@ end
 end
 </code></pre>
 <h3 id="5-4-cursor-serialization">5.4 Cursor Serialization</h3>
+
+<p>Cursors use ActiveJob&#39;s serialization system, which handles Date, Time, DateTime, BigDecimal, and other types automatically:</p>
 <pre><code class="language-ruby"># StepExecution additions
 class GenevaDrive::StepExecution &lt; ActiveRecord::Base
   def cursor_value
-    cursor.present? ? JSON.parse(cursor) : nil
+    return nil if cursor.blank?
+    ActiveJob::Arguments.deserialize([JSON.parse(cursor)]).first
   end
 
   def cursor_value=(value)
-    self.cursor = value.nil? ? nil : JSON.generate(value)
+    if value.nil?
+      self.cursor = nil
+    else
+      serialized = ActiveJob::Arguments.serialize([value]).first
+      self.cursor = JSON.generate(serialized)
+    end
   end
 end
+</code></pre>
+<p>This means users can store Dates directly without manual ISO8601 conversion:</p>
+<pre><code class="language-ruby"># Before (manual serialization)
+current = iter.cursor ? Date.parse(iter.cursor) : start_date
+iter.set!(current.iso8601)
+
+# After (automatic via AJ serializers)
+current = iter.cursor || start_date
+iter.set!(current)
 </code></pre>
 <hr>
 

@@ -2,6 +2,9 @@
 /.bundle/
 /vendor/bundle
 
+# LLM
+/.claude/
+
 # Test dummy apps
 /test/dummy/db/*.sqlite3
 /test/dummy/db/*.sqlite3-*

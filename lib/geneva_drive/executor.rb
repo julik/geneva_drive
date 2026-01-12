@@ -47,11 +47,14 @@ class GenevaDrive::Executor
     return unless step_def
 
     # Phase 2: Execute step block (locks released)
-    @logger.debug("Running before step blocks")
-    @workflow.before_step_starts(step_def.name)
+    @logger.debug("Running before_step_execution hook")
+    @workflow.before_step_execution(@step_execution)
 
     @logger.debug("Running the actual step code")
     flow_result = execute_step(step_def)
+
+    @logger.debug("Running after_step_execution hook")
+    @workflow.after_step_execution(@step_execution)
 
     # Phase 3: Acquire locks and handle result
     @logger.info("Finished step with outcome #{flow_result.inspect}")

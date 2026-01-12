@@ -303,12 +303,27 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
   end
 
-  # Hook called before each step starts executing.
-  # Override in subclasses to add custom behavior.
+  # Hook called before step execution, after validation passes.
+  # Use this for APM instrumentation like setting AppSignal action/params.
   #
-  # @param step_name [String] the name of the step about to execute
+  # @param step_execution [GenevaDrive::StepExecution] the step execution record
   # @return [void]
-  def before_step_starts(step_name)
+  #
+  # @example Set AppSignal transaction metadata
+  #   def before_step_execution(step_execution)
+  #     Appsignal.set_action("#{self.class.name}##{step_execution.step_name}")
+  #     Appsignal.set_params("hero" => { "type" => hero_type, "id" => hero_id })
+  #   end
+  def before_step_execution(step_execution)
+    # Override in subclasses
+  end
+
+  # Hook called after step code completes, before finalization.
+  # Called regardless of whether the step succeeded, failed, or used flow control.
+  #
+  # @param step_execution [GenevaDrive::StepExecution] the step execution record
+  # @return [void]
+  def after_step_execution(step_execution)
     # Override in subclasses
   end
 

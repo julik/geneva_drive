@@ -23,23 +23,29 @@ class ExecutorTest < ActiveSupport::TestCase
     end
   end
 
-  # Workflow that tracks before_step_starts
-  class HookTrackingWorkflow < GenevaDrive::Workflow
+  # Workflow that tracks execution hooks
+  class ExecutionHookTrackingWorkflow < GenevaDrive::Workflow
     step :tracked_step do
-      # Step body
+      Thread.current[:execution_hook_events] ||= []
+      Thread.current[:execution_hook_events] << [:step_body, nil]
     end
 
-    def before_step_starts(step_name)
-      Thread.current[:hook_test_hooks_called] ||= []
-      Thread.current[:hook_test_hooks_called] << step_name
+    def before_step_execution(step_execution)
+      Thread.current[:execution_hook_events] ||= []
+      Thread.current[:execution_hook_events] << [:before_step_execution, step_execution.id]
     end
 
-    def self.hooks_called
-      Thread.current[:hook_test_hooks_called]
+    def after_step_execution(step_execution)
+      Thread.current[:execution_hook_events] ||= []
+      Thread.current[:execution_hook_events] << [:after_step_execution, step_execution.id]
+    end
+
+    def self.events
+      Thread.current[:execution_hook_events]
     end
 
     def self.reset_tracking!
-      Thread.current[:hook_test_hooks_called] = nil
+      Thread.current[:execution_hook_events] = nil
     end
   end
 
@@ -170,16 +176,6 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_nil workflow.current_step_name, "current_step_name should be nil after execution"
     assert_equal "second_step", workflow.next_step_name
     assert_equal 2, workflow.step_executions.count
-  end
-
-  test "calls before_step_starts hook" do
-    HookTrackingWorkflow.reset_tracking!
-    workflow = HookTrackingWorkflow.create!(hero: @user)
-    step_execution = workflow.step_executions.first
-
-    GenevaDrive::Executor.execute!(step_execution)
-
-    assert_equal ["tracked_step"], HookTrackingWorkflow.hooks_called
   end
 
   test "skip_if condition evaluated at execution time" do
@@ -479,5 +475,24 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_not_nil step_execution.finished_at
     assert_not_nil step_execution.canceled_at
     assert_in_delta step_execution.canceled_at.to_f, step_execution.finished_at.to_f, 0.001
+  end
+
+  test "calls execution hooks in correct order" do
+    ExecutionHookTrackingWorkflow.reset_tracking!
+    workflow = ExecutionHookTrackingWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution)
+
+    events = ExecutionHookTrackingWorkflow.events
+    assert_equal 3, events.size
+
+    assert_equal :before_step_execution, events[0][0]
+    assert_equal step_execution.id, events[0][1]
+
+    assert_equal :step_body, events[1][0]
+
+    assert_equal :after_step_execution, events[2][0]
+    assert_equal step_execution.id, events[2][1]
   end
 end

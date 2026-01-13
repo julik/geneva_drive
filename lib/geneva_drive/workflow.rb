@@ -327,6 +327,27 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # Override in subclasses
   end
 
+  # Hook that wraps around the actual step code execution.
+  # Use this for APM instrumentation that requires wrapping a block.
+  #
+  # IMPORTANT: Subclasses MUST call super when overriding this method,
+  # otherwise the step code will not execute.
+  #
+  # @param step_execution [GenevaDrive::StepExecution] the step execution record
+  # @yield the step code block
+  # @return [Object] the result of the block
+  #
+  # @example Wrap with AppSignal transaction
+  #   def around_step_execution(step_execution)
+  #     Appsignal.monitor(
+  #       namespace: "workflow",
+  #       action: "#{self.class.name}##{step_execution.step_name}"
+  #     ) { super }
+  #   end
+  def around_step_execution(step_execution)
+    yield
+  end
+
   # Transitions the workflow to a new state.
   #
   # @param new_state [String] the target state

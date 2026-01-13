@@ -51,7 +51,9 @@ class GenevaDrive::Executor
     @workflow.before_step_execution(@step_execution)
 
     @logger.debug("Running the actual step code")
-    flow_result = execute_step(step_def)
+    flow_result = @workflow.around_step_execution(@step_execution) do
+      execute_step(step_def)
+    end
 
     @logger.debug("Running after_step_execution hook")
     @workflow.after_step_execution(@step_execution)

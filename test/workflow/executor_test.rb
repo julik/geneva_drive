@@ -49,6 +49,36 @@ class ExecutorTest < ActiveSupport::TestCase
     end
   end
 
+  # Workflow that tracks around_step_execution wrapping
+  class AroundHookTrackingWorkflow < GenevaDrive::Workflow
+    step :tracked_step do
+      Thread.current[:around_hook_events] ||= []
+      Thread.current[:around_hook_events] << :step_body
+    end
+
+    def around_step_execution(step_execution)
+      Thread.current[:around_hook_events] ||= []
+      Thread.current[:around_hook_events] << :around_before
+      Thread.current[:around_hook_step_execution_id] = step_execution.id
+      result = super
+      Thread.current[:around_hook_events] << :around_after
+      result
+    end
+
+    def self.events
+      Thread.current[:around_hook_events]
+    end
+
+    def self.step_execution_id
+      Thread.current[:around_hook_step_execution_id]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:around_hook_events] = nil
+      Thread.current[:around_hook_step_execution_id] = nil
+    end
+  end
+
   # Workflow with skip_if condition
   class SkipIfWorkflow < GenevaDrive::Workflow
     step :skippable, skip_if: -> { hero.name == "Skip" } do
@@ -494,5 +524,17 @@ class ExecutorTest < ActiveSupport::TestCase
 
     assert_equal :after_step_execution, events[2][0]
     assert_equal step_execution.id, events[2][1]
+  end
+
+  test "around_step_execution wraps step body and receives step_execution" do
+    AroundHookTrackingWorkflow.reset_tracking!
+    workflow = AroundHookTrackingWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution)
+
+    events = AroundHookTrackingWorkflow.events
+    assert_equal [:around_before, :step_body, :around_after], events
+    assert_equal step_execution.id, AroundHookTrackingWorkflow.step_execution_id
   end
 end

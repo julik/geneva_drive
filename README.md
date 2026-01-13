@@ -30,6 +30,17 @@ bin/rails generate geneva_drive:install
 bin/rails db:migrate
 ```
 
+You should also add the housekeeping job to your background job cron table
+(below example is for `recurring.yml` in solid_queue):
+
+```yaml
+geneva_drive_housekeeping:
+  schedule: "*/30 * * * *" # Every 30 minutes
+  class: "GenevaDrive::HousekeepingJob"
+```
+
+
+
 ## Usage
 
 ### Defining a Workflow
@@ -249,7 +260,6 @@ end
 |---------|-----------|-------|--------|
 | Workflow Uniqueness | Partial Index | Generated Column | Partial Index |
 | Step Execution Uniqueness | Partial Index | Generated Column | Partial Index |
-| Production Ready | Yes | Yes | Dev/Test Only |
 
 ## Requirements
 

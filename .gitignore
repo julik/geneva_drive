@@ -5,6 +5,10 @@
 # LLM
 /.claude/
 
+# Generated documentation
+/doc/
+/.yardoc/
+
 # Test dummy apps
 /test/dummy/db/*.sqlite3
 /test/dummy/db/*.sqlite3-*
@@ -25,6 +29,7 @@
 *.swp
 *.swo
 *~
+.tm-properties
 
 # macOS
 .DS_Store

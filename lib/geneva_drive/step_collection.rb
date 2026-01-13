@@ -32,7 +32,7 @@ class GenevaDrive::StepCollection
   #   Checks if the collection is empty.
   #   @return [Boolean] true if no steps
 
-  # @!method []
+  # @!method [](index)
   #   Returns the step at the given index.
   #   @param index [Integer] the index
   #   @return [StepDefinition, nil] the step or nil

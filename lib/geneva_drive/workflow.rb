@@ -62,11 +62,12 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # Defines a step in the workflow.
     #
     # @param name [String, Symbol, nil] the step name (auto-generated if nil)
-    # @param wait [ActiveSupport::Duration, nil] delay before execution
-    # @param skip_if [Proc, Symbol, Boolean, nil] condition for skipping
-    # @param on_exception [Symbol] exception handler (:pause!, :cancel!, :reattempt!, :skip!)
-    # @param before_step [String, Symbol, nil] position before this step
-    # @param after_step [String, Symbol, nil] position after this step
+    # @param options [Hash] step options
+    # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+    # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
+    # @option options [Symbol] :on_exception exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+    # @option options [String, Symbol, nil] :before_step position before this step
+    # @option options [String, Symbol, nil] :after_step position after this step
     # @yield the step implementation
     # @return [void]
     #

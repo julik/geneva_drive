@@ -37,12 +37,13 @@ class GenevaDrive::StepDefinition
   #
   # @param name [String, Symbol] the step name
   # @param callable [Proc, Symbol, nil] the code to execute (block or method name)
-  # @param wait [ActiveSupport::Duration, nil] delay before execution
-  # @param skip_if [Proc, Symbol, Boolean, nil] condition for skipping
-  # @param if [Proc, Symbol, Boolean, nil] condition for running (inverse of skip_if)
-  # @param on_exception [Symbol] how to handle exceptions
-  # @param before_step [String, Symbol, nil] position before this step
-  # @param after_step [String, Symbol, nil] position after this step
+  # @param options [Hash] additional options
+  # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+  # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
+  # @option options [Proc, Symbol, Boolean, nil] :if condition for running (inverse of skip_if)
+  # @option options [Symbol] :on_exception how to handle exceptions
+  # @option options [String, Symbol, nil] :before_step position before this step
+  # @option options [String, Symbol, nil] :after_step position after this step
   # @raise [StepConfigurationError] if configuration is invalid
   def initialize(name:, callable:, **options)
     @name = name.to_s

@@ -10,7 +10,7 @@ Gem::Specification.new do |spec|
   spec.homepage = "https://github.com/julik/geneva_drive"
   spec.summary = "Durable workflows for Rails applications"
   spec.description = "GenevaDrive provides a clean DSL for defining multi-step workflows that execute asynchronously, with strong guarantees around idempotency, concurrency control, and state management."
-  spec.license = "LGPL/Commercial"
+  spec.licenses = ["LGPLv3", "Commercial"]
 
   spec.metadata["homepage_uri"] = spec.homepage
   spec.metadata["source_code_uri"] = spec.homepage

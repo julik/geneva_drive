@@ -327,7 +327,16 @@ resumable_step(name = nil,
 ```ruby
 class AddResumableStepSupport < ActiveRecord::Migration[7.1]
   def change
-    add_column :geneva_drive_step_executions, :cursor, :text
+    # Use database-native JSON type:
+    # - PostgreSQL: jsonb (indexed, efficient, supports containment queries)
+    # - MySQL 5.7+: json (native validation and storage)
+    # - SQLite: text (with Rails JSON serialization - no native JSON type)
+    if connection.adapter_name.downcase.include?('postgresql')
+      add_column :geneva_drive_step_executions, :cursor, :jsonb
+    else
+      add_column :geneva_drive_step_executions, :cursor, :json
+    end
+
     add_column :geneva_drive_step_executions, :completed_iterations, :integer, default: 0
 
     # Update unique constraint to include 'suspended' as an active state
@@ -345,20 +354,25 @@ class AddResumableStepSupport < ActiveRecord::Migration[7.1]
 end
 ```
 
-**Why TEXT for cursor instead of JSONB?**
-- Compatible with SQLite, MySQL, and PostgreSQL (GenevaDrive supports all three)
-- Cursor is serialized/deserialized as JSON in Ruby
+**Why database-native JSON types?**
+- **PostgreSQL JSONB**: Supports indexing, containment queries (`@>`), efficient storage
+- **MySQL JSON**: Native validation, JSON path query support
+- **SQLite**: Falls back to TEXT with Rails handling serialization transparently
+- Rails automatically handles serialization/deserialization per adapter
 
 ### 5.2 Fast Checkpoint Updates
 
 Checkpointing happens after every iteration, so it must be fast. Use `update_all` to bypass ActiveRecord callbacks and validations:
 
 ```ruby
-def checkpoint!(new_cursor)
+def persist_cursor!(new_cursor)
+  # Serialize cursor value using ActiveJob serializers (handles Date, Time, etc.)
+  serialized = new_cursor.nil? ? nil : ActiveJob::Arguments.serialize([new_cursor]).first
+
   GenevaDrive::StepExecution
     .where(id: @step_execution.id)
     .update_all(
-      cursor: JSON.generate(new_cursor),
+      cursor: serialized,  # Rails handles JSON encoding per database adapter
       completed_iterations: Arel.sql("completed_iterations + 1")
     )
 end
@@ -369,6 +383,7 @@ end
 - Single SQL statement: `UPDATE ... SET cursor = ?, completed_iterations = completed_iterations + 1 WHERE id = ?`
 - No `with_lock` needed—atomic increment via SQL
 - Critical for high-throughput iteration (thousands of items per second)
+- Rails automatically encodes to JSONB/JSON/TEXT based on database adapter
 
 ### 5.3 New State: `suspended`
 
@@ -390,22 +405,25 @@ end
 
 ### 5.4 Cursor Serialization
 
-Cursors use ActiveJob's serialization system, which handles Date, Time, DateTime, BigDecimal, and other types automatically:
+Cursors use ActiveJob's serialization system, which handles Date, Time, DateTime, BigDecimal, and other types automatically. With native JSON columns, Rails handles the JSON encoding/decoding transparently:
 
 ```ruby
 # StepExecution additions
 class GenevaDrive::StepExecution < ActiveRecord::Base
+  # Rails automatically serializes/deserializes native JSON columns.
+  # We wrap/unwrap for ActiveJob serializer compatibility (Date, Time, etc.)
+
   def cursor_value
     return nil if cursor.blank?
-    ActiveJob::Arguments.deserialize([JSON.parse(cursor)]).first
+    ActiveJob::Arguments.deserialize([cursor]).first
   end
 
   def cursor_value=(value)
     if value.nil?
       self.cursor = nil
     else
-      serialized = ActiveJob::Arguments.serialize([value]).first
-      self.cursor = JSON.generate(serialized)
+      # ActiveJob serializers convert Date/Time/etc. to serializable hashes
+      self.cursor = ActiveJob::Arguments.serialize([value]).first
     end
   end
 end
@@ -647,11 +665,15 @@ class GenevaDrive::IterableStep
   private
 
   def persist_cursor!
+    # Serialize cursor using ActiveJob serializers (handles Date, Time, etc.)
+    serialized = @cursor.nil? ? nil : ActiveJob::Arguments.serialize([@cursor]).first
+
     # Fast update bypassing AR callbacks - critical for high-throughput iteration
+    # Rails handles JSON encoding per database adapter (JSONB/JSON/TEXT)
     GenevaDrive::StepExecution
       .where(id: @execution.id)
       .update_all(
-        cursor: @cursor.nil? ? nil : JSON.generate(@cursor),
+        cursor: serialized,
         completed_iterations: Arel.sql("completed_iterations + 1")
       )
   end
@@ -946,7 +968,7 @@ end
 | **Scope** | Any ActiveJob | Any ActiveJob | Workflow steps only |
 | **State Storage** | Job serialization | Job serialization | `step_executions` table |
 | **Checkpoint** | Configurable | Manual `set!`/`advance!` | Manual or auto via `iterate_over_*` |
-| **Cursor Type** | Primitives only | Any serializable | Primitives (JSON) |
+| **Cursor Type** | Primitives only | Any serializable | Any AJ-serializable (native JSON/JSONB) |
 | **Flow Control** | Limited | Limited | Full (cancel!, pause!, skip!, reattempt!) |
 | **Rewind Support** | N/A | N/A | `reattempt!(rewind: true)` |
 

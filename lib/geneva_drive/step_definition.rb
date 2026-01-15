@@ -82,6 +82,13 @@ class GenevaDrive::StepDefinition
     evaluate_condition(@skip_condition, workflow)
   end
 
+  # Returns whether this is a resumable step.
+  #
+  # @return [Boolean] false for standard steps
+  def resumable?
+    false
+  end
+
   # Executes the step callable in the context of the workflow.
   #
   # @param workflow [GenevaDrive::Workflow] the workflow instance

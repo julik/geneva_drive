@@ -24,6 +24,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   enum :state, {
     scheduled: "scheduled",
     in_progress: "in_progress",
+    suspended: "suspended",
     completed: "completed",
     failed: "failed",
     canceled: "canceled",
@@ -133,6 +134,47 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
+  # Marks the step execution as suspended (for resumable steps).
+  # The cursor is persisted separately via fast checkpoint updates.
+  #
+  # @return [void]
+  def mark_suspended!
+    with_lock do
+      update!(state: "suspended")
+    end
+  end
+
+  # Returns the deserialized cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  #
+  # @return [Object, nil] the cursor value
+  def cursor_value
+    return nil if cursor.blank?
+    ActiveJob::Arguments.deserialize([cursor]).first
+  end
+
+  # Sets the cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  #
+  # @param value [Object] the cursor value to store
+  # @return [void]
+  def cursor_value=(value)
+    if value.nil?
+      self.cursor = nil
+    else
+      self.cursor = ActiveJob::Arguments.serialize([value]).first
+    end
+  end
+
+  # Resets the cursor and iteration count for a full rewind.
+  #
+  # @return [void]
+  def rewind_cursor!
+    with_lock do
+      update!(cursor: nil, completed_iterations: 0)
+    end
+  end
+
   # Returns the step definition for this execution.
   #
   # @return [StepDefinition, nil] the step definition
@@ -142,9 +184,10 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Executes this step using the Executor.
   #
+  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
   # @return [void]
-  def execute!
-    GenevaDrive::Executor.execute!(self)
+  def execute!(interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
+    GenevaDrive::Executor.execute!(self, interrupt_configuration: interrupt_configuration)
   end
 
   # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow

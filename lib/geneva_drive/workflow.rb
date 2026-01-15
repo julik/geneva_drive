@@ -128,6 +128,79 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       step_def
     end
 
+    # Defines a resumable step that can iterate over large collections.
+    # The block receives an IterableStep object for cursor-based iteration
+    # that survives job restarts.
+    #
+    # @param name [String, Symbol, nil] the step name (auto-generated if nil)
+    # @param options [Hash] step options
+    # @option options [Integer, nil] :max_iterations interrupt after N iterations
+    # @option options [ActiveSupport::Duration, nil] :max_runtime interrupt after duration
+    # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+    # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
+    # @option options [Symbol] :on_exception exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+    # @option options [String, Symbol, nil] :before_step position before this step
+    # @option options [String, Symbol, nil] :after_step position after this step
+    # @yield [iter] the step implementation receiving an IterableStep object
+    # @yieldparam iter [GenevaDrive::IterableStep] cursor management object
+    # @return [void]
+    #
+    # @example Iterate over records with automatic checkpointing
+    #   resumable_step :process_users do |iter|
+    #     iter.iterate_over_records(hero.users) do |user|
+    #       process(user)
+    #     end
+    #   end
+    #
+    # @example Manual cursor control
+    #   resumable_step :sync_pages do |iter|
+    #     page = iter.cursor || 1
+    #     loop do
+    #       response = Api.fetch(page: page)
+    #       break if response.empty?
+    #       response.each { |item| process(item) }
+    #       page += 1
+    #       iter.set!(page)
+    #     end
+    #   end
+    #
+    # @example With iteration limits
+    #   resumable_step :bulk_import, max_iterations: 10_000 do |iter|
+    #     iter.iterate_over_records(records) { |r| import(r) }
+    #   end
+    def resumable_step(name = nil, **options, &block)
+      raise ArgumentError, "resumable_step requires a block" unless block_given?
+
+      # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
+      if _step_definitions.equal?(superclass._step_definitions)
+        self._step_definitions = _step_definitions.dup
+      end
+      # Invalidate cached step collection since we're adding a step
+      @steps = nil
+
+      step_name = (name || generate_step_name).to_s
+
+      # Check for duplicate step names
+      if _step_definitions.any? { |s| s.name == step_name }
+        raise GenevaDrive::StepConfigurationError,
+          "Step '#{step_name}' is already defined in #{self.name}"
+      end
+
+      # Validate positioning references exist
+      validate_step_positioning_reference!(step_name, options[:before_step], :before_step)
+      validate_step_positioning_reference!(step_name, options[:after_step], :after_step)
+
+      step_def = GenevaDrive::ResumableStepDefinition.new(
+        name: step_name,
+        **options,
+        &block
+      )
+
+      _step_definitions << step_def
+
+      step_def
+    end
+
     # Defines a blanket cancellation condition for the workflow.
     # Checked before every step execution.
     #
@@ -278,6 +351,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #   that hasn't passed yet, the step is rescheduled for that original time (preserving
   #   remaining wait). If the time has passed, the step runs immediately.
   #
+  # - **Paused resumable step**: If a suspended step execution exists (from pause! in a
+  #   resumable step), it will be re-enqueued to continue from the saved cursor position.
+  #
   # @example Resuming after step failure (runs immediately)
   #   # step_two fails with on_exception: :pause!
   #   workflow.state          # => "paused"
@@ -293,7 +369,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #   workflow.pause!         # paused last week
   #   workflow.resume!        # step_two runs immediately (time already passed)
   #
-  # @return [StepExecution] the created step execution
+  # @return [StepExecution] the re-enqueued or created step execution
   # @raise [InvalidStateError] if workflow is not paused
   #
   # ## Implementation details
@@ -305,22 +381,32 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   def resume!
     raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
-    logger.info("Resuming paused workflow, will schedule step #{next_step_name.inspect}")
-    with_lock do
-      update!(state: "ready", transitioned_at: nil)
+    # Check for a suspended step execution (from pause! in a resumable step)
+    suspended_execution = step_executions.find_by(state: "suspended")
+
+    if suspended_execution
+      logger.info("Resuming paused workflow with suspended step execution #{suspended_execution.id}, cursor: #{suspended_execution.cursor_value.inspect}")
+      with_lock do
+        update!(state: "ready", transitioned_at: nil)
+      end
+      reenqueue_suspended_execution!(suspended_execution)
+    else
+      logger.info("Resuming paused workflow, will schedule step #{next_step_name.inspect}")
+      with_lock do
+        update!(state: "ready", transitioned_at: nil)
+      end
+      step_def = steps.named(next_step_name)
+      wait = calculate_remaining_wait_for_resume(next_step_name)
+      create_step_execution(step_def, wait: wait)
     end
-
-    step_def = steps.named(next_step_name)
-    wait = calculate_remaining_wait_for_resume(next_step_name)
-
-    create_step_execution(step_def, wait: wait)
   end
 
   # Returns the current active step execution, if any.
+  # Includes scheduled, in_progress, and suspended states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
-    step_executions.where(state: %w[scheduled in_progress]).first
+    step_executions.where(state: %w[scheduled in_progress suspended]).first
   end
 
   # Returns all step executions in chronological order.
@@ -465,6 +551,31 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # If the original time has passed, run immediately (return nil)
     # Otherwise, return the remaining time as a duration
     (remaining_seconds > 0) ? remaining_seconds.seconds : nil
+  end
+
+  # Re-enqueues a suspended step execution for continuation.
+  # Used by resume! when resuming a paused workflow with a suspended resumable step.
+  #
+  # @param execution [StepExecution] the suspended execution to re-enqueue
+  # @return [StepExecution] the re-enqueued execution
+  def reenqueue_suspended_execution!(execution)
+    job_options = self.class._step_job_options.dup
+    execution_id = execution.id
+    workflow_logger = logger
+
+    ActiveRecord.after_all_transactions_commit do
+      job = GenevaDrive::PerformStepJob
+        .set(**job_options)
+        .perform_later(execution_id)
+
+      workflow_logger.debug("Re-enqueued PerformStepJob with job_id=#{job.job_id} for suspended execution")
+
+      GenevaDrive::StepExecution
+        .where(id: execution_id)
+        .update_all(job_id: job.job_id)
+    end
+
+    execution
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

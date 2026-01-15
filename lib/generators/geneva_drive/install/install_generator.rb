@@ -40,6 +40,11 @@ module GenevaDrive
           "add_error_class_name_to_step_executions.rb",
           "db/migrate/add_error_class_name_to_geneva_drive_step_executions.rb"
         )
+
+        migration_template(
+          "add_resumable_step_support.rb",
+          "db/migrate/add_resumable_step_support_to_geneva_drive_step_executions.rb"
+        )
       end
 
       # Creates the initializer file.

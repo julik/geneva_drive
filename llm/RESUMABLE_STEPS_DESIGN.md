@@ -126,7 +126,7 @@ The `advance!` method raises `ArgumentError` if the cursor is not an `Integer`.
 |--------|-------------|
 | `iter.iterate_over(array)` | Iterate over stable array; uses index as cursor |
 | `iter.iterate_over_records(relation, cursor: :id)` | Iterate over AR relation; uses `find_each`, column as cursor |
-| `iter.iterate_over_record_batches(relation, batch_size:, cursor: :id)` | Iterate over batches; yields AR relation per batch |
+| `iter.iterate_over_subrelations(relation, batch_size:, cursor: :id)` | Iterate over subrelations; yields AR relation with offset |
 | `iter.skip_to!(value, wait: nil)` | Set cursor, persist, suspend. Optional `wait:` for delayed re-enqueue |
 
 ---
@@ -182,24 +182,24 @@ iter.iterate_over_records(hero.subscribers, cursor: :created_at) do |subscriber|
 end
 ```
 
-### 4.3 Iterating Over Record Batches
+### 4.3 Iterating Over Subrelations
 
-For bulk operations, use `iterate_over_record_batches`. Each batch is an ActiveRecord relation, enabling efficient bulk operations:
+For bulk operations, use `iterate_over_subrelations`. Each iteration yields an ActiveRecord relation with offset applied, enabling efficient bulk operations:
 
 ```ruby
 resumable_step :bulk_insert_notifications do |iter|
-  iter.iterate_over_record_batches(hero.subscribers, batch_size: 500) do |batch_relation|
-    # batch_relation is an AR relation - use bulk operations
+  iter.iterate_over_subrelations(hero.subscribers, batch_size: 500) do |relation_with_offset|
+    # relation_with_offset is an AR relation - use bulk operations
     Notification.insert_all(
-      batch_relation.pluck(:id).map { |id| { subscriber_id: id, campaign_id: hero.id } }
+      relation_with_offset.pluck(:id).map { |id| { subscriber_id: id, campaign_id: hero.id } }
     )
   end
 end
 
 resumable_step :bulk_update_status do |iter|
-  iter.iterate_over_record_batches(hero.subscribers, batch_size: 1000) do |batch_relation|
+  iter.iterate_over_subrelations(hero.subscribers, batch_size: 1000) do |relation_with_offset|
     # Can call update_all directly on the relation
-    batch_relation.update_all(notified_at: Time.current)
+    relation_with_offset.update_all(notified_at: Time.current)
   end
 end
 ```
@@ -646,18 +646,18 @@ class GenevaDrive::IterableStep
     end
   end
 
-  # Iterate over AR relation in batches, yielding each batch as an AR relation
-  def iterate_over_record_batches(relation, batch_size:, cursor: :id)
+  # Iterate over AR relation in subrelations, yielding each as an AR relation with offset
+  def iterate_over_subrelations(relation, batch_size:, cursor: :id)
     filtered = if @cursor
       relation.where("#{cursor} > ?", @cursor).order(cursor => :asc)
     else
       relation.order(cursor => :asc)
     end
 
-    filtered.in_batches(of: batch_size) do |batch_relation|
-      yield batch_relation
-      # Get the max cursor value from this batch
-      last_cursor = batch_relation.maximum(cursor)
+    filtered.in_batches(of: batch_size) do |relation_with_offset|
+      yield relation_with_offset
+      # Get the max cursor value from this subrelation
+      last_cursor = relation_with_offset.maximum(cursor)
       set!(last_cursor) if last_cursor
     end
   end
@@ -927,7 +927,7 @@ When exceeded, the step suspends. Housekeeping can detect and handle stuck steps
 ```ruby
 module GenevaDrive::TestHelpers
   # Run resumable step completely without interruption
-  def speedrun_resumable_step(workflow, step_name)
+  def speedrun_current_step(workflow, step_name)
     execution = workflow.current_execution
     with_interruption_disabled do
       ResumableStepExecutor.new(execution).execute!
@@ -988,7 +988,7 @@ end
 7. Implement `skip_to!(value, wait:)` for cursor jump with optional delayed re-enqueue
 8. Implement `iterate_over` for Enumerables
 9. Implement `iterate_over_records` for AR relations
-10. Implement `iterate_over_record_batches` for batch processing
+10. Implement `iterate_over_subrelations` for batch processing
 
 ### Phase 3: Flow Control
 11. Enhance `reattempt!` with `rewind:` option

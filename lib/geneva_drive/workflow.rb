@@ -128,6 +128,79 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       step_def
     end
 
+    # Defines a resumable step that can iterate over large collections.
+    # The block receives an IterableStep object for cursor-based iteration
+    # that survives job restarts.
+    #
+    # @param name [String, Symbol, nil] the step name (auto-generated if nil)
+    # @param options [Hash] step options
+    # @option options [Integer, nil] :max_iterations interrupt after N iterations
+    # @option options [ActiveSupport::Duration, nil] :max_runtime interrupt after duration
+    # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+    # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
+    # @option options [Symbol] :on_exception exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+    # @option options [String, Symbol, nil] :before_step position before this step
+    # @option options [String, Symbol, nil] :after_step position after this step
+    # @yield [iter] the step implementation receiving an IterableStep object
+    # @yieldparam iter [GenevaDrive::IterableStep] cursor management object
+    # @return [void]
+    #
+    # @example Iterate over records with automatic checkpointing
+    #   resumable_step :process_users do |iter|
+    #     iter.iterate_over_records(hero.users) do |user|
+    #       process(user)
+    #     end
+    #   end
+    #
+    # @example Manual cursor control
+    #   resumable_step :sync_pages do |iter|
+    #     page = iter.cursor || 1
+    #     loop do
+    #       response = Api.fetch(page: page)
+    #       break if response.empty?
+    #       response.each { |item| process(item) }
+    #       page += 1
+    #       iter.set!(page)
+    #     end
+    #   end
+    #
+    # @example With iteration limits
+    #   resumable_step :bulk_import, max_iterations: 10_000 do |iter|
+    #     iter.iterate_over_records(records) { |r| import(r) }
+    #   end
+    def resumable_step(name = nil, **options, &block)
+      raise ArgumentError, "resumable_step requires a block" unless block_given?
+
+      # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
+      if _step_definitions.equal?(superclass._step_definitions)
+        self._step_definitions = _step_definitions.dup
+      end
+      # Invalidate cached step collection since we're adding a step
+      @steps = nil
+
+      step_name = (name || generate_step_name).to_s
+
+      # Check for duplicate step names
+      if _step_definitions.any? { |s| s.name == step_name }
+        raise GenevaDrive::StepConfigurationError,
+          "Step '#{step_name}' is already defined in #{self.name}"
+      end
+
+      # Validate positioning references exist
+      validate_step_positioning_reference!(step_name, options[:before_step], :before_step)
+      validate_step_positioning_reference!(step_name, options[:after_step], :after_step)
+
+      step_def = GenevaDrive::ResumableStepDefinition.new(
+        name: step_name,
+        **options,
+        &block
+      )
+
+      _step_definitions << step_def
+
+      step_def
+    end
+
     # Defines a blanket cancellation condition for the workflow.
     # Checked before every step execution.
     #
@@ -313,10 +386,11 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Returns the current active step execution, if any.
+  # Includes scheduled, in_progress, and suspended states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
-    step_executions.where(state: %w[scheduled in_progress]).first
+    step_executions.where(state: %w[scheduled in_progress suspended]).first
   end
 
   # Returns all step executions in chronological order.

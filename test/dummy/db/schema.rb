@@ -17,7 +17,9 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
   create_table "geneva_drive_step_executions", force: :cascade do |t|
     t.datetime "canceled_at"
     t.datetime "completed_at"
+    t.integer "completed_iterations", default: 0, null: false
     t.datetime "created_at", null: false
+    t.jsonb "cursor"
     t.text "error_backtrace"
     t.string "error_class_name"
     t.text "error_message"
@@ -39,7 +41,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
     t.index ["workflow_id", "created_at"], name: "idx_on_workflow_id_created_at_af16a14fb2"
     t.index ["workflow_id", "state"], name: "index_geneva_drive_step_executions_on_workflow_id_and_state"
     t.index ["workflow_id"], name: "index_geneva_drive_step_executions_on_workflow_id"
-    t.index ["workflow_id"], name: "index_geneva_drive_step_executions_one_active", unique: true, where: "((state)::text = ANY (ARRAY[('scheduled'::character varying)::text, ('in_progress'::character varying)::text]))"
+    t.index ["workflow_id"], name: "index_geneva_drive_step_executions_one_active", unique: true, where: "((state)::text = ANY ((ARRAY['scheduled'::character varying, 'in_progress'::character varying, 'suspended'::character varying])::text[]))"
   end
 
   create_table "geneva_drive_workflows", force: :cascade do |t|

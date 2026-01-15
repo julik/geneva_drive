@@ -26,11 +26,20 @@ class GenevaDrive::Executor
   }.freeze
 
   # Executes a step execution with full flow control and exception handling.
+  # Dispatches to ResumableStepExecutor for resumable steps.
   #
   # @param step_execution [GenevaDrive::StepExecution] the step to execute
+  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
   # @return [void]
-  def self.execute!(step_execution)
-    new.call(step_execution)
+  def self.execute!(step_execution, interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
+    step_def = step_execution.step_definition
+
+    # Dispatch to appropriate executor based on step type
+    if step_def&.resumable? || step_execution.suspended?
+      GenevaDrive::ResumableStepExecutor.execute!(step_execution, interrupt_configuration: interrupt_configuration)
+    else
+      new.call(step_execution)
+    end
   end
 
   # Performs the step execution.

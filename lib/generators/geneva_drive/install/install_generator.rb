@@ -60,6 +60,11 @@ module GenevaDrive
           "add_started_at_index_to_step_executions.rb",
           "db/migrate/add_started_at_index_to_geneva_drive_step_executions.rb"
         )
+
+        migration_template(
+          "add_resumable_step_support.rb",
+          "db/migrate/add_resumable_step_support_to_geneva_drive_step_executions.rb"
+        )
       end
 
       # Creates the initializer file.

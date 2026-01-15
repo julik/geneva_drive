@@ -26,6 +26,7 @@ class GenevaDrive::Executor
   }.freeze
 
   # Executes a step execution with full flow control and exception handling.
+  # Dispatches to ResumableStepExecutor for resumable steps.
   #
   # @param step_execution [GenevaDrive::StepExecution] the step to execute
   # @param logger [Logger, nil] optional base logger to inject into the workflow.
@@ -33,13 +34,21 @@ class GenevaDrive::Executor
   #   with workflow and step-specific tags added on top. This allows callers
   #   (background jobs, controllers, etc.) to pass in a logger that already
   #   has appropriate context tags (e.g., job_id, request_id).
+  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
   # @return [void]
   #
   # @example Execute with a pre-tagged logger from a background job
   #   logger = Rails.logger.tagged("job_id=#{job_id}")
   #   GenevaDrive::Executor.execute!(step_execution, logger: logger)
-  def self.execute!(step_execution, logger: nil)
-    new.call(step_execution, logger: logger)
+  def self.execute!(step_execution, logger: nil, interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
+    step_def = step_execution.step_definition
+
+    # Dispatch to appropriate executor based on step type
+    if step_def&.resumable? || step_execution.suspended?
+      GenevaDrive::ResumableStepExecutor.execute!(step_execution, interrupt_configuration: interrupt_configuration)
+    else
+      new.call(step_execution, logger: logger)
+    end
   end
 
   # Performs the step execution.

@@ -159,10 +159,10 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # @param value [Object] the cursor value to store
   # @return [void]
   def cursor_value=(value)
-    if value.nil?
-      self.cursor = nil
+    self.cursor = if value.nil?
+      nil
     else
-      self.cursor = ActiveJob::Arguments.serialize([value]).first
+      ActiveJob::Arguments.serialize([value]).first
     end
   end
 

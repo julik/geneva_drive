@@ -300,7 +300,7 @@ module GenevaDrive::TestHelpers
     end
 
     assert execution&.suspended?,
-      "Expected step #{step_name || 'current'} to be suspended, " \
-      "but was #{execution&.state || 'not found'}"
+      "Expected step #{step_name || "current"} to be suspended, " \
+      "but was #{execution&.state || "not found"}"
   end
 end

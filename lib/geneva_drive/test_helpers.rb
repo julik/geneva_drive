@@ -191,14 +191,17 @@ module GenevaDrive::TestHelpers
   #   assert_step_executed(workflow, :send_emails)
   #
   def speedrun_current_step(workflow, max_executions: 100)
+    workflow.reload
+    step_execution = workflow.current_execution
+    return nil unless step_execution
+
     executions = 0
+    original_step_name = step_execution.step_name
     # Disable interruption checks so the step runs to completion
     config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
 
     loop do
-      workflow.reload
-      step_execution = workflow.current_execution
-      break unless step_execution
+      step_execution.reload
       break if step_execution.completed? || step_execution.failed? || step_execution.canceled? || step_execution.skipped?
 
       step_execution.execute!(interrupt_configuration: config)
@@ -206,12 +209,13 @@ module GenevaDrive::TestHelpers
 
       if executions >= max_executions
         raise "speedrun_current_step exceeded max_executions (#{max_executions}). " \
-              "Step may be in an infinite loop."
+              "Step '#{original_step_name}' may be in an infinite loop."
       end
     end
 
     workflow.reload
-    workflow.step_executions.order(:created_at).last
+    step_execution.reload
+    step_execution
   end
 
   # Runs a resumable step for a specific number of iterations, then allows interruption.
@@ -296,7 +300,7 @@ module GenevaDrive::TestHelpers
     end
 
     assert execution&.suspended?,
-      "Expected step #{step_name || 'current'} to be suspended, " \
-      "but was #{execution&.state || 'not found'}"
+      "Expected step #{step_name || "current"} to be suspended, " \
+      "but was #{execution&.state || "not found"}"
   end
 end

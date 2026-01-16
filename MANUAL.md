@@ -808,13 +808,9 @@ This separation keeps the workflows table clean while maintaining a complete aud
 
 ### UUID Primary Keys
 
-If your application uses UUID primary keys, pass the `--uuid` flag:
+If your application uses UUID primary keys, the migrations will detect this and also use UUIDs for the foreign keys and the primary keys of the geneva_drive resources.
 
-```bash
-bin/rails generate geneva_drive:install --uuid
-```
-
-This configures both tables to use UUID primary keys and ensures foreign key references work correctly.
+Note that you don't want to mix integer IDs and UUIDs in the same application.
 
 ---
 

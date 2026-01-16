@@ -351,8 +351,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #   that hasn't passed yet, the step is rescheduled for that original time (preserving
   #   remaining wait). If the time has passed, the step runs immediately.
   #
-  # - **Paused resumable step**: If a suspended step execution exists (from pause! in a
-  #   resumable step), it will be re-enqueued to continue from the saved cursor position.
+  # - **Paused resumable step**: If a step execution was paused during a resumable step
+  #   (completed with outcome: "workflow_paused" and has a cursor), creates a successor
+  #   execution to continue from the saved cursor position.
   #
   # @example Resuming after step failure (runs immediately)
   #   # step_two fails with on_exception: :pause!
@@ -369,7 +370,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #   workflow.pause!         # paused last week
   #   workflow.resume!        # step_two runs immediately (time already passed)
   #
-  # @return [StepExecution] the re-enqueued or created step execution
+  # @return [StepExecution, nil] the created or existing step execution
   # @raise [InvalidStateError] if workflow is not paused
   #
   # ## Implementation details
@@ -381,15 +382,41 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   def resume!
     raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
-    # Check for a suspended step execution (from pause! in a resumable step)
-    suspended_execution = step_executions.find_by(state: "suspended")
+    # Check for an execution that was paused during a resumable step (completed with cursor)
+    paused_resumable_execution = step_executions.find_by(
+      outcome: "workflow_paused",
+      state: "completed"
+    )
 
-    if suspended_execution
-      logger.info("Resuming paused workflow with suspended step execution #{suspended_execution.id}, cursor: #{suspended_execution.cursor_value.inspect}")
+    # Check for an execution that was externally paused (canceled)
+    externally_paused_execution = step_executions.find_by(
+      outcome: "workflow_paused",
+      state: "canceled"
+    )
+
+    if paused_resumable_execution && paused_resumable_execution.cursor.present?
+      # Resumable step was paused mid-execution - create successor
+      logger.info("Resuming paused workflow from execution #{paused_resumable_execution.id}, cursor: #{paused_resumable_execution.cursor_value.inspect}")
       with_lock do
         update!(state: "ready", transitioned_at: nil)
       end
-      reenqueue_suspended_execution!(suspended_execution)
+      create_resumable_successor!(paused_resumable_execution)
+    elsif externally_paused_execution
+      # Step was externally paused - re-schedule the same step
+      step_name = externally_paused_execution.step_name
+      logger.info("Resuming externally paused workflow, re-scheduling step #{step_name.inspect}")
+      with_lock do
+        update!(state: "ready", transitioned_at: nil)
+      end
+      step_def = steps.named(step_name)
+      create_step_execution(step_def)
+    elsif (scheduled_execution = step_executions.find_by(state: "scheduled"))
+      # Already have a scheduled execution
+      logger.info("Resuming paused workflow with existing scheduled execution #{scheduled_execution.id}")
+      with_lock do
+        update!(state: "ready", transitioned_at: nil)
+      end
+      scheduled_execution
     else
       logger.info("Resuming paused workflow, will schedule step #{next_step_name.inspect}")
       with_lock do
@@ -402,11 +429,11 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Returns the current active step execution, if any.
-  # Includes scheduled, in_progress, and suspended states.
+  # Includes scheduled and in_progress states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
-    step_executions.where(state: %w[scheduled in_progress suspended]).first
+    step_executions.where(state: %w[scheduled in_progress]).first
   end
 
   # Returns all step executions in chronological order.
@@ -553,29 +580,38 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     (remaining_seconds > 0) ? remaining_seconds.seconds : nil
   end
 
-  # Re-enqueues a suspended step execution for continuation.
-  # Used by resume! when resuming a paused workflow with a suspended resumable step.
+  # Creates a successor step execution that continues from a paused resumable step.
+  # Used by resume! when resuming a paused workflow.
   #
-  # @param execution [StepExecution] the suspended execution to re-enqueue
-  # @return [StepExecution] the re-enqueued execution
-  def reenqueue_suspended_execution!(execution)
+  # @param paused_execution [StepExecution] the paused execution to continue from
+  # @return [StepExecution] the new successor execution
+  def create_resumable_successor!(paused_execution)
+    successor = GenevaDrive::StepExecution.create!(
+      workflow: self,
+      step_name: paused_execution.step_name,
+      state: "scheduled",
+      scheduled_for: Time.current,
+      continues_from_id: paused_execution.id,
+      cursor: paused_execution.cursor
+    )
+
     job_options = self.class._step_job_options.dup
-    execution_id = execution.id
+    successor_id = successor.id
     workflow_logger = logger
 
     ActiveRecord.after_all_transactions_commit do
       job = GenevaDrive::PerformStepJob
         .set(**job_options)
-        .perform_later(execution_id)
+        .perform_later(successor_id)
 
-      workflow_logger.debug("Re-enqueued PerformStepJob with job_id=#{job.job_id} for suspended execution")
+      workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for successor execution ##{successor_id}")
 
       GenevaDrive::StepExecution
-        .where(id: execution_id)
+        .where(id: successor_id)
         .update_all(job_id: job.job_id)
     end
 
-    execution
+    successor
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

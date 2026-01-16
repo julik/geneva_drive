@@ -10,14 +10,14 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
+ActiveRecord::Schema[8.1].define(version: 2024_12_17_000005) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
   create_table "geneva_drive_step_executions", force: :cascade do |t|
     t.datetime "canceled_at"
     t.datetime "completed_at"
-    t.integer "completed_iterations", default: 0, null: false
+    t.bigint "continues_from_id"
     t.datetime "created_at", null: false
     t.jsonb "cursor"
     t.text "error_backtrace"
@@ -34,6 +34,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
     t.string "step_name", null: false
     t.datetime "updated_at", null: false
     t.bigint "workflow_id", null: false
+    t.index ["continues_from_id"], name: "index_geneva_drive_step_executions_on_continues_from_id"
     t.index ["finished_at"], name: "index_geneva_drive_step_executions_on_finished_at"
     t.index ["scheduled_for"], name: "index_geneva_drive_step_executions_on_scheduled_for"
     t.index ["state", "scheduled_for"], name: "index_geneva_drive_step_executions_scheduled"
@@ -41,7 +42,7 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
     t.index ["workflow_id", "created_at"], name: "idx_on_workflow_id_created_at_af16a14fb2"
     t.index ["workflow_id", "state"], name: "index_geneva_drive_step_executions_on_workflow_id_and_state"
     t.index ["workflow_id"], name: "index_geneva_drive_step_executions_on_workflow_id"
-    t.index ["workflow_id"], name: "index_geneva_drive_step_executions_one_active", unique: true, where: "((state)::text = ANY ((ARRAY['scheduled'::character varying, 'in_progress'::character varying, 'suspended'::character varying])::text[]))"
+    t.index ["workflow_id"], name: "index_geneva_drive_step_executions_one_active", unique: true, where: "((state)::text = ANY ((ARRAY['scheduled'::character varying, 'in_progress'::character varying])::text[]))"
   end
 
   create_table "geneva_drive_workflows", force: :cascade do |t|
@@ -70,5 +71,6 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000004) do
     t.datetime "updated_at", null: false
   end
 
+  add_foreign_key "geneva_drive_step_executions", "geneva_drive_step_executions", column: "continues_from_id", on_delete: :nullify
   add_foreign_key "geneva_drive_step_executions", "geneva_drive_workflows", column: "workflow_id", on_delete: :cascade
 end

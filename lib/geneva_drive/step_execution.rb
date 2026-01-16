@@ -24,7 +24,6 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   enum :state, {
     scheduled: "scheduled",
     in_progress: "in_progress",
-    suspended: "suspended",
     completed: "completed",
     failed: "failed",
     canceled: "canceled",
@@ -47,6 +46,18 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     class_name: "GenevaDrive::Workflow",
     foreign_key: :workflow_id,
     inverse_of: :step_executions
+
+  # For chained resumable step executions
+  belongs_to :continues_from,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    optional: true,
+    inverse_of: :successor
+
+  has_one :successor,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    inverse_of: :continues_from
 
   # Validations
   validates :step_name, presence: true
@@ -134,16 +145,6 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
-  # Marks the step execution as suspended (for resumable steps).
-  # The cursor is persisted separately via fast checkpoint updates.
-  #
-  # @return [void]
-  def mark_suspended!
-    with_lock do
-      update!(state: "suspended")
-    end
-  end
-
   # Returns the deserialized cursor value for resumable steps.
   # Uses ActiveJob serializers to handle Date, Time, and other types.
   #
@@ -166,13 +167,11 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
-  # Resets the cursor and iteration count for a full rewind.
+  # Returns true if this execution is resuming from a prior execution.
   #
-  # @return [void]
-  def rewind_cursor!
-    with_lock do
-      update!(cursor: nil, completed_iterations: 0)
-    end
+  # @return [Boolean]
+  def resuming?
+    continues_from_id.present?
   end
 
   # Returns the step definition for this execution.

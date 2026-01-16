@@ -35,7 +35,7 @@ class GenevaDrive::Executor
     step_def = step_execution.step_definition
 
     # Dispatch to appropriate executor based on step type
-    if step_def&.resumable? || step_execution.suspended?
+    if step_def&.resumable? || step_execution.resuming?
       GenevaDrive::ResumableStepExecutor.execute!(step_execution, interrupt_configuration: interrupt_configuration)
     else
       new.call(step_execution)

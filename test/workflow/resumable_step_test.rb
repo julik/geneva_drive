@@ -206,25 +206,19 @@ class ResumableStepTest < ActiveSupport::TestCase
     assert Thread.current[:finalize_ran]
   end
 
-  test "resumable_step can be suspended and resumed" do
+  test "resumable_step processes all items in sequence" do
     workflow = ArrayProcessingWorkflow.create!(hero: @user)
 
     # Execute setup step
     perform_next_step(workflow)
     assert Thread.current[:setup_ran]
 
-    # Execute 2 iterations then interrupt
-    run_iterations(workflow, count: 2)
-
-    workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_equal 2, workflow.current_execution.completed_iterations
-    assert_equal %w[a b], Thread.current[:processed_items]
-
-    # Continue execution
+    # Execute resumable step to completion
     speedrun_current_step(workflow)
 
-    assert_equal "completed", workflow.step_executions.find_by(step_name: "process_items").state
+    workflow.reload
+    completed_executions = workflow.step_executions.where(step_name: "process_items", state: "completed")
+    assert completed_executions.exists?
     assert_equal %w[a b c d e], Thread.current[:processed_items]
   end
 
@@ -265,47 +259,44 @@ class ResumableStepTest < ActiveSupport::TestCase
 
   # skip_to! tests
 
-  test "skip_to! jumps to new cursor position and suspends" do
+  test "skip_to! jumps to new cursor position and creates successor" do
     workflow = SkipToWorkflow.create!(hero: @user)
 
     # First execution: processes pages 1, 2, then skip_to!(5)
     perform_next_step(workflow)
 
     workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_equal 5, workflow.current_execution.cursor_value
+    # First execution should be completed
+    first_exec = workflow.step_executions.find_by(step_name: "paginate", continues_from_id: nil)
+    assert_equal "completed", first_exec.state
     assert_equal [1, 2], Thread.current[:pages_fetched]
+
+    # Successor should be scheduled with cursor=5
+    successor = first_exec.successor
+    assert_not_nil successor, "Expected a successor execution"
+    assert_equal "scheduled", successor.state
+    assert_equal 5, successor.cursor_value
 
     # Second execution: continues from page 5
     Thread.current[:pages_fetched] = nil
     perform_next_step(workflow)
 
     workflow.reload
-    assert_equal "completed", workflow.step_executions.find_by(step_name: "paginate").state
+    assert_equal "completed", successor.reload.state
     assert_equal [5, 6], Thread.current[:pages_fetched]
   end
 
-  # max_iterations tests
+  # chained executions tests
 
-  test "max_iterations suspends step after total limit reached" do
+  test "resumable step that gets interrupted creates successor" do
     workflow = MaxIterationsWorkflow.create!(hero: @user)
 
-    # First execution: 3 iterations (hits max_iterations: 3)
-    perform_next_step(workflow)
+    # Execute the step to completion (no iteration limits now)
+    speedrun_current_step(workflow)
 
     workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_equal 3, workflow.current_execution.completed_iterations
-    assert_equal [1, 2, 3], Thread.current[:bulk_items]
-
-    # Second execution: processes 1 more, then immediately suspends again
-    # because completed_iterations (4) >= max_iterations (3)
-    perform_next_step(workflow)
-
-    workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_equal 4, workflow.current_execution.completed_iterations
-    assert_equal [1, 2, 3, 4], Thread.current[:bulk_items]
+    assert_equal "finished", workflow.state
+    assert_equal (1..10).to_a, Thread.current[:bulk_items]
   end
 
   # Flow control tests
@@ -329,17 +320,23 @@ class ResumableStepTest < ActiveSupport::TestCase
     assert_equal "paused", workflow.state
     assert_equal [1, 2, 3], Thread.current[:pause_items]
 
-    # The step execution should be SUSPENDED (not canceled) to preserve cursor
-    # Find the step execution for process_with_pause
+    # The step execution should be COMPLETED with outcome "workflow_paused"
     step_execution = workflow.step_executions.find_by(step_name: "process_with_pause")
-    assert_equal "suspended", step_execution.state, "pause! should suspend the step, not cancel it"
+    assert_equal "completed", step_execution.state
+    assert_equal "workflow_paused", step_execution.outcome
     assert_equal 4, step_execution.cursor_value, "cursor should be preserved"
 
-    # Resume the workflow
+    # Resume the workflow - this creates a successor execution
     workflow.resume!
 
     workflow.reload
     assert_equal "ready", workflow.state
+
+    # A successor execution should be created
+    successor = step_execution.successor
+    assert_not_nil successor, "Expected a successor execution after resume"
+    assert_equal "scheduled", successor.state
+    assert_equal 4, successor.cursor_value
 
     # Continue execution - should resume from cursor=4, not restart
     speedrun_workflow(workflow)
@@ -357,10 +354,16 @@ class ResumableStepTest < ActiveSupport::TestCase
     perform_next_step(workflow)
 
     workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_nil workflow.current_execution.cursor_value
-    assert_equal 0, workflow.current_execution.completed_iterations
+    # First execution completed, created successor with nil cursor (rewind)
+    first_exec = workflow.step_executions.find_by(step_name: "process_then_rewind", continues_from_id: nil)
+    assert_equal "completed", first_exec.state
     assert_equal %w[x y], Thread.current[:rewind_items]
+
+    # Successor should be scheduled with nil cursor (rewind)
+    successor = first_exec.successor
+    assert_not_nil successor, "Expected successor after reattempt"
+    assert_equal "scheduled", successor.state
+    assert_nil successor.cursor_value
 
     # Second execution: starts from beginning again
     speedrun_current_step(workflow)
@@ -371,34 +374,49 @@ class ResumableStepTest < ActiveSupport::TestCase
 
   # resumed? detection
 
-  test "resumed? returns false on first run and true on resume" do
+  test "resumed? returns false on first run" do
     workflow = ResumedDetectionWorkflow.create!(hero: @user)
 
-    # First execution: 1 iteration then interrupt
-    run_iterations(workflow, count: 1)
-
-    assert_equal [false], Thread.current[:resumed_values]
-    assert_equal ["one"], Thread.current[:resumed_items]
-
-    # Second execution: resumed
+    # Execute the step to completion
     speedrun_current_step(workflow)
 
-    assert_equal [false, true], Thread.current[:resumed_values]
+    # First (and only) execution should have resumed? = false
+    assert_equal [false], Thread.current[:resumed_values]
     assert_equal %w[one two three], Thread.current[:resumed_items]
+  end
+
+  test "resuming? returns true for successor executions" do
+    workflow = SkipToWorkflow.create!(hero: @user)
+
+    # First execution
+    perform_next_step(workflow)
+
+    workflow.reload
+    first_exec = workflow.step_executions.find_by(step_name: "paginate", continues_from_id: nil)
+    successor = first_exec.successor
+
+    assert_not first_exec.resuming?, "First execution should not be resuming"
+    assert successor.resuming?, "Successor should be resuming"
   end
 
   # suspend! flow control
 
-  test "suspend! suspends and re-enqueues the step" do
+  test "suspend! completes execution and creates successor" do
     workflow = SuspendFlowControlWorkflow.create!(hero: @user)
 
     # First execution: processes 1, 2, saves cursor=3, suspends
     perform_next_step(workflow)
 
     workflow.reload
-    assert_equal "suspended", workflow.current_execution.state
-    assert_equal 3, workflow.current_execution.cursor_value
+    first_exec = workflow.step_executions.find_by(step_name: "suspend_midway", continues_from_id: nil)
+    assert_equal "completed", first_exec.state
     assert_equal [1, 2], Thread.current[:suspend_items]
+
+    # Successor should be scheduled with cursor=3
+    successor = first_exec.successor
+    assert_not_nil successor, "Expected successor after suspend!"
+    assert_equal "scheduled", successor.state
+    assert_equal 3, successor.cursor_value
 
     # Continue from cursor=3
     speedrun_current_step(workflow)
@@ -447,64 +465,30 @@ class ResumableStepTest < ActiveSupport::TestCase
 
   # StepExecution state tests
 
-  test "suspended state is included in current_execution query" do
+  test "current_execution returns scheduled or in_progress execution" do
     workflow = ArrayProcessingWorkflow.create!(hero: @user)
 
-    # Execute setup
-    perform_next_step(workflow)
-
-    # Run 1 iteration and suspend
-    run_iterations(workflow, count: 1)
-
+    # Should have a scheduled execution
     workflow.reload
     execution = workflow.current_execution
 
     assert_not_nil execution
-    assert_equal "suspended", execution.state
+    assert_equal "scheduled", execution.state
   end
 
-  test "mark_suspended! transitions step to suspended state" do
-    workflow = ArrayProcessingWorkflow.create!(hero: @user)
-    # Cancel existing scheduled execution first
-    workflow.step_executions.scheduled.update_all(
-      state: "canceled",
-      outcome: "canceled",
-      canceled_at: Time.current
-    )
+  test "continues_from association links chained executions" do
+    workflow = SkipToWorkflow.create!(hero: @user)
 
-    execution = workflow.step_executions.create!(
-      step_name: "test",
-      state: "in_progress",
-      scheduled_for: Time.current,
-      started_at: Time.current
-    )
+    # First execution creates successor
+    perform_next_step(workflow)
 
-    execution.mark_suspended!
+    workflow.reload
+    first_exec = workflow.step_executions.find_by(step_name: "paginate", continues_from_id: nil)
+    successor = first_exec.successor
 
-    assert_equal "suspended", execution.state
-  end
-
-  test "rewind_cursor! clears cursor and iterations" do
-    workflow = ArrayProcessingWorkflow.create!(hero: @user)
-    # Cancel existing scheduled execution first
-    workflow.step_executions.scheduled.update_all(
-      state: "canceled",
-      outcome: "canceled",
-      canceled_at: Time.current
-    )
-
-    execution = workflow.step_executions.create!(
-      step_name: "test",
-      state: "suspended",
-      scheduled_for: Time.current
-    )
-    execution.update!(cursor: {"test" => 123}, completed_iterations: 50)
-
-    execution.rewind_cursor!
-    execution.reload
-
-    assert_nil execution.cursor
-    assert_equal 0, execution.completed_iterations
+    assert_not_nil successor
+    assert_equal first_exec, successor.continues_from
+    assert_equal successor, first_exec.successor
   end
 
   # DSL validation tests
@@ -544,32 +528,23 @@ class ResumableStepTest < ActiveSupport::TestCase
   # Test helper tests
 
   test "assert_cursor checks cursor value" do
-    workflow = ManualCursorWorkflow.create!(hero: @user)
+    workflow = SkipToWorkflow.create!(hero: @user)
 
-    # Run 2 iterations
-    run_iterations(workflow, count: 2)
-
-    assert_cursor(workflow, 3)
-  end
-
-  test "assert_iterations checks iteration count" do
-    workflow = ManualCursorWorkflow.create!(hero: @user)
-
-    run_iterations(workflow, count: 3)
-
-    assert_iterations(workflow, 3)
-  end
-
-  test "assert_step_suspended checks suspended state" do
-    workflow = ArrayProcessingWorkflow.create!(hero: @user)
-
-    # Execute setup
+    # Execute to create successor with cursor
     perform_next_step(workflow)
 
-    # Run partial iterations
-    run_iterations(workflow, count: 1)
+    workflow.reload
+    successor = workflow.current_execution
+    assert_cursor(workflow, 5)
+  end
 
-    assert_step_suspended(workflow)
+  test "assert_step_has_successor checks for scheduled successor" do
+    workflow = SkipToWorkflow.create!(hero: @user)
+
+    # Execute to create successor
+    perform_next_step(workflow)
+
+    assert_step_has_successor(workflow, :paginate)
   end
 
   # ResumableStepDefinition tests

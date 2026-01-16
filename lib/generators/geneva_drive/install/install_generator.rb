@@ -45,6 +45,11 @@ module GenevaDrive
           "add_resumable_step_support.rb",
           "db/migrate/add_resumable_step_support_to_geneva_drive_step_executions.rb"
         )
+
+        migration_template(
+          "add_chained_step_executions.rb",
+          "db/migrate/add_chained_step_executions_to_geneva_drive_step_executions.rb"
+        )
       end
 
       # Creates the initializer file.

@@ -196,7 +196,7 @@ class WorkflowTest < ActiveSupport::TestCase
 
   test "resume! works for paused workflows" do
     workflow = SimpleWorkflow.create!(hero: @user)
-    workflow.transition_to!("paused")
+    workflow.pause!  # External pause cancels the execution
 
     workflow.resume!
 

@@ -386,11 +386,11 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Returns the current active step execution, if any.
-  # Includes scheduled, in_progress, and suspended states.
+  # Includes scheduled and in_progress states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
-    step_executions.where(state: %w[scheduled in_progress suspended]).first
+    step_executions.where(state: %w[scheduled in_progress]).first
   end
 
   # Returns all step executions in chronological order.

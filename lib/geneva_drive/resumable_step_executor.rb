@@ -11,8 +11,7 @@ class GenevaDrive::ResumableStepExecutor
   # Valid state transitions for resumable step executions
   STEP_TRANSITIONS = {
     "scheduled" => %w[in_progress canceled skipped failed completed],
-    "suspended" => %w[in_progress canceled skipped failed completed],
-    "in_progress" => %w[suspended completed failed canceled skipped]
+    "in_progress" => %w[completed failed canceled skipped]
   }.freeze
 
   # Valid state transitions for workflows
@@ -41,7 +40,6 @@ class GenevaDrive::ResumableStepExecutor
     @logger = step_execution.logger
     @interrupt_configuration = interrupt_configuration
     @start_time = nil
-    @was_suspended = false
 
     # Phase 1: Acquire locks, validate, and prepare for execution
     @logger.debug("Preparing resumable execution context")
@@ -57,7 +55,7 @@ class GenevaDrive::ResumableStepExecutor
 
     @logger.debug("Running resumable step code")
     flow_result = @workflow.around_step_execution(@step_execution) do
-      execute_resumable_step(step_def, @was_suspended)
+      execute_resumable_step(step_def)
     end
 
     @logger.debug("Running after_step_execution hook")
@@ -76,7 +74,6 @@ class GenevaDrive::ResumableStepExecutor
     # If interruption is disabled (e.g., in tests), never interrupt
     return false unless @interrupt_configuration.respects_interruptions?
 
-    return true if max_iterations_reached?
     return true if max_runtime_exceeded?
     return true if job_should_exit?
     return true if workflow_interrupted?
@@ -90,9 +87,8 @@ class GenevaDrive::ResumableStepExecutor
   # Executes the resumable step block with an IterableStep.
   #
   # @param step_def [ResumableStepDefinition]
-  # @param was_suspended [Boolean] whether step was in suspended state before transition
   # @return [Symbol, ActiveSupport::Duration, Numeric, Hash] the execution result
-  def execute_resumable_step(step_def, was_suspended)
+  def execute_resumable_step(step_def)
     payload = instrumentation_payload
     payload[:step_name] = step_def.name
 
@@ -101,7 +97,7 @@ class GenevaDrive::ResumableStepExecutor
         step_def.name,
         step_execution.cursor_value,
         execution: step_execution,
-        resumed: was_suspended,
+        resumed: step_execution.resuming?,
         interrupter: self
       )
 
@@ -137,10 +133,10 @@ class GenevaDrive::ResumableStepExecutor
       when :completed
         p[:outcome] = :completed
       when ActiveSupport::Duration, Numeric
-        p[:outcome] = :suspended
+        p[:outcome] = :interrupted
         p[:wait] = result
       when nil
-        p[:outcome] = :suspended
+        p[:outcome] = :interrupted
       end
 
       result
@@ -183,8 +179,8 @@ class GenevaDrive::ResumableStepExecutor
     exception_to_raise = nil
 
     result = with_execution_lock do
-      # Validate step execution can start (scheduled OR suspended for resumable)
-      unless %w[scheduled suspended].include?(step_execution.state)
+      # Validate step execution can start
+      unless step_execution.scheduled?
         logger.info("Step execution is in #{step_execution.state.inspect} and can't be stepped, dropping through")
         next nil
       end
@@ -221,7 +217,7 @@ class GenevaDrive::ResumableStepExecutor
       end
 
       # Evaluate preconditions (only on first run, not resume)
-      unless step_execution.suspended?
+      unless step_execution.resuming?
         precondition_result = evaluate_preconditions(step_def)
         if precondition_result[:abort]
           exception_to_raise = precondition_result[:exception]
@@ -232,8 +228,6 @@ class GenevaDrive::ResumableStepExecutor
       # All checks passed - transition to in_progress
       logger.debug("Resumable step may be performed - transitioning to in_progress")
 
-      # Capture suspended state before transitioning
-      @was_suspended = step_execution.suspended?
       transition_step!("in_progress")
       transition_workflow!("performing") if workflow.ready?
 
@@ -244,7 +238,7 @@ class GenevaDrive::ResumableStepExecutor
         next_step_name: following_step&.name
       )
 
-      logger.info("Resuming from cursor: #{step_execution.cursor_value.inspect}") if @was_suspended
+      logger.info("Resuming from cursor: #{step_execution.cursor_value.inspect}") if step_execution.resuming?
 
       step_def
     end
@@ -369,10 +363,7 @@ class GenevaDrive::ResumableStepExecutor
     when "completed"
       attrs[:completed_at] = Time.current
       attrs[:finished_at] = Time.current
-      attrs[:cursor] = nil  # Clear cursor on completion
-    when "suspended"
-      # Cursor is already persisted via checkpoint - nothing extra needed
-      nil
+      # Keep cursor for historical record (shows where execution ended)
     when "failed"
       attrs[:failed_at] = Time.current
       attrs[:finished_at] = Time.current
@@ -462,9 +453,9 @@ class GenevaDrive::ResumableStepExecutor
 
     case on_exception
     when :reattempt!
-      transition_step!("suspended")
+      transition_step!("completed", outcome: "reattempted")
       transition_workflow!("ready")
-      reschedule_suspended_step!
+      create_successor_execution!
     when :cancel!
       step_execution.update!(
         error_message: error.message,
@@ -498,7 +489,7 @@ class GenevaDrive::ResumableStepExecutor
     workflow.schedule_next_step!
   end
 
-  # Handles step suspension (interrupted iteration).
+  # Handles step suspension by completing current execution and creating a successor.
   #
   # @param wait [ActiveSupport::Duration, Numeric, nil] optional delay before re-enqueue
   # @return [void]
@@ -506,9 +497,12 @@ class GenevaDrive::ResumableStepExecutor
     wait_msg = wait ? " (re-enqueue after #{wait.inspect})" : ""
     logger.info("Resumable step suspended at cursor #{step_execution.cursor_value.inspect}#{wait_msg}")
 
-    transition_step!("suspended")
+    # Complete current execution
+    transition_step!("completed", outcome: "success")
     transition_workflow!("ready")
-    reschedule_suspended_step!(wait: wait)
+
+    # Create successor execution to continue from the cursor
+    create_successor_execution!(wait: wait)
   end
 
   # Handles a captured exception based on the step's on_exception configuration.
@@ -523,11 +517,11 @@ class GenevaDrive::ResumableStepExecutor
 
     case on_exception
     when :reattempt!
-      # For resumable steps, reattempt continues from cursor (doesn't rewind)
-      logger.info("Exception policy: reattempt! - suspending and rescheduling")
-      transition_step!("suspended")
+      # For resumable steps, reattempt continues from cursor via successor
+      logger.info("Exception policy: reattempt! - completing and creating successor")
+      transition_step!("completed", outcome: "reattempted")
       transition_workflow!("ready")
-      reschedule_suspended_step!
+      create_successor_execution!
     when :cancel!
       step_execution.update!(
         error_message: error.message,
@@ -563,19 +557,19 @@ class GenevaDrive::ResumableStepExecutor
       transition_step!("canceled", outcome: "canceled")
       transition_workflow!("canceled")
     when :pause
-      # For resumable steps, preserve cursor by suspending instead of canceling
-      transition_step!("suspended")
+      # Complete this execution, workflow will schedule new execution on resume
+      transition_step!("completed", outcome: "workflow_paused")
       transition_workflow!("paused")
     when :reattempt
       # Check for rewind option
       if signal.options[:rewind]
         logger.info("Rewinding cursor for reattempt")
-        step_execution.update!(cursor: nil, completed_iterations: 0)
+        step_execution.update!(cursor: nil)
       end
       wait = signal.options[:wait]
-      transition_step!("suspended")
+      transition_step!("completed", outcome: "reattempted")
       transition_workflow!("ready")
-      reschedule_suspended_step!(wait: wait)
+      create_successor_execution!(wait: wait)
     when :skip
       transition_step!("skipped", outcome: "skipped")
       transition_workflow!("ready")
@@ -584,48 +578,48 @@ class GenevaDrive::ResumableStepExecutor
       transition_step!("completed", outcome: "success")
       transition_workflow!("finished")
     when :suspend
-      # Explicit suspend signal
+      # Explicit suspend signal - complete and create successor
       wait = signal.options[:wait]
-      transition_step!("suspended")
+      transition_step!("completed", outcome: "success")
       transition_workflow!("ready")
-      reschedule_suspended_step!(wait: wait)
+      create_successor_execution!(wait: wait)
     end
   end
 
-  # Reschedules the suspended step for continuation.
+  # Creates a successor step execution to continue from the current cursor.
   #
   # @param wait [ActiveSupport::Duration, Numeric, nil] optional delay
   # @return [void]
-  def reschedule_suspended_step!(wait: nil)
+  def create_successor_execution!(wait: nil)
     scheduled_for = wait ? wait.from_now : Time.current
+
+    # Create successor execution that continues from this one
+    successor = GenevaDrive::StepExecution.create!(
+      workflow: workflow,
+      step_name: step_execution.step_name,
+      state: "scheduled",
+      scheduled_for: scheduled_for,
+      continues_from_id: step_execution.id,
+      cursor: step_execution.cursor  # Copy the handoff cursor
+    )
 
     job_options = workflow.class._step_job_options.dup
     job_options[:wait_until] = scheduled_for if wait
 
-    execution_id = step_execution.id
+    successor_id = successor.id
     workflow_logger = logger
 
     ActiveRecord.after_all_transactions_commit do
       job = GenevaDrive::PerformStepJob
         .set(**job_options)
-        .perform_later(execution_id)
+        .perform_later(successor_id)
 
-      workflow_logger.debug("Re-enqueued PerformStepJob with job_id=#{job.job_id} for suspended step")
+      workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for successor execution ##{successor_id}")
 
       GenevaDrive::StepExecution
-        .where(id: execution_id)
+        .where(id: successor_id)
         .update_all(job_id: job.job_id)
     end
-  end
-
-  # Checks if max iterations limit has been reached.
-  # Uses the interrupt configuration which may have a test override.
-  #
-  # @return [Boolean]
-  def max_iterations_reached?
-    max_iterations = @interrupt_configuration.max_iterations_for(step_definition)
-    return false unless max_iterations
-    step_execution.reload.completed_iterations >= max_iterations
   end
 
   # Checks if max runtime has been exceeded.

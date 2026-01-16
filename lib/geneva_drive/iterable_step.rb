@@ -181,10 +181,7 @@ class GenevaDrive::IterableStep
 
     GenevaDrive::StepExecution
       .where(id: @execution.id)
-      .update_all(
-        cursor: serialized,
-        completed_iterations: Arel.sql("completed_iterations + 1")
-      )
+      .update_all(cursor: serialized)
   end
 
   def check_interruption!

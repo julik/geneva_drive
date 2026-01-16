@@ -218,32 +218,6 @@ module GenevaDrive::TestHelpers
     step_execution
   end
 
-  # Runs a resumable step for a specific number of iterations, then allows interruption.
-  # Useful for testing partial progress and suspension behavior.
-  #
-  # @param workflow [GenevaDrive::Workflow] the workflow containing the step
-  # @param count [Integer] number of iterations to run
-  # @return [GenevaDrive::StepExecution] the step execution
-  #
-  # @example Run 5 iterations then stop
-  #   workflow = ProcessingWorkflow.create!(hero: batch)
-  #   run_iterations(workflow, count: 5)
-  #   assert_equal 5, workflow.current_execution.completed_iterations
-  #
-  def run_iterations(workflow, count:)
-    workflow.reload
-    step_execution = workflow.current_execution
-    return nil unless step_execution
-
-    # Set a max_iterations_override to stop after count iterations
-    config = GenevaDrive::InterruptConfiguration.new(max_iterations_override: count)
-    step_execution.execute!(interrupt_configuration: config)
-
-    workflow.reload
-    step_execution.reload
-    step_execution
-  end
-
   # Asserts that a resumable step's cursor matches the expected value.
   #
   # @param workflow [GenevaDrive::Workflow] the workflow to check
@@ -263,44 +237,23 @@ module GenevaDrive::TestHelpers
       "Expected cursor #{expected_cursor.inspect}, got #{actual.inspect}"
   end
 
-  # Asserts the number of completed iterations for a resumable step.
+  # Asserts that a step completed and has a scheduled successor execution.
+  # Used to verify that a resumable step was interrupted and will continue.
   #
   # @param workflow [GenevaDrive::Workflow] the workflow to check
-  # @param expected_count [Integer] the expected iteration count
+  # @param step_name [String, Symbol] the step name to check
   # @return [void]
   #
-  # @example Check iteration count
-  #   assert_iterations(workflow, 100)
+  # @example Check step has a scheduled successor
+  #   assert_step_has_successor(workflow, :bulk_process)
   #
-  def assert_iterations(workflow, expected_count)
+  def assert_step_has_successor(workflow, step_name)
     workflow.reload
-    execution = workflow.current_execution
-    actual = execution&.completed_iterations || 0
+    completed = workflow.step_executions.find_by(step_name: step_name.to_s, state: "completed")
+    assert completed, "Expected completed execution for step #{step_name}"
 
-    assert_equal expected_count, actual,
-      "Expected #{expected_count} iterations, got #{actual}"
-  end
-
-  # Asserts that a step is in suspended state.
-  #
-  # @param workflow [GenevaDrive::Workflow] the workflow to check
-  # @param step_name [String, Symbol, nil] optional step name (defaults to current)
-  # @return [void]
-  #
-  # @example Check step is suspended
-  #   assert_step_suspended(workflow)
-  #   assert_step_suspended(workflow, :bulk_process)
-  #
-  def assert_step_suspended(workflow, step_name = nil)
-    workflow.reload
-    execution = if step_name
-      workflow.step_executions.find_by(step_name: step_name.to_s, state: "suspended")
-    else
-      workflow.current_execution
-    end
-
-    assert execution&.suspended?,
-      "Expected step #{step_name || "current"} to be suspended, " \
-      "but was #{execution&.state || "not found"}"
+    successor = completed.successor
+    assert successor, "Expected successor execution for step #{step_name}, but none found"
+    assert successor.scheduled?, "Expected successor to be scheduled, but was #{successor.state}"
   end
 end

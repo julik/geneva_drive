@@ -266,6 +266,6 @@ end
 - Ruby 3.0+
 - Rails 7.2.2+
 
-## License
+## Licenses
 
-The gem is available as open source under the terms of the [MIT License](https://opensource.org/licenses/MIT).
+The gem is available both as open source under the terms of the LGPLv3 and as commercial software, see the license files for more detail

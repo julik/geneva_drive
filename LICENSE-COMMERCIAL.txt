@@ -240,11 +240,11 @@ alternative, we reserve the right, at our sole option, to terminate the
 licenses for the Software.
 
 11.3 Government End Users. If the Software and related documentation are
-supplied to or purchased by or on behalf of the United States Government, then
-the Software is deemed to be "commercial software" as that term is used in the
-Federal Acquisition Regulation system. Rights of the United States shall not
-exceed the minimum rights set forth in FAR 52.227-19 for "restricted computer
-software". All other terms and conditions of this Agreement apply.
+supplied to or purchased by or on behalf of any government or public-sector
+entity, then the Software is deemed to be "commercial software" and is
+provided only with the rights granted under this Agreement and the minimum
+rights required by applicable mandatory law. All other terms and conditions of
+this Agreement apply.
 
 
 12. Third Party Software
@@ -285,15 +285,12 @@ Licensor from and against any lawsuits, claims, losses, damages, fines and
 expenses (including attorneys' fees and costs) arising out of your use of the
 Software or breach of this Agreement.
 
-13.6 Governing Law. This Agreement is governed by the laws of the State of
-Illinois and the United States without regard to conflicts of laws provisions
-thereof, and without regard to the United Nations Convention on the
-International Sale of Goods or the Uniform Computer Information Transactions
-Act, as currently enacted by any jurisdiction or as may be codified or amended
-from time to time by any jurisdiction. The jurisdiction and venue for actions
-related to the subject matter hereof shall be the state of Illinois and United
-States federal courts located in Chicago, Illinois, and both parties hereby
-submit to the personal jurisdiction of such courts.
+13.6 Governing Law. This Agreement is governed by the laws of the Netherlands,
+excluding its conflict of law rules. The applicability of the United Nations
+Convention on Contracts for the International Sale of Goods (CISG) is excluded.
+The jurisdiction and venue for actions related to the subject matter hereof
+shall be the competent courts of Amsterdam, the Netherlands, and both parties
+hereby submit to the personal jurisdiction of such courts.
 
 13.7 Attorneys' Fees and Costs. The prevailing party in any action to enforce
 this Agreement will be entitled to recover its attorneys' fees and costs in

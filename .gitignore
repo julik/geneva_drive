@@ -38,4 +38,4 @@
 additional_reference/
 
 # Playwright used by LLMs
-.playwright_mcp/
+.playwright-mcp/

@@ -57,7 +57,7 @@ The cursor pattern is simpler: on resume, user code rebuilds iteration state usi
 ### New Constraints for Resumable Steps
 
 1. **Checkpoint persists cursor**: Each `checkpoint!` call saves cursor to database
-2. **Track completed iterations**: Enables detection of infinitely looping steps
+2. **Chained executions**: When a step suspends, it completes and creates a **successor** execution linked via `continues_from_id`
 3. **Cursor preserved on reattempt**: By default, `reattempt!` continues from cursor position
 4. **Optional rewind**: Use `reattempt!(rewind: true)` to restart from beginning
 
@@ -336,20 +336,16 @@ class AddResumableStepSupport < ActiveRecord::Migration[7.1]
     else
       add_column :geneva_drive_step_executions, :cursor, :json
     end
+  end
+end
 
-    add_column :geneva_drive_step_executions, :completed_iterations, :integer, default: 0
-
-    # Update unique constraint to include 'suspended' as an active state
-    # The constraint ensures only one active step execution per workflow
-    #
-    # PostgreSQL:
-    #   DROP INDEX index_step_executions_one_active_per_workflow;
-    #   CREATE UNIQUE INDEX index_step_executions_one_active_per_workflow
-    #   ON geneva_drive_step_executions (workflow_id)
-    #   WHERE state IN ('scheduled', 'in_progress', 'suspended');
-    #
-    # MySQL: Update the generated column expression
-    # SQLite: Recreate the partial index with the new WHERE clause
+class AddChainedStepExecutions < ActiveRecord::Migration[7.1]
+  def change
+    # Link successor executions to their predecessors for resumable steps
+    add_column :geneva_drive_step_executions, :continues_from_id, :bigint
+    add_index :geneva_drive_step_executions, :continues_from_id
+    add_foreign_key :geneva_drive_step_executions, :geneva_drive_step_executions,
+                    column: :continues_from_id, on_delete: :nullify
   end
 end
 ```
@@ -371,37 +367,51 @@ def persist_cursor!(new_cursor)
 
   GenevaDrive::StepExecution
     .where(id: @step_execution.id)
-    .update_all(
-      cursor: serialized,  # Rails handles JSON encoding per database adapter
-      completed_iterations: Arel.sql("completed_iterations + 1")
-    )
+    .update_all(cursor: serialized)  # Rails handles JSON encoding per database adapter
 end
 ```
 
 **Why `update_all`?**
 - Bypasses AR instantiation, callbacks, and validations
-- Single SQL statement: `UPDATE ... SET cursor = ?, completed_iterations = completed_iterations + 1 WHERE id = ?`
-- No `with_lock` needed—atomic increment via SQL
+- Single SQL statement: `UPDATE ... SET cursor = ? WHERE id = ?`
+- No `with_lock` needed—atomic update via SQL
 - Critical for high-throughput iteration (thousands of items per second)
 - Rails automatically encodes to JSONB/JSON/TEXT based on database adapter
 
-### 5.3 New State: `suspended`
+### 5.3 Chained Executions Model
 
-Add to the `STATES` enum in `StepExecution`:
+Instead of a `suspended` state, resumable steps use **chained executions**. When a step needs to suspend:
+
+1. The current execution is marked `completed` (with outcome indicating why)
+2. A new **successor** execution is created with `continues_from_id` pointing to the predecessor
+3. The successor inherits the cursor from its predecessor
 
 ```ruby
 class GenevaDrive::StepExecution < ActiveRecord::Base
-  enum :state, {
-    scheduled: "scheduled",
-    in_progress: "in_progress",
-    suspended: "suspended",      # NEW: paused between iterations
-    completed: "completed",
-    failed: "failed",
-    canceled: "canceled",
-    skipped: "skipped"
-  }
+  # Links successor executions to their predecessors
+  belongs_to :continues_from,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    optional: true,
+    inverse_of: :successor
+
+  has_one :successor,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    inverse_of: :continues_from
+
+  # Returns true if this execution continues from a previous one
+  def resuming?
+    continues_from_id.present?
+  end
 end
 ```
+
+**Why chained executions instead of a suspended state?**
+- **Timeline clarity**: Each execution has clear start/end times, enabling proper visualization
+- **Audit trail**: Can see exactly when each chunk of work happened
+- **Simpler state machine**: No need for special "suspended" → "in_progress" transitions
+- **Consistent semantics**: "Completed" means the execution finished its work, whether it spawned a successor or not
 
 ### 5.4 Cursor Serialization
 
@@ -445,20 +455,23 @@ iter.set!(current)
 
 ## 6. Execution Model
 
-### 6.1 New Step State: `suspended`
+### 6.1 Chained Executions (No Suspended State)
 
-Resumable steps introduce a new step execution state: **`suspended`**.
+Resumable steps use **chained executions** instead of a `suspended` state. Each time work needs to pause and continue later, the current execution completes and a successor execution is created.
 
-**Current states**: `scheduled`, `in_progress`, `completed`, `failed`, `canceled`, `skipped`
+**States**: `scheduled`, `in_progress`, `completed`, `failed`, `canceled`, `skipped`
 
-**New state**: `suspended` - The step has been paused between iterations with cursor saved, awaiting re-execution.
+**No `suspended` state** - When a resumable step needs to pause:
+1. Current execution transitions to `completed` (outcome indicates it spawned a successor)
+2. A new successor execution is created with `continues_from_id` linking to the predecessor
+3. Successor inherits the cursor and is scheduled for execution
 
-This provides:
-- **Clear semantics**: Distinguishes "actively running right now" from "paused between iterations"
-- **Better housekeeping**: Stuck `suspended` steps (job lost) are handled differently than stuck `in_progress` (process crashed mid-iteration)
-- **Observability**: Query `step_executions.suspended` to see all paused resumable steps
+**Benefits**:
+- **Timeline visualization**: Each execution has clear start/end times
+- **Audit trail**: Complete history of when each chunk of work happened
+- **Simpler state machine**: Standard states, no special transitions
 
-**Active states for unique constraint**: `scheduled`, `in_progress`, `suspended`
+**Active states for unique constraint**: `scheduled`, `in_progress`
 
 ### 6.2 State Diagram
 
@@ -466,58 +479,66 @@ This provides:
 stateDiagram-v2
     [*] --> scheduled : Job enqueued
     scheduled --> in_progress : Job starts
-    suspended --> in_progress : Job resumes
 
-    in_progress --> suspended : Interrupt between iterations
     in_progress --> completed : Enumeration exhausted
+    in_progress --> completed : Interrupt - creates successor
     in_progress --> failed : Exception with pause
-    in_progress --> completed : Exception with skip
+    in_progress --> canceled : Exception with cancel
+    in_progress --> skipped : Exception with skip
+
+    completed --> scheduled : Successor created (new execution)
 
     completed --> [*]
     failed --> [*]
+    canceled --> [*]
+    skipped --> [*]
 ```
 
 ### 6.3 Full Execution Flow
 
 ```mermaid
 flowchart TD
-    A[Job receives step_execution_id] --> B{State is scheduled or suspended?}
+    A[Job receives step_execution_id] --> B{State is scheduled?}
     B -->|No| Z[Exit - wrong state]
     B -->|Yes| C[Transition to in_progress]
 
     C --> D[Create IterableStep with cursor]
-    D --> E[Execute block with IterableStep]
+    D --> D2{resuming? - has continues_from_id?}
+    D2 -->|Yes| E[Execute block - iter.resumed? = true]
+    D2 -->|No| E2[Execute block - iter.resumed? = false]
 
     E --> F{Block completes?}
+    E2 --> F
     F -->|Yes| G[Mark completed, schedule next step]
     F -->|No - interrupt thrown| H{Has wait value?}
-    H -->|Yes| M2[Mark suspended, re-enqueue with delay]
-    H -->|No| M[Mark suspended, re-enqueue immediately]
+    H -->|Yes| M2[Mark completed, create successor with delay]
+    H -->|No| M[Mark completed, create successor immediately]
 
     E --> I{Exception?}
+    E2 --> I
     I -->|Yes| J[Handle via on_exception policy]
 
     J --> O{Policy}
-    O -->|pause!| P[Mark failed, pause workflow]
+    O -->|pause!| P[Mark completed outcome=workflow_paused, pause workflow]
     O -->|cancel!| Q[Mark canceled, cancel workflow]
     O -->|skip!| R[Mark skipped, schedule next]
     O -->|reattempt!| S{rewind: true?}
-    S -->|Yes| T[Clear cursor, mark suspended]
+    S -->|Yes| T[Mark completed, create successor with nil cursor]
     S -->|No| M
 
-    M --> N[Exit - will resume later]
+    M --> N[Successor scheduled - will resume later]
     M2 --> N
     G --> Z2[Done]
 ```
 
 ### 6.4 Interruption Conditions
 
-The step suspends and re-enqueues when any of these are true:
+The step completes and creates a successor when any of these are true:
 
-1. **max_iterations reached**: Configurable limit per step
-2. **max_runtime exceeded**: Time-based limit
-3. **Queue adapter signals shutdown**: Sidekiq SIGTERM, etc.
-4. **Workflow externally paused/canceled**: Checked periodically
+1. **max_runtime exceeded**: Time-based limit
+2. **Queue adapter signals shutdown**: Sidekiq SIGTERM, etc.
+3. **Workflow externally paused/canceled**: Checked periodically
+4. **`skip_to!` or `suspend!` called**: Explicit suspension by user code
 
 ---
 
@@ -572,12 +593,12 @@ Rails 8.1 API-compatible object passed to resumable step blocks:
 class GenevaDrive::IterableStep
   attr_reader :name, :cursor
 
-  def initialize(name, cursor, execution:, resumed:, executor:)
+  def initialize(name, cursor, execution:, resumed:, interrupter:)
     @name = name.to_sym
     @cursor = cursor
     @execution = execution
     @resumed = resumed
-    @executor = executor
+    @interrupter = interrupter
     @advanced = false
   end
 
@@ -610,14 +631,14 @@ class GenevaDrive::IterableStep
 
   # === GenevaDrive Extensions ===
 
-  # Skip to a new cursor position and suspend (re-enqueue job)
+  # Skip to a new cursor position and suspend (creates successor execution)
   # Use this in manual loops to jump ahead without forgetting `next` or `break`
-  # Optional `wait:` parameter delays the re-enqueue (for rate limiting)
+  # Optional `wait:` parameter delays the successor execution (for rate limiting)
   def skip_to!(value, wait: nil)
     @cursor = value
     @advanced = true
     persist_cursor!
-    throw :interrupt, wait  # nil or duration - force suspension and re-enqueue
+    throw :interrupt, wait  # nil or duration - complete and create successor
   end
 
   # Iterate over any Enumerable (array, range, etc.) using index as cursor
@@ -672,21 +693,18 @@ class GenevaDrive::IterableStep
     # Rails handles JSON encoding per database adapter (JSONB/JSON/TEXT)
     GenevaDrive::StepExecution
       .where(id: @execution.id)
-      .update_all(
-        cursor: serialized,
-        completed_iterations: Arel.sql("completed_iterations + 1")
-      )
+      .update_all(cursor: serialized)
   end
 
   def check_interruption!
-    throw :interrupt if @executor.should_interrupt?
+    throw :interrupt if @interrupter&.should_interrupt?
   end
 end
 ```
 
 ### 7.4 ResumableStepExecutor
 
-Orchestrates execution and passes IterableStep object to the block:
+Orchestrates execution, passes IterableStep object to the block, and creates successor executions when interrupted:
 
 ```ruby
 class GenevaDrive::ResumableStepExecutor
@@ -698,7 +716,7 @@ class GenevaDrive::ResumableStepExecutor
   end
 
   def execute!
-    return unless valid_for_execution?
+    return unless @step_execution.scheduled?
 
     transition_to_in_progress!
     @start_time = Time.current
@@ -707,14 +725,14 @@ class GenevaDrive::ResumableStepExecutor
       @step_definition.name,
       @step_execution.cursor_value,
       execution: @step_execution,
-      resumed: @step_execution.suspended?,
-      executor: self
+      resumed: @step_execution.resuming?,  # True if continues_from_id present
+      interrupter: self
     )
 
     # catch(:interrupt) returns:
     # - :completed if block finishes normally
-    # - nil if throw :interrupt (immediate re-enqueue)
-    # - Duration/Numeric if throw :interrupt, wait (delayed re-enqueue)
+    # - nil if throw :interrupt (immediate successor)
+    # - Duration/Numeric if throw :interrupt, wait (delayed successor)
     result = catch(:interrupt) do
       @workflow.instance_exec(iter, &@step_definition.block)
       :completed
@@ -724,9 +742,9 @@ class GenevaDrive::ResumableStepExecutor
     when :completed
       complete_step!
     when ActiveSupport::Duration, Numeric
-      suspend_and_continue!(wait: result)
+      complete_and_create_successor!(wait: result)
     else
-      suspend_and_continue!
+      complete_and_create_successor!
     end
 
   rescue => e
@@ -734,7 +752,6 @@ class GenevaDrive::ResumableStepExecutor
   end
 
   def should_interrupt?
-    return true if max_iterations_reached?
     return true if max_runtime_exceeded?
     return true if job_should_exit?
     return true if workflow_interrupted?
@@ -743,10 +760,6 @@ class GenevaDrive::ResumableStepExecutor
 
   private
 
-  def valid_for_execution?
-    @step_execution.scheduled? || @step_execution.suspended?
-  end
-
   def transition_to_in_progress!
     @step_execution.with_lock do
       @step_execution.update!(
@@ -754,11 +767,6 @@ class GenevaDrive::ResumableStepExecutor
         started_at: @step_execution.started_at || Time.current
       )
     end
-  end
-
-  def max_iterations_reached?
-    return false unless @step_definition.max_iterations
-    @step_execution.reload.completed_iterations >= @step_definition.max_iterations
   end
 
   def max_runtime_exceeded?
@@ -777,17 +785,34 @@ class GenevaDrive::ResumableStepExecutor
     @workflow.paused? || @workflow.canceled?
   end
 
-  def suspend_and_continue!(wait: nil)
+  # Complete current execution and create a successor to continue the work
+  def complete_and_create_successor!(wait: nil)
     @step_execution.with_lock do
-      @step_execution.update!(state: "suspended")
+      @step_execution.update!(
+        state: "completed",
+        outcome: "success",
+        completed_at: Time.current
+      )
     end
+    @workflow.update!(state: "ready")
 
-    job_options = @workflow.class.step_job_options
+    # Create successor execution with cursor inherited from current
+    scheduled_for = wait ? wait.from_now : Time.current
+    successor = GenevaDrive::StepExecution.create!(
+      workflow: @workflow,
+      step_name: @step_execution.step_name,
+      state: "scheduled",
+      scheduled_for: scheduled_for,
+      continues_from_id: @step_execution.id,
+      cursor: @step_execution.cursor  # Inherit cursor
+    )
+
+    job_options = @workflow.class._step_job_options
     job_options = job_options.merge(wait: wait) if wait
 
     GenevaDrive::PerformStepJob
       .set(job_options)
-      .perform_later(@step_execution.id)
+      .perform_later(successor.id)
   end
 
   def complete_step!
@@ -813,22 +838,24 @@ end
 ```ruby
 module GenevaDrive::FlowControl
   def reattempt!(wait: nil, rewind: false)
-    if rewind && current_execution
-      current_execution.update!(cursor: nil, completed_iterations: 0)
-    end
-    throw :flow_control, FlowControlSignal.new(:reattempt, wait: wait)
+    # rewind: true creates successor with nil cursor (start from beginning)
+    # rewind: false (default) creates successor with current cursor (continue)
+    throw :flow_control, FlowControlSignal.new(:reattempt, wait: wait, rewind: rewind)
   end
 end
 ```
 
+When `rewind: true`, the successor execution is created with a `nil` cursor, causing iteration to start from the beginning.
+
 ### 8.2 New suspend! Method
 
-For manual suspension within iteration:
+For manual suspension within iteration (completes current execution and creates a successor):
 
 ```ruby
 module GenevaDrive::FlowControl
-  def suspend!
-    throw :flow_control, FlowControlSignal.new(:suspend)
+  def suspend!(wait: nil)
+    # Completes current execution and creates a successor with the current cursor
+    throw :flow_control, FlowControlSignal.new(:suspend, wait: wait)
   end
 end
 ```
@@ -906,17 +933,17 @@ resumable_step :process_records do |iter|
 end
 ```
 
-### 9.4 Infinite Loop Detection
+### 9.4 Runaway Step Detection
 
-With `completed_iterations` tracking, configure limits:
+Use `max_runtime` to limit how long a single execution can run:
 
 ```ruby
-resumable_step :process_items, max_iterations: 1_000_000 do |iter|
+resumable_step :process_items, max_runtime: 5.minutes do |iter|
   iter.iterate_over_records(huge_collection) { |item| process(item) }
 end
 ```
 
-When exceeded, the step suspends. Housekeeping can detect and handle stuck steps.
+When exceeded, the step completes and creates a successor. Housekeeping can detect steps with many chained executions that may indicate infinite loops.
 
 ---
 
@@ -926,34 +953,47 @@ When exceeded, the step suspends. Housekeeping can detect and handle stuck steps
 
 ```ruby
 module GenevaDrive::TestHelpers
-  # Run resumable step completely without interruption
-  def speedrun_current_step(workflow, step_name)
-    execution = workflow.current_execution
-    with_interruption_disabled do
-      ResumableStepExecutor.new(execution).execute!
+  # Run the current step to completion without advancing to the next step.
+  # For resumable steps, disables interruption checks and runs until complete.
+  def speedrun_current_step(workflow, max_executions: 100)
+    workflow.reload
+    step_execution = workflow.current_execution
+    return nil unless step_execution
+
+    executions = 0
+    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
+
+    loop do
+      step_execution.reload
+      break if step_execution.completed? || step_execution.failed? || step_execution.canceled?
+
+      step_execution.execute!(interrupt_configuration: config)
+      executions += 1
+
+      raise "speedrun_current_step exceeded max_executions" if executions >= max_executions
     end
+
+    workflow.reload
+    step_execution
   end
 
-  # Run N iterations then interrupt
-  def run_iterations(workflow, step_name, count:)
-    execution = workflow.current_execution
-    with_max_iterations(count) do
-      ResumableStepExecutor.new(execution).execute!
-    end
-  end
-
-  # Assert cursor position
+  # Assert cursor position on current execution
   def assert_cursor(workflow, expected_cursor)
+    workflow.reload
     actual = workflow.current_execution&.cursor_value
     assert_equal expected_cursor, actual,
       "Expected cursor #{expected_cursor.inspect}, got #{actual.inspect}"
   end
 
-  # Assert iteration count
-  def assert_iterations(workflow, expected_count)
-    actual = workflow.current_execution&.completed_iterations || 0
-    assert_equal expected_count, actual,
-      "Expected #{expected_count} iterations, got #{actual}"
+  # Assert that a step completed and has a scheduled successor
+  def assert_step_has_successor(workflow, step_name)
+    workflow.reload
+    completed = workflow.step_executions.find_by(step_name: step_name.to_s, state: "completed")
+    assert completed, "Expected completed execution for step #{step_name}"
+
+    successor = completed.successor
+    assert successor, "Expected successor execution for step #{step_name}"
+    assert successor.scheduled?, "Expected successor to be scheduled, but was #{successor.state}"
   end
 end
 ```
@@ -966,48 +1006,51 @@ end
 |--------|---------------|----------------------|-------------|
 | **API Style** | `build_enumerator` + `each_iteration` | `step` object in block | `IterableStep` object (Rails 8.1 compatible) |
 | **Scope** | Any ActiveJob | Any ActiveJob | Workflow steps only |
-| **State Storage** | Job serialization | Job serialization | `step_executions` table |
+| **State Storage** | Job serialization | Job serialization | `step_executions` table (chained records) |
 | **Checkpoint** | Configurable | Manual `set!`/`advance!` | Manual or auto via `iterate_over_*` |
 | **Cursor Type** | Primitives only | Any serializable | Any AJ-serializable (native JSON/JSONB) |
-| **Flow Control** | Limited | Limited | Full (cancel!, pause!, skip!, reattempt!) |
+| **Flow Control** | Limited | Limited | Full (cancel!, pause!, skip!, suspend!, reattempt!) |
 | **Rewind Support** | N/A | N/A | `reattempt!(rewind: true)` |
+| **Timeline Visibility** | Single job | Single job | Each execution chunk has clear start/end times |
 
 ---
 
 ## 12. Implementation Plan
 
-### Phase 1: Foundation
-1. Add migration for `cursor` and `completed_iterations` columns
-2. Add `suspended` state to `StepExecution`
-3. Update unique constraint to include `suspended` state
-4. Add cursor serialization helpers to `StepExecution`
+### Phase 1: Foundation ✅
+1. Add migration for `cursor` column (JSON/JSONB)
+2. Add migration for `continues_from_id` column for chained executions
+3. Add `continues_from` and `successor` associations to `StepExecution`
+4. Add `resuming?` method to check for predecessor link
+5. Add cursor serialization helpers to `StepExecution`
 
-### Phase 2: IterableStep Class
-5. Create `GenevaDrive::IterableStep` class (Rails 8.1 API compatible)
-6. Implement `cursor`, `set!`, `advance!`, `checkpoint!`, `resumed?`, `advanced?`
-7. Implement `skip_to!(value, wait:)` for cursor jump with optional delayed re-enqueue
-8. Implement `iterate_over` for Enumerables
-9. Implement `iterate_over_records` for AR relations
-10. Implement `iterate_over_subrelations` for batch processing
+### Phase 2: IterableStep Class ✅
+6. Create `GenevaDrive::IterableStep` class (Rails 8.1 API compatible)
+7. Implement `cursor`, `set!`, `advance!`, `checkpoint!`, `resumed?`, `advanced?`
+8. Implement `skip_to!(value, wait:)` for cursor jump with optional delayed successor
+9. Implement `iterate_over` for Enumerables
+10. Implement `iterate_over_records` for AR relations
+11. Implement `iterate_over_subrelations` for batch processing
 
-### Phase 3: Flow Control
-11. Enhance `reattempt!` with `rewind:` option
-12. Add `suspend!` flow control method
+### Phase 3: Flow Control ✅
+12. Enhance `reattempt!` with `rewind:` option
+13. Add `suspend!` flow control method
+14. Update ResumableStepExecutor to create successor executions
 
-### Phase 4: Testing
-13. Extend `TestHelpers` for resumable steps
-14. Add comprehensive test suite
+### Phase 4: Testing ✅
+15. Extend `TestHelpers` for resumable steps (`speedrun_current_step`, `assert_cursor`, `assert_step_has_successor`)
+16. Add comprehensive test suite
 
 ### Phase 5: Documentation
-15. Document DSL usage
-16. Add examples for common patterns
+17. Document DSL usage
+18. Add examples for common patterns
 
 ---
 
 ## 13. Open Questions
 
 1. **Should there be a `progress` callback?**
-   - Could report `(current_iteration, cursor)` for progress tracking
+   - Could report `(cursor)` for progress tracking
    - Useful for UI progress bars
 
 2. **Should we support nested cursors?**
@@ -1019,6 +1062,11 @@ end
    - Would allow custom Enumerators to specify their own cursor values
    - Currently uses index as cursor for all Enumerables
 
+4. **How to visualize execution chains in the UI?**
+   - Each execution has its own timeline entry
+   - Could link them visually to show continuation
+   - Query: `workflow.step_executions.where(step_name: "x").order(:created_at)`
+
 ---
 
 ## 14. Summary
@@ -1028,7 +1076,12 @@ This design brings job-iteration's proven resumable iteration pattern to GenevaD
 - Maintaining GenevaDrive's database-centric state model
 - Preserving all existing flow control capabilities
 - Guaranteeing safe resumption via per-iteration checkpointing
-- Enabling infinite loop detection via iteration counting
+- **Using chained executions for timeline visibility**: Each execution attempt creates a separate record with clear start/end times
 - Providing a clean DSL that mirrors the existing `step` definition pattern
+
+The **chained executions model** (linked via `continues_from_id`) enables:
+- Clear timeline visualization showing when each chunk of work happened
+- Complete audit trail of execution history
+- Simpler state machine (no `suspended` state needed)
 
 The `rewind: true` option for `reattempt!` gives developers explicit control over whether to continue from the cursor or start fresh—a capability job-iteration doesn't offer.

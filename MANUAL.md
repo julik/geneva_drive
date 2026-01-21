@@ -731,6 +731,58 @@ InvoiceWorkflow.create!(hero: user, invoice_id: invoice.id)
 
 If you're processing a subscription renewal, the hero is the `Subscription`. If you're processing an order, the hero is the `Order`. The more specific your hero, the easier it is to reason about workflow state.
 
+### Associating Workflows from the Hero
+
+GenevaDrive uses STI (Single Table Inheritance) combined with a polymorphic `hero` association. This means a single hero can have multiple different workflow types associated with it, each representing a distinct process the hero is going through.
+
+Define associations on your hero model to access each workflow type directly:
+
+```ruby
+class User < ApplicationRecord
+  has_one :signup_workflow, as: :hero, class_name: "SignupWorkflow"
+  has_one :billing_workflow, as: :hero, class_name: "BillingCycleWorkflow"
+  has_one :referral_workflow, as: :hero, class_name: "ReferralProgramWorkflow"
+end
+```
+
+Each association returns only workflows of that specific type. Rails automatically scopes queries by the STI `type` column when you specify `class_name`.
+
+This pattern lets you query the state of each process independently:
+
+```ruby
+user = User.find(id)
+
+# Check signup progress
+if user.signup_workflow&.finished?
+  # User completed onboarding
+end
+
+# Check billing state
+if user.billing_workflow&.paused?
+  # Billing needs attention
+end
+
+# Start a new workflow only if one isn't already running
+unless user.referral_workflow&.ongoing?
+  ReferralProgramWorkflow.create!(hero: user)
+end
+```
+
+For workflows where you need access to historical records (finished or canceled), use `has_many` with a scope:
+
+```ruby
+class User < ApplicationRecord
+  has_one :current_billing_workflow,
+    -> { ongoing },
+    as: :hero,
+    class_name: "BillingCycleWorkflow"
+
+  has_many :billing_workflows,
+    as: :hero,
+    class_name: "BillingCycleWorkflow"
+end
+```
+
 ### Workflows Without Heroes
 
 Some workflows don't operate on a specific record — system maintenance, batch jobs, or scheduled reports:

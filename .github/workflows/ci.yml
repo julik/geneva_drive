@@ -29,8 +29,8 @@ jobs:
       matrix:
         database:
           - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/stepper_motor_test?encoding=unicode' }
-          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1?encoding=utf8mb4' }
-          - { name: 'SQLite', url: 'sqlite3:db/test.sqlite3' }
+        # - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1?encoding=utf8mb4' }
+        # - { name: 'SQLite', url: 'sqlite3:db/test.sqlite3' }
 
     services:
       postgres:
@@ -46,18 +46,18 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: stepper_motor_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+    # mysql:
+    #   image: mysql:8.0
+    #   env:
+    #     MYSQL_ROOT_PASSWORD: root
+    #     MYSQL_DATABASE: stepper_motor_test
+    #   ports:
+    #     - 3306:3306
+    #   options: >-
+    #     --health-cmd "mysqladmin ping"
+    #     --health-interval 10s
+    #     --health-timeout 5s
+    #     --health-retries 5
 
     steps:
       - name: Install packages

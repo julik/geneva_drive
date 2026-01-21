@@ -1,4 +1,5 @@
-# Claude Code Instructions
+* **NEVER add foreign key constraints in the SQLite migration flavours** - Because we have to be compatible with SQLite and not destroy data, and adding foreign keys causes table recreation which can lead to data loss. See: https://kyrylo.org/software/2025/09/27/a-mere-add-foreign-key-can-wipe-out-your-whole-rails-sqlite-production-table.html. If referential integrity is needed and you need to do ALTER TABLE that will cause a table recreation, find a way to do it via an atomic table swap, or stop and ask the human operator.
+* **Avoid migrations that cause SQLite table rewrites** - Operations like `change_column_null`, `change_column_default`, `change_column` trigger full table recreation in SQLite (create new table, copy data, drop old, rename). This can corrupt foreign key references and cause data loss. Instead, enforce constraints at the model level (validations, `belongs_to` with `optional: true/false`). If DB constraints are needed and you need to do ALTER TABLE that will cause a table recreation, find a way to do it via an atomic table swap, or stop and ask the human operator.
 
 ## Git Commits
 
@@ -12,12 +13,6 @@
 # Good - flat syntax
 class GenevaDrive::Workflow < ActiveRecord::Base
   def perform
-    # ...
-  end
-end
-
-module GenevaDrive::FlowControl
-  def cancel!
     # ...
   end
 end

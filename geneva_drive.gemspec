@@ -19,7 +19,7 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.0.0"
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir["{app,config,db,lib,test,config,bin}/**/*", "LICENSE-LGPL.txt", "LICENSE-COMMERCIAL.txt", "Rakefile", "README.md", "MANUAL.md"]
+    Dir["{app,config,db,lib,test,config,bin}/**/*", "LICENSE-LGPL.txt", "LICENSE-COMMERCIAL.txt", "Rakefile", "README.md", "MANUAL.md", "CHANGELOG.md"]
   end
 
   # The only _actual_ dependency we have is Rails, the development dependencies are

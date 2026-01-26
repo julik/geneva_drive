@@ -259,15 +259,16 @@ class FlowControlTest < ActiveSupport::TestCase
     assert_equal "finished", workflow.state
   end
 
-  test "external skip! raises error for paused workflow" do
+  test "external skip! on paused workflow skips current step and resumes" do
     workflow = SimpleWorkflow.create!(hero: @user)
     workflow.pause!
+    assert_equal "step_one", workflow.next_step_name
 
-    error = assert_raises(GenevaDrive::InvalidStateError) do
-      workflow.skip!
-    end
+    workflow.skip!
+    workflow.reload
 
-    assert_match(/Cannot skip on a paused workflow/, error.message)
+    assert_equal "ready", workflow.state
+    assert_equal "step_two", workflow.next_step_name
   end
 
   test "external skip! raises error for finished workflow" do

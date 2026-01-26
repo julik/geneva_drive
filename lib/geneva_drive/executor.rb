@@ -195,13 +195,11 @@ class GenevaDrive::Executor
       transition_step!("in_progress")
       transition_workflow!("performing") if workflow.ready?
 
-      # Set current_step_name to the step being executed,
-      # and next_step_name to what comes after
-      following_step = workflow.steps.next_after(step_def.name)
-      workflow.update!(
-        current_step_name: step_def.name,
-        next_step_name: following_step&.name
-      )
+      # Set current_step_name to the step being executed.
+      # Don't advance next_step_name here - it already points to this step
+      # (set by create_step_execution). We only advance it after successful
+      # completion, so that resume! on a failed step will retry it.
+      workflow.update!(current_step_name: step_def.name)
 
       step_def
     end

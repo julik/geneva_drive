@@ -186,17 +186,32 @@ module GenevaDrive::FlowControl
   # Skips the current step from outside a step execution.
   # Marks step as skipped and schedules next step (or finishes if last).
   #
-  # @raise [InvalidStateError] if workflow is not in 'ready' state
+  # When called on a 'ready' workflow: marks the scheduled step as skipped.
+  # When called on a 'paused' workflow: skips the failed step (which caused the pause)
+  # and resumes execution with the next step.
+  #
+  # @raise [InvalidStateError] if workflow is not in 'ready' or 'paused' state
   # @return [void]
   def external_skip!
-    raise GenevaDrive::InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
+    unless %w[ready paused].include?(state)
+      raise GenevaDrive::InvalidStateError, "Cannot skip on a #{state} workflow"
+    end
 
-    logger.info("Flow control: skip! called externally on step #{current_step_name.inspect}")
+    logger.info("Flow control: skip! called externally on step #{next_step_name.inspect}")
     with_lock do
       # with_lock reloads automatically; re-check state in case it changed
-      raise GenevaDrive::InvalidStateError, "Cannot skip on a #{state} workflow" unless state == "ready"
+      unless %w[ready paused].include?(state)
+        raise GenevaDrive::InvalidStateError, "Cannot skip on a #{state} workflow"
+      end
 
-      current_execution&.mark_skipped!(outcome: "skipped")
+      if state == "paused"
+        # Workflow was paused (e.g., due to failed step). Resume and skip to next step.
+        update!(state: "ready", transitioned_at: nil)
+      else
+        # Workflow is ready with a scheduled step - mark it as skipped
+        current_execution&.mark_skipped!(outcome: "skipped")
+      end
+
       schedule_next_step!
     end
   end

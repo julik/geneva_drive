@@ -1,7 +1,7 @@
 PATH
   remote: .
   specs:
-    geneva_drive (0.1.0)
+    geneva_drive (0.2.0)
       rails (>= 7.2.2)
 
 GEM

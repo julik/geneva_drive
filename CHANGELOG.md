@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.2.0]
+
 - Add source location tracking to step definitions
 - Implement STI fallback for workflow classes
 - Store exception class name inside step executions
@@ -11,7 +13,7 @@
 - Provisions of the Dutch law now apply
 - Ignore Playwright files in repository
 
-## [0.0.1]
+## [0.1.0]
 
 Initial release of GenevaDrive durable workflow library.
 

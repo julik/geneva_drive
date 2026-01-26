@@ -93,13 +93,15 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # @return [void]
   def mark_failed!(error, outcome: "failed")
     with_lock do
-      update!(
+      attrs = {
         state: "failed",
         failed_at: Time.current,
         outcome: outcome,
         error_message: error.message,
         error_backtrace: error.backtrace&.join("\n")
-      )
+      }
+      attrs[:error_class_name] = error.class.name if has_attribute?(:error_class_name)
+      update!(attrs)
     end
   end
 

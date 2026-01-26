@@ -1,0 +1,247 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Geneva Drive Animation</title>
+  <style>
+    body {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-height: 100vh;
+      margin: 0;
+      padding: 20px;
+      background: #1a1a2e;
+      box-sizing: border-box;
+    }
+    .controls {
+      display: grid;
+      grid-template-columns: 120px 200px 60px;
+      gap: 10px 15px;
+      margin-bottom: 20px;
+      color: #888;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+    }
+    .controls label {
+      text-align: right;
+    }
+    .controls input[type="range"] {
+      width: 100%;
+    }
+    .controls .value {
+      text-align: left;
+      font-variant-numeric: tabular-nums;
+    }
+  </style>
+</head>
+<body>
+  <div class="controls">
+    <label>Speed</label>
+    <input type="range" id="speed" min="5" max="60" value="20">
+    <span class="value" id="speed-val">20 rpm</span>
+
+    <label>Center distance</label>
+    <input type="range" id="distance" min="60" max="120" value="80">
+    <span class="value" id="distance-val">80</span>
+
+    <label>Geneva radius</label>
+    <input type="range" id="geneva-radius" min="40" max="80" value="60">
+    <span class="value" id="geneva-radius-val">60</span>
+
+    <label>Pin offset</label>
+    <input type="range" id="pin-offset" min="30" max="80" value="57">
+    <span class="value" id="pin-offset-val">57</span>
+  </div>
+
+  <svg id="svg" viewBox="0 0 300 300" width="600" height="600" xmlns="http://www.w3.org/2000/svg">
+    <g id="driver-group">
+      <circle id="driver-disc" cx="110" cy="150" r="40" fill="#000"/>
+      <circle id="pin" cx="167" cy="150" r="6" fill="#000"/>
+    </g>
+    <g id="geneva-group">
+      <path id="geneva-path" fill-rule="evenodd" fill="#404040"/>
+    </g>
+  </svg>
+
+  <script>
+    const Dx = 110, Dy = 150;
+    const driverRadius = 40;
+
+    const driverGroup = document.getElementById('driver-group');
+    const genevaGroup = document.getElementById('geneva-group');
+    const pinEl = document.getElementById('pin');
+    const genevaPath = document.getElementById('geneva-path');
+    const svg = document.getElementById('svg');
+
+    const speedSlider = document.getElementById('speed');
+    const distanceSlider = document.getElementById('distance');
+    const genevaRadiusSlider = document.getElementById('geneva-radius');
+    const pinOffsetSlider = document.getElementById('pin-offset');
+
+    const speedVal = document.getElementById('speed-val');
+    const distanceVal = document.getElementById('distance-val');
+    const genevaRadiusVal = document.getElementById('geneva-radius-val');
+    const pinOffsetVal = document.getElementById('pin-offset-val');
+
+    let rpm = 20;
+    let centerDistance = 80;
+    let R = 60;
+    let r = 57;
+
+    let driverAngle = 0;
+    let genevaAngle = 0;
+    let lastTime = null;
+
+    function getGx() { return Dx + centerDistance; }
+
+    function buildGenevaPath() {
+      const Gx = getGx();
+      const slotWidth = 12;
+      const hw = slotWidth / 2;
+      const innerR = 14;
+      const arcRadius = driverRadius; // Concave arcs match driver disc
+
+      // Calculate angular half-width of slot at outer edge
+      const slotAngularHW = Math.asin(hw / R);
+
+      // Arms extend just slightly past slot edges (narrow arms)
+      const armExtension = 0.08; // radians past slot edge
+
+      let d = '';
+
+      // Draw outer boundary with 4 narrow arms and deep circular concave arcs
+      for (let i = 0; i < 4; i++) {
+        const baseAngle = i * Math.PI / 2;
+
+        // Arm tip points (just past slot opening on each side)
+        const armEnd = baseAngle + slotAngularHW + armExtension;
+        const nextArmStart = baseAngle + Math.PI / 2 - slotAngularHW - armExtension;
+
+        const p1x = Gx + R * Math.cos(armEnd);
+        const p1y = Dy + R * Math.sin(armEnd);
+        const p2x = Gx + R * Math.cos(nextArmStart);
+        const p2y = Dy + R * Math.sin(nextArmStart);
+
+        if (i === 0) {
+          d += `M ${p1x.toFixed(2)} ${p1y.toFixed(2)} `;
+        }
+
+        // Deep concave circular arc between arms (driver disc fits here)
+        d += `A ${arcRadius} ${arcRadius} 0 0 0 ${p2x.toFixed(2)} ${p2y.toFixed(2)} `;
+
+        // Small arc along outer edge past the next slot (narrow arm tip)
+        const nextArmEnd = baseAngle + Math.PI / 2 + slotAngularHW + armExtension;
+        const nextP1x = Gx + R * Math.cos(nextArmEnd);
+        const nextP1y = Dy + R * Math.sin(nextArmEnd);
+        d += `A ${R} ${R} 0 0 1 ${nextP1x.toFixed(2)} ${nextP1y.toFixed(2)} `;
+      }
+      d += 'Z ';
+
+      // Cut out 4 pill-shaped slots (rounded on both ends)
+      for (let i = 0; i < 4; i++) {
+        const angle = i * Math.PI / 2;
+        const cos = Math.cos(angle);
+        const sin = Math.sin(angle);
+        const px = -sin;
+        const py = cos;
+
+        // Inner center (for rounded end)
+        const ix = Gx + innerR * cos;
+        const iy = Dy + innerR * sin;
+        // Outer center (for rounded end, slightly past edge)
+        const ox = Gx + (R + 8) * cos;
+        const oy = Dy + (R + 8) * sin;
+
+        // Slot corners at inner and outer semicircle edges
+        const i1x = ix + hw * px, i1y = iy + hw * py;
+        const i2x = ix - hw * px, i2y = iy - hw * py;
+        const o1x = ox + hw * px, o1y = oy + hw * py;
+        const o2x = ox - hw * px, o2y = oy - hw * py;
+
+        // Pill shape: inner semicircle -> side -> outer semicircle -> side -> close
+        d += `M ${i1x.toFixed(2)} ${i1y.toFixed(2)} `;
+        d += `L ${o1x.toFixed(2)} ${o1y.toFixed(2)} `;
+        d += `A ${hw} ${hw} 0 0 1 ${o2x.toFixed(2)} ${o2y.toFixed(2)} `;
+        d += `L ${i2x.toFixed(2)} ${i2y.toFixed(2)} `;
+        d += `A ${hw} ${hw} 0 0 0 ${i1x.toFixed(2)} ${i1y.toFixed(2)} `;
+        d += 'Z ';
+      }
+
+      return d;
+    }
+
+    function updateGeometry() {
+      const Gx = getGx();
+      pinEl.setAttribute('cx', Dx + r);
+      pinEl.setAttribute('cy', Dy);
+      genevaPath.setAttribute('d', buildGenevaPath());
+      const maxX = Gx + R + 20;
+      svg.setAttribute('viewBox', `0 0 ${Math.max(300, maxX)} 300`);
+    }
+
+    function updateSliderDisplays() {
+      speedVal.textContent = rpm + ' rpm';
+      distanceVal.textContent = centerDistance;
+      genevaRadiusVal.textContent = R;
+      pinOffsetVal.textContent = r;
+    }
+
+    speedSlider.addEventListener('input', () => {
+      rpm = parseInt(speedSlider.value);
+      updateSliderDisplays();
+    });
+
+    distanceSlider.addEventListener('input', () => {
+      centerDistance = parseInt(distanceSlider.value);
+      updateGeometry();
+      updateSliderDisplays();
+    });
+
+    genevaRadiusSlider.addEventListener('input', () => {
+      R = parseInt(genevaRadiusSlider.value);
+      updateGeometry();
+      updateSliderDisplays();
+    });
+
+    pinOffsetSlider.addEventListener('input', () => {
+      r = parseInt(pinOffsetSlider.value);
+      updateGeometry();
+      updateSliderDisplays();
+    });
+
+    function animate(timestamp) {
+      if (!lastTime) lastTime = timestamp;
+      const dt = timestamp - lastTime;
+      lastTime = timestamp;
+
+      const angularSpeed = (2 * Math.PI * rpm) / 60000;
+      driverAngle += angularSpeed * dt;
+
+      const Gx = getGx();
+      const pinX = Dx + r * Math.cos(driverAngle);
+      const pinY = Dy + r * Math.sin(driverAngle);
+      const dx = pinX - Gx;
+      const dy = pinY - Dy;
+      const dist = Math.sqrt(dx * dx + dy * dy);
+
+      if (dist < R) {
+        const angleToPin = Math.atan2(dy, dx);
+        genevaAngle = angleToPin - Math.PI;
+      }
+
+      driverGroup.setAttribute('transform',
+        `rotate(${driverAngle * 180 / Math.PI}, ${Dx}, ${Dy})`);
+      genevaGroup.setAttribute('transform',
+        `rotate(${genevaAngle * 180 / Math.PI}, ${Gx}, ${Dy})`);
+
+      requestAnimationFrame(animate);
+    }
+
+    updateGeometry();
+    updateSliderDisplays();
+    requestAnimationFrame(animate);
+  </script>
+</body>
+</html>

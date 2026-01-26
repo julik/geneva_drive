@@ -35,6 +35,11 @@ module GenevaDrive
           "add_finished_at_to_step_executions.rb",
           "db/migrate/add_finished_at_to_geneva_drive_step_executions.rb"
         )
+
+        migration_template(
+          "add_error_class_name_to_step_executions.rb",
+          "db/migrate/add_error_class_name_to_geneva_drive_step_executions.rb"
+        )
       end
 
       # Creates the initializer file.

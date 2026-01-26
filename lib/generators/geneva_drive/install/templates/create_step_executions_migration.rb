@@ -34,6 +34,7 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
       t.datetime :skipped_at
 
       # Error tracking
+      t.string :error_class_name
       t.text :error_message
       t.text :error_backtrace
 

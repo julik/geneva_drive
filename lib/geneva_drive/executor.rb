@@ -444,10 +444,7 @@ class GenevaDrive::Executor
 
     when :cancel!
       logger.info("Precondition exception policy: cancel! - canceling workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "canceled")
       transition_workflow!("canceled")
 
@@ -459,20 +456,14 @@ class GenevaDrive::Executor
 
     when :pause!
       logger.info("Precondition exception policy: pause! - pausing workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
 
     else
       # Default: pause
       logger.info("Precondition exception policy: default (pause!) - pausing workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
     end
@@ -511,10 +502,7 @@ class GenevaDrive::Executor
 
     when :cancel!
       logger.info("Exception policy: cancel! - canceling workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "canceled")
       transition_workflow!("canceled")
 
@@ -526,26 +514,34 @@ class GenevaDrive::Executor
 
     when :pause!
       logger.info("Exception policy: pause! - pausing workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
 
     else
       # Default: pause
       logger.info("Exception policy: default (pause!) - pausing workflow")
-      step_execution.update!(
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      )
+      step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
     end
 
     # Return original exception to be re-raised after transaction commits
     error
+  end
+
+  # Builds the attributes hash for storing error information on a step execution.
+  # Conditionally includes error_class_name if the column exists (migration may not have run yet).
+  #
+  # @param error [Exception]
+  # @return [Hash]
+  def error_attributes_for(error)
+    attrs = {
+      error_message: error.message,
+      error_backtrace: error.backtrace&.join("\n")
+    }
+    attrs[:error_class_name] = error.class.name if step_execution.has_attribute?(:error_class_name)
+    attrs
   end
 
   # Handles a flow control signal.

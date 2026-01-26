@@ -23,7 +23,7 @@
 #   GenevaDrive.stuck_scheduled_threshold = 1.hour
 #   GenevaDrive.stuck_recovery_action = :reattempt # or :cancel
 #
-class GenevaDrive::HousekeepingJob < GenevaDrive::ApplicationJob
+class GenevaDrive::HousekeepingJob < ActiveJob::Base
   queue_as :default
 
   # Performs housekeeping tasks.

@@ -1,2 +1,0 @@
-module GenevaDrive::ApplicationHelper
-end

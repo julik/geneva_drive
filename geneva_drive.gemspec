@@ -22,9 +22,9 @@ Gem::Specification.new do |spec|
     Dir["{app,config,db,lib,test,config,bin}/**/*", "LICENSE-LGPL.txt", "LICENSE-COMMERCIAL.txt", "Rakefile", "README.md", "MANUAL.md", "CHANGELOG.md"]
   end
 
-  # The only _actual_ dependency we have is Rails, the development dependencies are
-  # in the Gemfile and only needed to develop on geneva_drive. It is easier to depend
-  # on the "whole" of Rails because we need ActiveRecord, ActiveSupport, ActiveJob and
-  # geneva_drive is actually a Rails Engine (for ease of setup).
-  spec.add_dependency "rails", ">= 7.2.2"
+  # We only need these specific Rails components - not the full rails gem
+  spec.add_dependency "activerecord", ">= 7.2.2"
+  spec.add_dependency "activejob", ">= 7.2.2"
+  spec.add_dependency "activesupport", ">= 7.2.2"
+  spec.add_dependency "railties", ">= 7.2.2"
 end

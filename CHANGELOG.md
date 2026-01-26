@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Fix `resume!` to retry the failed step instead of skipping it
+- Trim gem dependencies to only activerecord, activejob, activesupport, and railties (no longer depends on full rails gem)
+- Remove unused engine scaffolding (controllers, views, helpers, assets)
+
 ## [0.2.0]
 
 - Add source location tracking to step definitions

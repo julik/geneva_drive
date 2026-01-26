@@ -91,6 +91,11 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #     ExternalApi.call(hero)
     #   end
     def step(name = nil, **options, &block)
+      # Capture source locations before any other operations
+      caller_loc = caller_locations(1, 1).first
+      call_location = caller_loc ? [caller_loc.path, caller_loc.lineno] : nil
+      block_location = block&.source_location
+
       # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
       if _step_definitions.equal?(superclass._step_definitions)
         self._step_definitions = _step_definitions.dup
@@ -113,6 +118,8 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       step_def = GenevaDrive::StepDefinition.new(
         name: step_name,
         callable: block || name,
+        call_location: call_location,
+        block_location: block_location,
         **options
       )
 

@@ -33,6 +33,12 @@ class GenevaDrive::StepDefinition
   # @return [String, nil] name of step this should be placed after
   attr_reader :after_step
 
+  # @return [Array<String, Integer>, nil] source location where step was called [path, lineno]
+  attr_reader :call_location
+
+  # @return [Array<String, Integer>, nil] source location of the step block [path, lineno]
+  attr_reader :block_location
+
   # Creates a new step definition.
   #
   # @param name [String, Symbol] the step name
@@ -44,10 +50,14 @@ class GenevaDrive::StepDefinition
   # @option options [Symbol] :on_exception how to handle exceptions
   # @option options [String, Symbol, nil] :before_step position before this step
   # @option options [String, Symbol, nil] :after_step position after this step
+  # @param call_location [Array<String, Integer>, nil] source location where step was called
+  # @param block_location [Array<String, Integer>, nil] source location of the step block
   # @raise [StepConfigurationError] if configuration is invalid
-  def initialize(name:, callable:, **options)
+  def initialize(name:, callable:, call_location: nil, block_location: nil, **options)
     @name = name.to_s
     @callable = callable
+    @call_location = call_location
+    @block_location = block_location
     @wait = options[:wait]
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]

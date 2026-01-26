@@ -210,6 +210,18 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     def generate_step_name
       "step_#{_step_definitions.size + 1}"
     end
+
+    # Implement fallback for removed ActiveRecord subclasses. When we try to examine a Workflow
+    # which exists in our database - but its class has been removed - this would otherwise fail
+    # with an ActiveRecord::SubclassNotFound. We need to avoid this because even if a class has
+    # been removed - we should still be able to examine a workflow that was using it.
+    #
+    # @return [self]
+    def find_sti_class(_type_name)
+      super
+    rescue ActiveRecord::SubclassNotFound
+      self
+    end
   end
 
   # Schedules the next step in the workflow.

@@ -195,7 +195,6 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
     assert_equal "finished", workflow.state
   end
 
-
   # ===========================================
   # Tests for external pause (not due to failure)
   # ===========================================

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Handle unexpected exceptions during prepare_execution (e.g., NameError from invalid hero_type) by marking step as failed and transitioning workflow based on on_exception policy
+
 ## [0.3.0]
 
 - Fix `resume!` to retry the failed step instead of skipping it

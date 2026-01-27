@@ -537,4 +537,97 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal [:around_before, :step_body, :around_after], events
     assert_equal step_execution.id, AroundHookTrackingWorkflow.step_execution_id
   end
+
+  test "marks step as failed and pauses workflow when hero class does not exist" do
+    # Create a workflow with a hero_type that references a non-existent class
+    workflow = BasicWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    # Manually set hero_type to a non-existent class
+    workflow.update_column(:hero_type, "NonExistentClass")
+
+    # Execute the job - should raise but also record the failure
+    error = assert_raises(NameError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/NonExistentClass/, error.message)
+
+    step_execution.reload
+    workflow.reload
+
+    assert_equal "failed", step_execution.state
+    assert_equal "paused", workflow.state
+    assert_match(/uninitialized constant/, step_execution.error_message)
+    assert_equal "NameError", step_execution.error_class_name
+    assert_not_nil step_execution.error_backtrace
+  end
+
+  # Workflow that raises during prepare_execution but has on_exception: :skip!
+  class PrepareExceptionSkipWorkflow < GenevaDrive::Workflow
+    step :first_step, on_exception: :skip! do
+      # This won't run - exception happens during prepare
+    end
+
+    step :second_step do
+      Thread.current[:prepare_exception_skip_ran] = true
+    end
+
+    def self.second_ran?
+      Thread.current[:prepare_exception_skip_ran]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:prepare_exception_skip_ran] = nil
+    end
+  end
+
+  test "respects on_exception: :skip! policy for prepare_execution exceptions" do
+    PrepareExceptionSkipWorkflow.reset_tracking!
+    workflow = PrepareExceptionSkipWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    # Manually set hero_type to a non-existent class
+    workflow.update_column(:hero_type, "NonExistentClass")
+
+    error = assert_raises(NameError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    assert_match(/NonExistentClass/, error.message)
+
+    step_execution.reload
+    workflow.reload
+
+    assert_equal "failed", step_execution.state
+    assert_equal "ready", workflow.state
+    # Should have scheduled the next step
+    assert_equal 2, workflow.step_executions.count
+    assert_equal "second_step", workflow.step_executions.order(:id).last.step_name
+  end
+
+  # Workflow that raises during prepare_execution but has on_exception: :cancel!
+  class PrepareExceptionCancelWorkflow < GenevaDrive::Workflow
+    step :first_step, on_exception: :cancel! do
+      # This won't run - exception happens during prepare
+    end
+  end
+
+  test "respects on_exception: :cancel! policy for prepare_execution exceptions" do
+    workflow = PrepareExceptionCancelWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    # Manually set hero_type to a non-existent class
+    workflow.update_column(:hero_type, "NonExistentClass")
+
+    error = assert_raises(NameError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+
+    step_execution.reload
+    workflow.reload
+
+    assert_equal "failed", step_execution.state
+    assert_equal "canceled", workflow.state
+  end
 end

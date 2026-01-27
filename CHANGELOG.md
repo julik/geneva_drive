@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.3.0]
+
 - Fix `resume!` to retry the failed step instead of skipping it
 - Trim gem dependencies to only activerecord, activejob, activesupport, and railties (no longer depends on full rails gem)
 - Remove unused engine scaffolding (controllers, views, helpers, assets)

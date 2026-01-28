@@ -342,22 +342,30 @@ The loop bodies execute once when Ruby loads the class. Each iteration adds a ne
 
 ### Instance Methods as Steps
 
-For complex steps, you can define instance methods and reference them with `step def`:
+The step definition can be a block, but if you give the step the same name as an instance method of your workflow that method will be called instead:
 
 ```ruby
 class DataExportWorkflow < GenevaDrive::Workflow
-  step def gather_records
-    hero.update!(export_data: hero.exportable_records.to_json)
+  step :anonymize_records
+  
+  def anonymize_records
+    Anonymizer.process_arel(hero.records)
   end
+end
+```
+
+Since `def` in modern Rubies returns the name of the method you define as a `Symbol` you can use the `step def` shorthand as well. Together with "endless methods" this can give you a very compact description:
+
+```ruby
+class DataExportWorkflow < GenevaDrive::Workflow
+  step def gather_records = hero.update!(export_data: hero.exportable_records.to_json)
 
   step def write_to_storage
     Storage.write(hero.export_path, hero.export_data)
     hero.update!(exported_at: Time.current)
   end
 
-  step def notify_user
-    ExportMailer.complete(hero).deliver_later
-  end
+  step def notify_user = ExportMailer.complete(hero).deliver_later
 end
 ```
 
@@ -518,6 +526,372 @@ end
 
 ---
 
+## Resumable Steps
+
+### The Problem with Long Iterations
+
+Sometimes a step needs to process thousands — or millions — of items. Sending a bulk email campaign, importing records from a CSV, syncing data with an external API page by page.  geneva_drive allows these tasks to be handled in a way similar to ActiveJob::Continuation, but all within the comfortable, durable workflow paradigm. The way it is implemented is called **resumable steps.** A resumable step can be _suspended_ and stores a _cursor_ (arbitrary serializable value) to continue after getting suspended.
+
+To define such a step, use `resumable_step` instead of `step`. A resumable step, be it a method or a block, will receive an extra argument used for iteration control. Its API is inspired by both `ActiveJob::Continuation` and `job-iteration`, with some extra amenities. A method you are likely to use when iterationg over ActiveRecord relations is `iterate_over` - it accepts an arbitrary `Array`, an enumerable that can be indexed into, and an `ActiveRecord::Relation`.  If you use `iterate_over`, it will automatically apply cursor-based offsets - so you don't need to manually manage the cursor at all.
+
+```ruby
+class BulkEmailWorkflow < GenevaDrive::Workflow
+  resumable_step :send_emails do |iter|
+    subscribers = hero.subscribers.where(unsubscribed: false)
+    iter.iterate_over(subscribers) do |subscriber|
+      CampaignMailer.newsletter(hero, subscriber).deliver_later
+    end
+  end
+end
+```
+
+The block receives an `iter` object (an `IterableStep`) that tracks progress. The `iterate_over` method processes each item and automatically checkpoints after each iteration.
+
+### How Resumable Steps Work
+
+When a resumable step executes:
+
+1. GenevaDrive passes an `IterableStep` object to your block
+2. You iterate over items using `iterate_over` or manual cursor control
+3. After each item, the cursor is saved to the database
+4. If the step is interrupted (timeout, shutdown, max iterations), it's marked as `suspended`
+5. When the job re-runs, the step resumes from the saved cursor position
+
+The step execution remains in `suspended` state until all items are processed, then transitions to `completed`.
+
+### The IterableStep API
+
+The `iter` object provides these methods:
+
+| Method | Description |
+|--------|-------------|
+| `cursor` | Returns the current cursor value (position) |
+| `set!(value)` | Sets the cursor to a specific value |
+| `advance!` | Increments an integer cursor by 1 |
+| `checkpoint!` | Saves the current cursor to the database immediately |
+| `resumed?` | Returns `true` if this is a resumed execution |
+| `advanced?` | Returns `true` if the cursor has been advanced at least once |
+
+### Iterating Over Collections
+
+The simplest way to use resumable steps is with `iterate_over` - with arrays, integer-based cursor is going to be created and used automatically:
+
+```ruby
+resumable_step :process_items do |iter|
+  items = %w[a b c d e]
+  iter.iterate_over(items) do |item|
+    process(item)
+  end
+end
+```
+
+For ActiveRecord collections, use `iterate_over_records` which handles cursor-based pagination efficiently:
+
+```ruby
+resumable_step :sync_users do |iter|
+  iter.iterate_over_records(User.active.order(:id)) do |user|
+    ExternalCrm.sync(user)
+  end
+end
+```
+
+For very large datasets, use `iterate_over_subrelations` to process in chunks. Each iteration yields an `ActiveRecord::Relation` with the appropriate offset already applied:
+
+```ruby
+resumable_step :export_data do |iter|
+  iter.iterate_over_subrelations(Order.completed, batch_size: 1000) do |relation_with_offset|
+    CsvExporter.append(hero.export_file, relation_with_offset)
+  end
+end
+```
+
+### Manual Cursor Control
+
+For complex iteration patterns — like paginated API responses — use manual cursor control:
+
+```ruby
+resumable_step :import_from_api do |iter|
+  page_token = iter.cursor  # nil on first run
+
+  loop do
+    response = ExternalApi.fetch_page(token: page_token)
+
+    response.items.each do |item|
+      ImportedRecord.create!(data: item)
+    end
+
+    page_token = response.next_page_token
+    break unless page_token
+
+    iter.set!(page_token)  # Save progress
+  end
+end
+```
+
+For integer-based cursors (like page numbers or offsets), use `advance!`:
+
+```ruby
+resumable_step :process_pages do |iter|
+  iter.set!(0) unless iter.cursor
+
+  while iter.cursor < total_pages
+    process_page(iter.cursor)
+    iter.advance!  # Increments cursor by 1
+  end
+end
+```
+
+### Detecting Resumed Execution
+
+Use `resumed?` to detect whether the step is running for the first time or resuming:
+
+```ruby
+resumable_step :sync_with_setup do |iter|
+  unless iter.resumed?
+    # First-time setup: create temp table, initialize counters, etc.
+    hero.update!(sync_started_at: Time.current)
+  end
+
+  iter.iterate_over_records(Record.pending) do |record|
+    process(record)
+  end
+end
+```
+
+### Skipping Ahead with skip_to!
+
+Sometimes you need to jump to a different position — for example, when an API tells you to skip ahead:
+
+```ruby
+resumable_step :paginate_api do |iter|
+  page = iter.cursor || 1
+
+  loop do
+    response = Api.fetch(page: page)
+
+    if response.redirect_to_page
+      iter.skip_to!(response.redirect_to_page)  # Saves cursor and suspends
+    end
+
+    process(response.data)
+    break if response.last_page?
+
+    page += 1
+    iter.set!(page)
+  end
+end
+```
+
+The `skip_to!` method sets the cursor to the new value and immediately suspends the step. When the step resumes, it continues from the new position.
+
+### Limiting Iterations
+
+Prevent runaway steps with `max_iterations`:
+
+```ruby
+resumable_step :bulk_process, max_iterations: 1000 do |iter|
+  iter.iterate_over(huge_collection) do |item|
+    process(item)
+  end
+end
+```
+
+After 1000 total iterations (across all executions), the step suspends. This lets the job queue breathe and allows other jobs to run. The step will automatically re-enqueue and resume.
+
+You can also limit by runtime:
+
+```ruby
+resumable_step :long_running_task, max_runtime: 5.minutes do |iter|
+  iter.iterate_over(items) do |item|
+    slow_operation(item)
+  end
+end
+```
+
+### Flow Control in Resumable Steps
+
+All standard flow control methods work inside resumable steps:
+
+```ruby
+resumable_step :process_with_conditions do |iter|
+  iter.iterate_over(items) do |item|
+    if item.invalid?
+      next  # Skip this item, continue to next
+    end
+
+    if item.requires_review?
+      pause!  # Pause workflow for manual review
+    end
+
+    if item.abort_signal?
+      cancel!  # Cancel the entire workflow
+    end
+
+    process(item)
+  end
+end
+```
+
+#### Pausing Preserves Progress
+
+When `pause!` is called inside a resumable step, the cursor position is preserved. The step is marked as `suspended` (not `canceled`), and the workflow is marked as `paused`. When you later call `workflow.resume!`, the step continues from the saved cursor position — items processed before the pause are not reprocessed:
+
+```ruby
+resumable_step :process_with_review do |iter|
+  iter.iterate_over(items) do |item|
+    process(item)
+    if item.needs_human_review?
+      iter.set!(item.id + 1)  # Save position before pausing
+      pause!
+    end
+  end
+end
+
+# Later, after human review:
+workflow.resume!  # Continues from saved cursor, not from the beginning
+```
+
+This is particularly useful for workflows that may need human intervention mid-iteration — like reviewing flagged items, approving batches, or handling edge cases that automation can't resolve.
+
+#### Suspending Manually
+
+Use `suspend!` to explicitly suspend a resumable step:
+
+```ruby
+resumable_step :rate_limited_sync do |iter|
+  current = iter.cursor || 1
+
+  while current <= total_items
+    result = api_call(current)
+
+    if result.rate_limited?
+      iter.set!(current)  # Save position before suspending
+      suspend!(wait: result.retry_after)
+    end
+
+    current += 1
+    iter.set!(current)
+  end
+end
+```
+
+The optional `wait:` parameter delays the re-enqueue.
+
+#### Rewinding on Reattempt
+
+If something goes wrong and you need to start over, use `reattempt!` with `rewind: true`:
+
+```ruby
+resumable_step :import_with_validation do |iter|
+  iter.iterate_over(records) do |record|
+    begin
+      import(record)
+    rescue ValidationError => e
+      if e.requires_full_reimport?
+        reattempt!(rewind: true)  # Start from beginning
+      end
+      raise
+    end
+  end
+end
+```
+
+The `rewind: true` option clears the cursor and iteration count, causing the step to restart from the beginning.
+
+### Testing Resumable Steps
+
+GenevaDrive provides test helpers specifically for resumable steps:
+
+```ruby
+class BulkProcessingTest < ActiveSupport::TestCase
+  include GenevaDrive::TestHelpers
+
+  test "processes all items to completion" do
+    workflow = BulkWorkflow.create!(hero: batch)
+
+    speedrun_current_step(workflow)
+
+    assert_equal "completed", workflow.current_execution.state
+  end
+
+  test "can be suspended and resumed" do
+    workflow = BulkWorkflow.create!(hero: batch)
+
+    # Run exactly 5 iterations then suspend
+    run_iterations(workflow, count: 5)
+
+    assert_step_suspended(workflow)
+    assert_iterations(workflow, 5)
+
+    # Continue to completion
+    speedrun_current_step(workflow)
+
+    assert workflow.finished?
+  end
+
+  test "cursor tracks position correctly" do
+    workflow = PaginatedWorkflow.create!(hero: batch)
+
+    run_iterations(workflow, count: 3)
+
+    assert_cursor(workflow, 4)  # After 3 iterations, cursor is at 4
+  end
+end
+```
+
+Available test helpers:
+
+| Helper | Description |
+|--------|-------------|
+| `speedrun_current_step(workflow)` | Run current step to completion (works for any step type) |
+| `run_iterations(workflow, count:)` | Run exactly N iterations then suspend |
+| `assert_cursor(workflow, value)` | Assert the cursor equals the expected value |
+| `assert_iterations(workflow, count)` | Assert the iteration count |
+| `assert_step_suspended(workflow)` | Assert the current step is suspended |
+
+### Example: Bulk Email Campaign
+
+A complete example showing resumable steps in a realistic scenario:
+
+```ruby
+class BulkEmailCampaignWorkflow < GenevaDrive::Workflow
+  cancel_if { hero.canceled? }
+
+  step :validate_campaign do
+    unless hero.valid_for_sending?
+      hero.update!(status: "invalid")
+      cancel!
+    end
+    hero.update!(status: "sending", started_at: Time.current)
+  end
+
+  resumable_step :send_emails, max_iterations: 500 do |iter|
+    subscribers = hero.list.subscribers.where(unsubscribed: false)
+
+    iter.iterate_over_records(subscribers) do |subscriber|
+      CampaignMailer.send_campaign(hero, subscriber).deliver_later
+      hero.increment!(:sent_count)
+    end
+  end
+
+  step :finalize_campaign do
+    hero.update!(
+      status: "completed",
+      completed_at: Time.current
+    )
+    CampaignMailer.summary(hero).deliver_later
+  end
+end
+```
+
+This workflow:
+- Validates the campaign before sending
+- Processes subscribers in batches of 500, checkpointing after each
+- Survives worker restarts, deployments, and scaling events
+- Completes with a summary when all emails are queued
+
+---
+
 ## Workflow States
 
 ### State Machine Diagram
@@ -547,6 +921,7 @@ Step executions have their own state machine:
 | `failed` | Exception occurred |
 | `canceled` | Canceled before execution |
 | `skipped` | Skipped via `skip_if` or `skip!` |
+| `suspended` | Resumable step paused mid-iteration |
 
 ---
 
@@ -1284,9 +1659,10 @@ end
 |--------|--------|
 | `cancel!` | Stop workflow, mark canceled |
 | `pause!` | Stop workflow, await manual resume |
-| `reattempt!(wait:)` | Retry current step, optionally after delay |
+| `reattempt!(wait:, rewind:)` | Retry current step; `rewind: true` clears cursor |
 | `skip!` | Skip current step, proceed to next |
 | `finished!` | Complete workflow early |
+| `suspend!(wait:)` | Suspend resumable step, re-enqueue after delay |
 
 #### Workflow States
 
@@ -1308,6 +1684,7 @@ end
 | `failed` | Exception occurred |
 | `canceled` | Canceled before execution |
 | `skipped` | Skipped via `skip_if` or `skip!` |
+| `suspended` | Resumable step paused mid-iteration |
 
 #### Step Options
 
@@ -1319,3 +1696,5 @@ end
 | `max_reattempts:` | Integer, nil | Max consecutive reattempts before pausing (default: 100, `nil` = unlimited) |
 | `before_step:` | Symbol | Insert before this step |
 | `after_step:` | Symbol | Insert after this step |
+| `max_iterations:` | Integer | (resumable_step) Suspend after N iterations |
+| `max_runtime:` | Duration | (resumable_step) Suspend after duration elapsed |

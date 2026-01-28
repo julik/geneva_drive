@@ -47,6 +47,18 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     foreign_key: :workflow_id,
     inverse_of: :step_executions
 
+  # For chained resumable step executions
+  belongs_to :continues_from,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    optional: true,
+    inverse_of: :successor
+
+  has_one :successor,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    inverse_of: :continues_from
+
   # Validations
   validates :step_name, presence: true
   validates :scheduled_for, presence: true
@@ -133,6 +145,35 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
+  # Returns the deserialized cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  #
+  # @return [Object, nil] the cursor value
+  def cursor_value
+    return nil if cursor.blank?
+    ActiveJob::Arguments.deserialize([cursor]).first
+  end
+
+  # Sets the cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  #
+  # @param value [Object] the cursor value to store
+  # @return [void]
+  def cursor_value=(value)
+    self.cursor = if value.nil?
+      nil
+    else
+      ActiveJob::Arguments.serialize([value]).first
+    end
+  end
+
+  # Returns true if this execution is resuming from a prior execution.
+  #
+  # @return [Boolean]
+  def resuming?
+    continues_from_id.present?
+  end
+
   # Returns the step definition for this execution.
   #
   # @return [StepDefinition, nil] the step definition
@@ -142,9 +183,10 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Executes this step using the Executor.
   #
+  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
   # @return [void]
-  def execute!
-    GenevaDrive::Executor.execute!(self)
+  def execute!(interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
+    GenevaDrive::Executor.execute!(self, interrupt_configuration: interrupt_configuration)
   end
 
   # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow

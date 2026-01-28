@@ -49,3 +49,33 @@ def pause!
   end
 end
 ```
+
+## Running Tests
+
+This is a Rails engine. Tests run against a dummy Rails app in `test/dummy/`.
+
+**Run all tests:**
+
+```bash
+bundle exec ruby -Ilib:test -e "Dir.glob('test/**/*_test.rb').each { |f| require_relative f }"
+```
+
+**Run a specific test file:**
+
+```bash
+bundle exec ruby -Itest test/workflow/resumable_step_test.rb
+```
+
+**Run a specific test by name:**
+
+```bash
+bundle exec ruby -Itest test/workflow/resumable_step_test.rb -n test_resumable_step_processes_all_items_and_completes
+```
+
+**Important:** Do not use `bundle exec rails test` from the engine root - it will look for tests in the wrong location. The commands above run tests correctly from the engine root directory.
+
+**After adding migrations:** If you add a new migration template in `lib/generators/geneva_drive/install/templates/`, you must also add a corresponding migration to `test/dummy/db/migrate/` and run it:
+
+```bash
+cd test/dummy && bundle exec rails db:migrate RAILS_ENV=test
+```

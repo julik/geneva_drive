@@ -265,55 +265,51 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(step_def, wait: wait)
   end
 
-  # Resumes a paused workflow by creating a new step execution for the next step.
+  # Resumes a paused workflow.
   #
   # ## Scheduling behavior
   #
-  # The scheduling depends on why the workflow was paused:
+  # Since pause! leaves the scheduled execution intact, resume! re-enqueues a job
+  # for the existing execution:
   #
-  # - **Paused due to step failure** (`on_exception: :pause!`): The failed step is retried
-  #   immediately. This allows quick retry after fixing the underlying issue.
+  # - **Scheduled time still in future**: Enqueues job with remaining wait time
+  # - **Scheduled time has passed (overdue)**: Enqueues job to run immediately
+  # - **No scheduled execution exists**: Creates a new execution for immediate run
+  #   (This happens if the executor ran while paused and canceled the execution)
   #
-  # - **Paused externally** (via `pause!`): If the paused step had a future scheduled time
-  #   that hasn't passed yet, the step is rescheduled for that original time (preserving
-  #   remaining wait). If the time has passed, the step runs immediately.
+  # This approach provides better timeline visibility - you can see that a step
+  # was scheduled, became overdue during pause, and when it actually ran.
   #
-  # @example Resuming after step failure (runs immediately)
-  #   # step_two fails with on_exception: :pause!
-  #   workflow.state          # => "paused"
-  #   workflow.resume!        # step_two retries immediately
-  #
-  # @example Resuming externally paused workflow (preserves wait time)
+  # @example Resuming while step is still scheduled for future
   #   # step_two has wait: 2.days, scheduled for tomorrow
   #   workflow.pause!         # paused today
   #   workflow.resume!        # step_two still scheduled for tomorrow
   #
-  # @example Resuming after scheduled time passed (runs immediately)
+  # @example Resuming after scheduled time passed (overdue)
   #   # step_two was scheduled for yesterday
   #   workflow.pause!         # paused last week
-  #   workflow.resume!        # step_two runs immediately (time already passed)
+  #   workflow.resume!        # step_two runs immediately (overdue)
   #
-  # @return [StepExecution] the created step execution
+  # @return [StepExecution, nil] the step execution that will run, or nil if none
   # @raise [InvalidStateError] if workflow is not paused
-  #
-  # ## Implementation details
-  #
-  # When pause! is called externally, it cancels the pending step execution with
-  # outcome "workflow_paused", preserving the original scheduled_for timestamp.
-  # On resume, we look for this canceled execution to calculate remaining wait time.
-  # See calculate_remaining_wait_for_resume for the full algorithm.
   def resume!
     raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
-    logger.info("Resuming paused workflow, will schedule step #{next_step_name.inspect}")
+    logger.info("Resuming paused workflow, next step: #{next_step_name.inspect}")
+
     with_lock do
       update!(state: "ready", transitioned_at: nil)
     end
 
-    step_def = steps.named(next_step_name)
-    wait = calculate_remaining_wait_for_resume(next_step_name)
-
-    create_step_execution(step_def, wait: wait)
+    # Look for a scheduled execution to resume
+    scheduled_execution = current_execution
+    if scheduled_execution
+      enqueue_scheduled_execution(scheduled_execution)
+    else
+      # No scheduled execution exists - create one for the next step
+      step_def = steps.named(next_step_name)
+      create_step_execution(step_def, wait: nil)
+    end
   end
 
   # Returns the current active step execution, if any.
@@ -441,30 +437,36 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(first_step, wait: first_step.wait)
   end
 
-  # Calculates the remaining wait time when resuming a paused workflow.
+  # Enqueues a job for an existing scheduled execution.
   #
-  # When a workflow was paused externally (via pause!) while a step was scheduled for
-  # a future time, this method finds that original scheduled time and calculates how
-  # much wait time remains.
+  # If the execution is overdue (scheduled_for is in the past), runs immediately.
+  # Otherwise, schedules with the remaining wait time.
   #
-  # @param step_name [String] the name of the step being resumed
-  # @return [ActiveSupport::Duration, nil] remaining wait time, or nil to run immediately
-  def calculate_remaining_wait_for_resume(step_name)
-    # Find the most recent canceled execution for this step that was paused externally.
-    # The "workflow_paused" outcome indicates external pause (vs "failed" for step failures).
-    paused_execution = step_executions
-      .where(step_name: step_name, outcome: "workflow_paused")
-      .order(created_at: :desc)
-      .first
+  # @param step_execution [StepExecution] the execution to enqueue
+  # @return [StepExecution] the same execution
+  def enqueue_scheduled_execution(step_execution)
+    remaining_seconds = step_execution.scheduled_for - Time.current
+    wait_until = (remaining_seconds > 0) ? step_execution.scheduled_for : nil
 
-    return nil unless paused_execution&.scheduled_for
+    wait_msg = wait_until ? "at #{wait_until}" : "immediately (overdue)"
+    logger.info("Enqueuing job for step #{step_execution.step_name} to run #{wait_msg}")
 
-    # Calculate remaining time until the original scheduled execution time
-    remaining_seconds = paused_execution.scheduled_for - Time.current
+    # Capture values for the callback
+    job_options = self.class._step_job_options.dup
+    job_options[:wait_until] = wait_until if wait_until
+    execution_id = step_execution.id
+    workflow_logger = logger
 
-    # If the original time has passed, run immediately (return nil)
-    # Otherwise, return the remaining time as a duration
-    (remaining_seconds > 0) ? remaining_seconds.seconds : nil
+    # Enqueue job after transaction commits to ensure visibility
+    ActiveRecord.after_all_transactions_commit do
+      job = GenevaDrive::PerformStepJob
+        .set(**job_options)
+        .perform_later(execution_id)
+
+      workflow_logger.debug("Enqueued job #{job.job_id} for step execution #{execution_id}")
+    end
+
+    step_execution
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

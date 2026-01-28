@@ -199,12 +199,15 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
   # Tests for external pause (not due to failure)
   # ===========================================
 
-  test "resume! after external_pause re-schedules the waiting step" do
+  test "resume! after external_pause re-uses the existing scheduled execution" do
     workflow = WaitingWorkflow.create!(hero: @user)
 
     # Execute step_one
     perform_next_step(workflow)
     assert_equal "step_two", workflow.next_step_name
+
+    original_execution = workflow.step_executions.where(step_name: "step_two", state: "scheduled").first
+    original_id = original_execution.id
 
     # Externally pause while waiting for step_two
     workflow.pause!
@@ -212,30 +215,33 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
     assert_equal "paused", workflow.state
     assert_equal "step_two", workflow.next_step_name
 
-    # Resume - should re-schedule step_two
+    # Resume - should re-enqueue the existing execution
     workflow.resume!
 
     assert_equal "ready", workflow.state
     assert_equal "step_two", workflow.next_step_name
 
-    # Verify a new execution was created
+    # Verify the same execution is reused (new behavior: no canceled + new, just reused)
     step_two_executions = workflow.step_executions.where(step_name: "step_two")
-    assert_equal 2, step_two_executions.count, "Should have original (canceled) and new (scheduled) executions"
+    assert_equal 1, step_two_executions.count, "Should reuse the existing scheduled execution"
+    assert_equal original_id, step_two_executions.first.id, "Should be the same execution record"
     assert step_two_executions.exists?(state: "scheduled")
   end
 
-  test "resume! preserves remaining wait time when original scheduled time is still in the future" do
-    # This test verifies Option B behavior for pause/resume:
-    # When a workflow is paused and then resumed BEFORE the original scheduled time,
-    # the step should be rescheduled for the REMAINING time, not run immediately.
+  test "resume! preserves original scheduled time when paused before scheduled time arrives" do
+    # This test verifies the new pause/resume behavior:
+    # When a workflow is paused while a step is scheduled for a future time,
+    # the scheduled execution is preserved (not canceled). On resume, the same
+    # execution is re-enqueued with its original scheduled_for time preserved.
     #
     # Timeline:
     # - T+0: step_one completes, step_two scheduled for T+2days
-    # - T+1day: workflow paused (1 day remaining until step_two)
-    # - T+1day: workflow resumed -> step_two should be scheduled for T+2days (original time)
+    # - T+1day: workflow paused (execution stays scheduled)
+    # - T+1day: workflow resumed -> same execution re-enqueued for T+2days
 
     start_time = Time.current
     workflow = nil
+    original_execution = nil
 
     travel_to(start_time) do
       workflow = WaitingWorkflow.create!(hero: @user)
@@ -259,43 +265,46 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
 
       assert_equal "paused", workflow.state
 
-      # The original execution should be canceled
-      canceled_execution = workflow.step_executions.where(step_name: "step_two", outcome: "workflow_paused").first
-      assert canceled_execution, "Should have a canceled step_two execution with outcome 'workflow_paused'"
+      # The original execution should still be scheduled (not canceled)
+      original_execution.reload
+      assert_equal "scheduled", original_execution.state,
+        "Execution should stay 'scheduled' after pause (new behavior)"
 
-      # Now resume - step_two should be scheduled for the REMAINING time (1 day from now),
-      # which means at the ORIGINAL absolute time (start_time + 2.days)
+      # Now resume - the same execution should be re-enqueued
       workflow.resume!
 
       assert_equal "ready", workflow.state
 
-      new_execution = workflow.step_executions.where(step_name: "step_two", state: "scheduled").first
-      assert new_execution, "Should have a new scheduled step_two execution"
-      assert_not_equal canceled_execution.id, new_execution.id, "Should be a different execution record"
+      # Should still have only ONE step_two execution (the original)
+      step_two_executions = workflow.step_executions.where(step_name: "step_two")
+      assert_equal 1, step_two_executions.count, "Should have just one step_two execution (reused)"
 
-      # The new execution should be scheduled for the original time (start_time + 2.days),
-      # NOT for "now" (start_time + 1.day) and NOT for "now + 2.days" (start_time + 3.days)
-      expected_new_time = start_time + 2.days
-      assert_in_delta expected_new_time.to_f, new_execution.scheduled_for.to_f, 1.0,
-        "Resumed step_two should be scheduled for the original time (remaining wait preserved), not immediately"
+      current_execution = step_two_executions.first
+      assert_equal original_execution.id, current_execution.id, "Should be the same execution record"
+      assert_equal "scheduled", current_execution.state
+
+      # The scheduled_for should still be the original time (start_time + 2.days)
+      expected_time = start_time + 2.days
+      assert_in_delta expected_time.to_f, current_execution.scheduled_for.to_f, 1.0,
+        "Resumed step_two should retain its original scheduled_for time"
     end
   end
 
-  test "resume! runs step immediately when paused before scheduled time but resumed after" do
+  test "resume! re-enqueues step for immediate run when paused before but resumed after scheduled time" do
     # This test verifies the scenario where:
     # - A step is scheduled for a future time
-    # - Workflow is paused BEFORE that time arrives
-    # - Workflow is resumed AFTER that time has passed
-    # - The step should run immediately (not wait for a negative duration)
+    # - Workflow is paused BEFORE that time arrives (execution stays scheduled)
+    # - Workflow is resumed AFTER that time has passed (execution is now overdue)
+    # - The same execution is re-enqueued to run immediately
     #
     # Timeline:
     # - T+0: step_one completes, step_two scheduled for T+2days
-    # - T+1day: workflow paused (step_two was supposed to run in 1 more day)
-    # - T+3days: workflow resumed (original T+2days has passed)
-    # - Result: step_two runs immediately
+    # - T+1day: workflow paused (execution stays scheduled at T+2days)
+    # - T+3days: workflow resumed (execution is overdue, re-enqueued for immediate run)
 
     start_time = Time.current
     workflow = nil
+    original_execution = nil
 
     travel_to(start_time) do
       workflow = WaitingWorkflow.create!(hero: @user)
@@ -314,11 +323,12 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
       workflow.pause!
       assert_equal "paused", workflow.state
 
-      # The canceled execution should have the original scheduled_for time
-      canceled_execution = workflow.step_executions.where(step_name: "step_two", outcome: "workflow_paused").first
-      assert canceled_execution, "Should have a canceled execution"
-      assert_in_delta (start_time + 2.days).to_f, canceled_execution.scheduled_for.to_f, 1.0,
-        "Canceled execution should preserve original scheduled_for time"
+      # The execution should still be scheduled (not canceled)
+      original_execution.reload
+      assert_equal "scheduled", original_execution.state,
+        "Execution should stay 'scheduled' after pause"
+      assert_in_delta (start_time + 2.days).to_f, original_execution.scheduled_for.to_f, 1.0,
+        "Execution should preserve original scheduled_for time"
     end
 
     # T+3days: Resume AFTER the original scheduled time has passed
@@ -326,13 +336,19 @@ class ResumeAndSkipTest < ActiveSupport::TestCase
       workflow.resume!
       assert_equal "ready", workflow.state
 
-      new_execution = workflow.step_executions.where(step_name: "step_two", state: "scheduled").first
-      assert new_execution, "Should have a new scheduled step_two execution"
+      # Should still have only ONE step_two execution (the original, now overdue)
+      step_two_executions = workflow.step_executions.where(step_name: "step_two")
+      assert_equal 1, step_two_executions.count, "Should have just one step_two execution"
 
-      # The step should run immediately since the original time (T+2days) has passed
-      # It should NOT be scheduled for T+5days (now + 2.days) or any other future time
-      assert_in_delta Time.current.to_f, new_execution.scheduled_for.to_f, 1.0,
-        "Resumed step_two should run immediately when original scheduled time has passed"
+      current_execution = step_two_executions.first
+      assert_equal original_execution.id, current_execution.id, "Should be the same execution record"
+
+      # The scheduled_for is still the original time (now in the past = overdue)
+      # A new job is enqueued to run immediately, but scheduled_for is preserved
+      assert_in_delta (start_time + 2.days).to_f, current_execution.scheduled_for.to_f, 1.0,
+        "Execution should retain original scheduled_for time (showing it became overdue)"
+      assert current_execution.scheduled_for < Time.current,
+        "Execution should be overdue (scheduled_for in the past)"
     end
   end
 

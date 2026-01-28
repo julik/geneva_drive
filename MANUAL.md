@@ -451,8 +451,47 @@ When a workflow is paused, it stays paused until you explicitly resume it:
 
 ```ruby
 workflow = FraudReviewWorkflow.find(id)
-workflow.resume!  # Schedules the next step
+workflow.resume!  # Re-enqueues the scheduled step
 ```
+
+### How Pause and Resume Work
+
+When you call `pause!` externally on a workflow that's waiting for a scheduled step, GenevaDrive preserves the scheduled step execution rather than canceling it. This provides better timeline visibility — you can see that a step was scheduled, became overdue during the pause period, and when it eventually ran.
+
+**Pause behavior:**
+- The workflow transitions from `ready` to `paused`
+- The scheduled step execution remains in `scheduled` state
+- If the scheduled time passes while paused, the execution becomes "overdue" (visible in the timeline)
+
+**Resume behavior:**
+- The workflow transitions from `paused` back to `ready`
+- If a scheduled execution exists:
+  - If still in the future → a job is enqueued with remaining wait time
+  - If overdue (scheduled time has passed) → a job is enqueued to run immediately
+- If no scheduled execution exists (executor canceled it while paused) → a new execution is created
+
+```ruby
+# Timeline example:
+# T+0h: step_one completes, step_two scheduled for T+2h
+# T+1h: pause! called (step_two still scheduled for T+2h)
+# T+3h: resume! called (step_two is overdue, runs immediately)
+
+workflow = WaitingWorkflow.create!(hero: user)
+perform_next_step(workflow)           # step_one runs, step_two scheduled
+
+# Later...
+workflow.pause!                        # step_two stays scheduled
+workflow.step_executions.last.state   # => "scheduled"
+
+# Much later (after scheduled time passed)...
+workflow.resume!                       # step_two re-enqueued to run now
+```
+
+This behavior means:
+- Multiple pause/resume cycles reuse the same step execution (no duplicates)
+- The scheduled_for timestamp shows when the step was originally intended to run
+- Overdue steps are clearly visible — their scheduled_for is in the past
+- The executor guards against duplicate execution, so multiple jobs for the same step are safe
 
 ### Reattempting Steps
 
@@ -740,12 +779,24 @@ Find and resume paused workflows from the console:
 ```ruby
 GenevaDrive::Workflow.paused.each do |workflow|
   puts "#{workflow.class.name} ##{workflow.id}: next step is #{workflow.next_step_name}"
-  puts "  Error: #{workflow.step_executions.failed.last&.error_message}"
+
+  # Check if there's a scheduled execution (externally paused)
+  if (scheduled = workflow.current_execution)
+    overdue = scheduled.scheduled_for < Time.current
+    puts "  Scheduled step: #{scheduled.step_name} (#{overdue ? 'overdue' : 'future'})"
+    puts "  Originally scheduled for: #{scheduled.scheduled_for}"
+  end
+
+  # Check if there's a failed execution (paused due to exception)
+  if (failed = workflow.step_executions.failed.last)
+    puts "  Failed step: #{failed.step_name}"
+    puts "  Error: #{failed.error_message}"
+  end
 end
 
 # Resume a specific workflow
 workflow = GenevaDrive::Workflow.find(id)
-workflow.resume!
+workflow.resume!  # Re-enqueues existing scheduled step or creates new one
 ```
 
 ---

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Change `pause!` to preserve scheduled step executions instead of canceling them. Previously, calling `pause!` would cancel the scheduled execution with outcome "workflow_paused". Now, the scheduled execution remains in "scheduled" state, making it visible in the timeline as "overdue" if time passes while paused. On `resume!`, the same execution is re-enqueued (or a new one created only if the executor canceled it while paused).
+
 ## [0.4.0]
 
 - Preserve original scheduled time when resuming a paused workflow. When a workflow with a future-scheduled step is paused and then resumed before that time, the step is rescheduled for the original time (not run immediately). If the original time has passed, the step runs immediately.

@@ -165,19 +165,21 @@ module GenevaDrive::FlowControl
   private
 
   # Pauses the workflow from outside a step execution.
-  # Cancels any pending step execution and transitions workflow to paused.
+  # Leaves any scheduled step execution intact (does NOT cancel it).
+  #
+  # This allows seeing that a step was scheduled, became overdue during pause,
+  # and when it actually ran - providing better timeline visibility.
   #
   # @raise [InvalidStateError] if workflow is not in 'ready' state
   # @return [void]
   def external_pause!
     raise GenevaDrive::InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
 
-    logger.info("Flow control: pause! called externally on step #{current_step_name.inspect}")
+    logger.info("Pausing workflow (preserving scheduled execution for step #{next_step_name.inspect})")
     with_lock do
       # with_lock reloads automatically; re-check state in case it changed
       raise GenevaDrive::InvalidStateError, "Cannot pause a #{state} workflow" unless state == "ready"
 
-      current_execution&.mark_canceled!(outcome: "workflow_paused")
       update!(state: "paused", transitioned_at: Time.current)
     end
     logger.info("Workflow paused")

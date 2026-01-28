@@ -202,7 +202,9 @@ class WorkflowTest < ActiveSupport::TestCase
 
     assert_equal "ready", workflow.state
     assert_nil workflow.transitioned_at
-    assert_equal 2, workflow.step_executions.count
+    # With the new pause/resume behavior, scheduled executions are preserved
+    # and reused on resume - no new execution is created
+    assert_equal 1, workflow.step_executions.count
   end
 
   test "resume! raises for non-paused workflows" do

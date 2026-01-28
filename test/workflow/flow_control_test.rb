@@ -162,7 +162,7 @@ class FlowControlTest < ActiveSupport::TestCase
     assert_not_nil workflow.transitioned_at
   end
 
-  test "external pause! cancels pending step execution with workflow_paused outcome" do
+  test "external pause! leaves pending step execution scheduled" do
     workflow = SimpleWorkflow.create!(hero: @user)
     step_execution = workflow.step_executions.first
     assert_equal "scheduled", step_execution.state
@@ -170,8 +170,9 @@ class FlowControlTest < ActiveSupport::TestCase
     workflow.pause!
 
     step_execution.reload
-    assert_equal "canceled", step_execution.state
-    assert_equal "workflow_paused", step_execution.outcome
+    # New behavior: pause! does NOT cancel the execution - it stays scheduled
+    assert_equal "scheduled", step_execution.state
+    assert_nil step_execution.outcome
   end
 
   test "external pause! raises error for paused workflow" do

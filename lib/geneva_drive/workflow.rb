@@ -464,7 +464,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
     # If the original time has passed, run immediately (return nil)
     # Otherwise, return the remaining time as a duration
-    remaining_seconds > 0 ? remaining_seconds.seconds : nil
+    (remaining_seconds > 0) ? remaining_seconds.seconds : nil
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

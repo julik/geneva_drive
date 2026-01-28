@@ -620,7 +620,7 @@ class ExecutorTest < ActiveSupport::TestCase
     # Manually set hero_type to a non-existent class
     workflow.update_column(:hero_type, "NonExistentClass")
 
-    error = assert_raises(NameError) do
+    assert_raises(NameError) do
       GenevaDrive::Executor.execute!(step_execution)
     end
 

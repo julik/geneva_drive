@@ -135,78 +135,76 @@ class GenevaDrive::Executor
     exception_to_raise = nil
 
     result = with_execution_lock do
-      begin
-        # Validate step execution can start
-        unless step_execution.state == "scheduled"
-          logger.info("Step execution is in #{step_execution.state.inspect} and can't be stepped, dropping through")
+      # Validate step execution can start
+      unless step_execution.state == "scheduled"
+        logger.info("Step execution is in #{step_execution.state.inspect} and can't be stepped, dropping through")
 
-          next nil
-        end
-
-        # Validate workflow is in a state that allows execution
-        unless %w[ready performing].include?(workflow.state)
-          logger.info("Workflow is in #{workflow.state.inspect} state and can't be stepped, canceling and dropping through")
-
-          step_execution.update!(
-            state: "canceled",
-            canceled_at: Time.current,
-            finished_at: Time.current,
-            outcome: "canceled"
-          )
-          next nil
-        end
-
-        # Check hero exists (unless workflow opts out)
-        if workflow.hero.blank? && !workflow.class._may_proceed_without_hero
-          logger.info("No hero present and this workflow is not set to run without one. Canceling and dropping through")
-          transition_step!("canceled", outcome: "canceled")
-          transition_workflow!("canceled")
-          next nil
-        end
-
-        # Get step definition (needed for exception handling policy)
-        step_def = step_execution.step_definition
-
-        # Check step definition exists
-        unless step_def
-          error_message = "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
-          logger.error(error_message)
-
-          step_execution.update!(error_message: error_message)
-          transition_step!("failed", outcome: "failed")
-          transition_workflow!("paused")
-          exception_to_raise = GenevaDrive::StepNotDefinedError.new(
-            error_message,
-            step_execution: step_execution,
-            workflow: workflow
-          )
-          next nil
-        end
-
-        # Evaluate preconditions with instrumentation
-        precondition_result = evaluate_preconditions(step_def)
-        if precondition_result[:abort]
-          exception_to_raise = precondition_result[:exception]
-          next nil
-        end
-
-        # All checks passed - transition to in_progress
-        logger.debug("Step may be performed - changing state flags and proceeding to perform")
-
-        transition_step!("in_progress")
-        transition_workflow!("performing") if workflow.ready?
-
-        # Set current_step_name to the step being executed.
-        # Don't advance next_step_name here - it already points to this step
-        # (set by create_step_execution). We only advance it after successful
-        # completion, so that resume! on a failed step will retry it.
-        workflow.update!(current_step_name: step_def.name)
-
-        step_def
-      rescue StandardError => e
-        exception_to_raise = handle_prepare_exception(e)
-        nil
+        next nil
       end
+
+      # Validate workflow is in a state that allows execution
+      unless %w[ready performing].include?(workflow.state)
+        logger.info("Workflow is in #{workflow.state.inspect} state and can't be stepped, canceling and dropping through")
+
+        step_execution.update!(
+          state: "canceled",
+          canceled_at: Time.current,
+          finished_at: Time.current,
+          outcome: "canceled"
+        )
+        next nil
+      end
+
+      # Check hero exists (unless workflow opts out)
+      if workflow.hero.blank? && !workflow.class._may_proceed_without_hero
+        logger.info("No hero present and this workflow is not set to run without one. Canceling and dropping through")
+        transition_step!("canceled", outcome: "canceled")
+        transition_workflow!("canceled")
+        next nil
+      end
+
+      # Get step definition (needed for exception handling policy)
+      step_def = step_execution.step_definition
+
+      # Check step definition exists
+      unless step_def
+        error_message = "Step '#{step_execution.step_name}' is not defined in #{workflow.class.name}"
+        logger.error(error_message)
+
+        step_execution.update!(error_message: error_message)
+        transition_step!("failed", outcome: "failed")
+        transition_workflow!("paused")
+        exception_to_raise = GenevaDrive::StepNotDefinedError.new(
+          error_message,
+          step_execution: step_execution,
+          workflow: workflow
+        )
+        next nil
+      end
+
+      # Evaluate preconditions with instrumentation
+      precondition_result = evaluate_preconditions(step_def)
+      if precondition_result[:abort]
+        exception_to_raise = precondition_result[:exception]
+        next nil
+      end
+
+      # All checks passed - transition to in_progress
+      logger.debug("Step may be performed - changing state flags and proceeding to perform")
+
+      transition_step!("in_progress")
+      transition_workflow!("performing") if workflow.ready?
+
+      # Set current_step_name to the step being executed.
+      # Don't advance next_step_name here - it already points to this step
+      # (set by create_step_execution). We only advance it after successful
+      # completion, so that resume! on a failed step will retry it.
+      workflow.update!(current_step_name: step_def.name)
+
+      step_def
+    rescue => e
+      exception_to_raise = handle_prepare_exception(e)
+      nil
     end
 
     raise exception_to_raise if exception_to_raise

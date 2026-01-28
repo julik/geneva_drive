@@ -112,7 +112,7 @@ class GenevaDrive::StepDefinition
   #
   # @return [Integer, nil] 100 if on_exception is :reattempt!, nil otherwise
   def default_max_reattempts
-    @on_exception == :reattempt! ? 100 : nil
+    (@on_exception == :reattempt!) ? 100 : nil
   end
 
   # Validates that the callable is present and valid.

@@ -420,6 +420,7 @@ class GenevaDrive::Executor
     {
       type: :exception,
       error: error,
+      step_def: step_def,
       on_exception: step_def.on_exception
     }
   end
@@ -440,10 +441,17 @@ class GenevaDrive::Executor
 
     case on_exception
     when :reattempt!
-      logger.info("Precondition exception policy: reattempt! - rescheduling step")
-      transition_step!("completed", outcome: "reattempted")
-      transition_workflow!("ready")
-      workflow.reschedule_current_step!
+      if reattempt_limit_exceeded?(step_def)
+        logger.warn("Max reattempts (#{step_def.max_reattempts}) exceeded - pausing workflow instead")
+        step_execution.update!(error_attributes_for(error))
+        transition_step!("failed", outcome: "failed")
+        transition_workflow!("paused")
+      else
+        logger.info("Precondition exception policy: reattempt! - rescheduling step")
+        transition_step!("completed", outcome: "reattempted")
+        transition_workflow!("ready")
+        workflow.reschedule_current_step!
+      end
 
     when :cancel!
       logger.info("Precondition exception policy: cancel! - canceling workflow")
@@ -502,9 +510,14 @@ class GenevaDrive::Executor
 
     case on_exception
     when :reattempt!
-      logger.info("Prepare exception policy: reattempt! - rescheduling step")
-      transition_workflow!("ready")
-      workflow.reschedule_current_step!
+      if step_def && reattempt_limit_exceeded?(step_def)
+        logger.warn("Max reattempts (#{step_def.max_reattempts}) exceeded - pausing workflow instead")
+        transition_workflow!("paused")
+      else
+        logger.info("Prepare exception policy: reattempt! - rescheduling step")
+        transition_workflow!("ready")
+        workflow.reschedule_current_step!
+      end
 
     when :cancel!
       logger.info("Prepare exception policy: cancel! - canceling workflow")
@@ -546,16 +559,24 @@ class GenevaDrive::Executor
   # @return [Exception] the original exception to be re-raised
   def handle_captured_exception(context)
     error = context[:error]
+    step_def = context[:step_def]
     on_exception = context[:on_exception]
 
     logger.info("Handling exception with on_exception: #{on_exception.inspect}")
 
     case on_exception
     when :reattempt!
-      logger.info("Exception policy: reattempt! - rescheduling step")
-      transition_step!("completed", outcome: "reattempted")
-      transition_workflow!("ready")
-      workflow.reschedule_current_step!
+      if reattempt_limit_exceeded?(step_def)
+        logger.warn("Max reattempts (#{step_def.max_reattempts}) exceeded - pausing workflow instead")
+        step_execution.update!(error_attributes_for(error))
+        transition_step!("failed", outcome: "failed")
+        transition_workflow!("paused")
+      else
+        logger.info("Exception policy: reattempt! - rescheduling step")
+        transition_step!("completed", outcome: "reattempted")
+        transition_workflow!("ready")
+        workflow.reschedule_current_step!
+      end
 
     when :cancel!
       logger.info("Exception policy: cancel! - canceling workflow")
@@ -599,6 +620,39 @@ class GenevaDrive::Executor
     }
     attrs[:error_class_name] = error.class.name if step_execution.has_attribute?(:error_class_name)
     attrs
+  end
+
+  # Counts consecutive reattempts for the current step since the last successful execution.
+  # This is used to enforce the max_reattempts limit.
+  #
+  # @param step_name [String] the step name to count reattempts for
+  # @return [Integer] the number of consecutive reattempts
+  def consecutive_reattempt_count(step_name)
+    # Find the most recent non-reattempt completion for this step
+    # (success, skipped, canceled, failed - anything that isn't a reattempt)
+    last_non_reattempt_id = workflow.step_executions
+      .where(step_name: step_name, state: "completed")
+      .where.not(outcome: "reattempted")
+      .order(created_at: :desc)
+      .pick(:id)
+
+    # Count reattempts after that point (or all reattempts if no prior success)
+    scope = workflow.step_executions.where(step_name: step_name, outcome: "reattempted")
+    scope = scope.where("id > ?", last_non_reattempt_id) if last_non_reattempt_id
+    scope.count
+  end
+
+  # Checks if the max reattempts limit has been exceeded for the current step.
+  # Returns true if we should fall back to :pause! instead of reattempting.
+  #
+  # @param step_def [StepDefinition] the step definition
+  # @return [Boolean] true if limit exceeded, false otherwise
+  def reattempt_limit_exceeded?(step_def)
+    max_reattempts = step_def.max_reattempts
+    return false if max_reattempts.nil? # Limit disabled
+
+    count = consecutive_reattempt_count(step_def.name)
+    count >= max_reattempts
   end
 
   # Handles a flow control signal.

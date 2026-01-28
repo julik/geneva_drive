@@ -676,6 +676,42 @@ Available exception handlers:
 - `:reattempt!` — Retry the step
 - `:skip!` — Skip the step and continue to the next
 
+### Limiting Reattempts
+
+When using `on_exception: :reattempt!`, you can limit the number of consecutive reattempts before the workflow pauses. This prevents infinite retry loops when an error is persistent rather than transient.
+
+```ruby
+class ExternalApiWorkflow < GenevaDrive::Workflow
+  # Will pause after 5 consecutive failures
+  step :sync_to_crm, on_exception: :reattempt!, max_reattempts: 5 do
+    CrmApi.sync(hero)
+  end
+end
+```
+
+The `max_reattempts:` option:
+
+- **Defaults to 100** when `on_exception: :reattempt!` is used — a safety net against infinite loops
+- **Set to `nil`** to disable the limit and allow unlimited reattempts
+- **Only counts consecutive reattempts** — if the step succeeds, the count resets
+- **Does not affect manual `reattempt!` calls** — only automatic exception handling respects this limit
+
+When the limit is exceeded, GenevaDrive logs a warning and pauses the workflow, storing the original exception for debugging:
+
+```ruby
+# Unlimited reattempts (explicit opt-out of the safety limit)
+step :polling_step, on_exception: :reattempt!, max_reattempts: nil do
+  check_external_status!
+end
+
+# Custom limit
+step :flaky_api, on_exception: :reattempt!, max_reattempts: 10 do
+  FlakyService.call(hero)
+end
+```
+
+This option only makes sense with `on_exception: :reattempt!` — specifying `max_reattempts:` with other exception handlers will raise a `StepConfigurationError`.
+
 ### Manual Exception Handling
 
 For granular control, handle exceptions within the step:
@@ -1280,5 +1316,6 @@ end
 | `wait:` | Duration | Delay before step executes |
 | `skip_if:` | Proc, Symbol, Boolean | Condition to skip step |
 | `on_exception:` | Symbol | Exception handler (`:pause!`, `:cancel!`, `:reattempt!`, `:skip!`) |
+| `max_reattempts:` | Integer, nil | Max consecutive reattempts before pausing (default: 100, `nil` = unlimited) |
 | `before_step:` | Symbol | Insert before this step |
 | `after_step:` | Symbol | Insert after this step |

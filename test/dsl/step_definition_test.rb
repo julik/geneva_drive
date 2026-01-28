@@ -332,4 +332,100 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_equal :should_skip?, step_def.skip_condition
     assert_equal :reattempt!, step_def.on_exception
   end
+
+  # Tests for max_reattempts validation
+  test "defaults max_reattempts to 100 when on_exception is reattempt!" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :reattempting, on_exception: :reattempt! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal 100, step_def.max_reattempts
+  end
+
+  test "defaults max_reattempts to nil when on_exception is not reattempt!" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :pausing, on_exception: :pause! do
+      end
+
+      step :canceling, on_exception: :cancel! do
+      end
+
+      step :skipping, on_exception: :skip! do
+      end
+    end
+
+    workflow_class.step_definitions.each do |step_def|
+      assert_nil step_def.max_reattempts, "#{step_def.name} should have nil max_reattempts"
+    end
+  end
+
+  test "accepts custom max_reattempts value with on_exception reattempt!" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :custom_limit, on_exception: :reattempt!, max_reattempts: 5 do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal 5, step_def.max_reattempts
+  end
+
+  test "accepts nil max_reattempts to disable limit with on_exception reattempt!" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :unlimited, on_exception: :reattempt!, max_reattempts: nil do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_nil step_def.max_reattempts
+  end
+
+  test "rejects max_reattempts when on_exception is not reattempt!" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :invalid, on_exception: :pause!, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/on_exception: is not :reattempt!/, error.message)
+  end
+
+  test "rejects non-positive max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :zero_limit, on_exception: :reattempt!, max_reattempts: 0 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
+
+  test "rejects negative max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :negative_limit, on_exception: :reattempt!, max_reattempts: -5 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
+
+  test "rejects non-integer max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :float_limit, on_exception: :reattempt!, max_reattempts: 5.5 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
 end

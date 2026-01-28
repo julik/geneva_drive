@@ -33,6 +33,9 @@ class GenevaDrive::StepDefinition
   # @return [String, nil] name of step this should be placed after
   attr_reader :after_step
 
+  # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
+  attr_reader :max_reattempts
+
   # @return [Array<String, Integer>, nil] source location where step was called [path, lineno]
   attr_reader :call_location
 
@@ -65,6 +68,7 @@ class GenevaDrive::StepDefinition
     @on_exception = options[:on_exception] || :pause!
     @before_step = options[:before_step]&.to_s
     @after_step = options[:after_step]&.to_s
+    @max_reattempts = options.key?(:max_reattempts) ? options[:max_reattempts] : default_max_reattempts
 
     validate!
   end
@@ -101,6 +105,14 @@ class GenevaDrive::StepDefinition
     validate_exception_handler!
     validate_positioning!
     validate_skip_condition!
+    validate_max_reattempts!
+  end
+
+  # Returns the default max_reattempts value based on on_exception setting.
+  #
+  # @return [Integer, nil] 100 if on_exception is :reattempt!, nil otherwise
+  def default_max_reattempts
+    @on_exception == :reattempt! ? 100 : nil
   end
 
   # Validates that the callable is present and valid.
@@ -160,6 +172,26 @@ class GenevaDrive::StepDefinition
     raise GenevaDrive::StepConfigurationError,
       "Step '#{@name}' has invalid skip_if: must be a Symbol, Proc, Boolean, or nil, " \
       "but was #{@skip_condition.class}"
+  end
+
+  # Validates the max_reattempts option.
+  #
+  # @raise [StepConfigurationError] if max_reattempts is invalid
+  def validate_max_reattempts!
+    # nil is always valid (disables the check)
+    return if @max_reattempts.nil?
+
+    # max_reattempts only makes sense with on_exception: :reattempt!
+    unless @on_exception == :reattempt!
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has max_reattempts: but on_exception: is not :reattempt!"
+    end
+
+    # Must be a positive integer
+    unless @max_reattempts.is_a?(Integer) && @max_reattempts > 0
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has invalid max_reattempts: must be a positive integer or nil"
+    end
   end
 
   # Evaluates a condition in the workflow context.

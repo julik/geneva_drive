@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add `max_reattempts:` option for steps with `on_exception: :reattempt!` to limit consecutive reattempts before pausing the workflow (default: 100, set to `nil` to disable)
 - Handle unexpected exceptions during prepare_execution (e.g., NameError from invalid hero_type) by marking step as failed and transitioning workflow based on on_exception policy
 
 ## [0.3.0]

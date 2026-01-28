@@ -268,6 +268,48 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # Resumes a paused workflow.
   # Creates a new step execution for the next step.
   #
+  # ## Scheduling behavior when resuming after external pause
+  #
+  # When a workflow is paused externally (via pause!) while waiting for a future-scheduled
+  # step, and then resumed, we preserve the original scheduled time if it's still in the future.
+  #
+  # ### Why this matters
+  #
+  # Consider a workflow with `step :send_reminder, wait: 2.days`. The timeline might be:
+  #
+  # 1. T+0h: step_one completes, send_reminder scheduled for T+48h
+  # 2. T+24h: Admin pauses workflow (send_reminder canceled, was scheduled for T+48h)
+  # 3. T+25h: Admin resumes workflow
+  #
+  # Without preserving the original time, send_reminder would run immediately at T+25h.
+  # With this fix, send_reminder is rescheduled for T+48h (the original time), preserving
+  # the remaining 23 hours of wait time.
+  #
+  # ### How it works
+  #
+  # When pause! is called externally (not due to a step failure), it cancels the pending
+  # step execution with `outcome: "workflow_paused"`. This canceled execution record
+  # preserves the original `scheduled_for` timestamp.
+  #
+  # On resume, we:
+  # 1. Look for a canceled execution with outcome "workflow_paused" for the step we're resuming
+  # 2. If found and its scheduled_for is still in the future, calculate remaining wait time
+  # 3. Schedule the new execution for that remaining time
+  # 4. If the original time has passed, or no paused execution exists (e.g., resuming after
+  #    a step failure), run immediately
+  #
+  # ### Edge cases
+  #
+  # - **Resuming after step failure**: When a step fails with `on_exception: :pause!`, there's
+  #   no "workflow_paused" execution - the execution is marked "failed". In this case, the
+  #   step runs immediately on resume (correct behavior: retry failed step ASAP).
+  #
+  # - **Original time passed**: If pause lasted longer than the remaining wait, we run
+  #   immediately rather than using a negative wait time.
+  #
+  # - **Multiple pause/resume cycles**: We use the most recent "workflow_paused" execution
+  #   to find the original scheduled time.
+  #
   # @return [StepExecution] the created step execution
   # @raise [InvalidStateError] if workflow is not paused
   def resume!
@@ -279,7 +321,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
 
     step_def = steps.named(next_step_name)
-    create_step_execution(step_def)
+    wait = calculate_remaining_wait_for_resume(next_step_name)
+
+    create_step_execution(step_def, wait: wait)
   end
 
   # Returns the current active step execution, if any.
@@ -405,6 +449,32 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
     logger.info("Scheduling first step #{first_step.name.inspect}")
     create_step_execution(first_step, wait: first_step.wait)
+  end
+
+  # Calculates the remaining wait time when resuming a paused workflow.
+  #
+  # When a workflow was paused externally (via pause!) while a step was scheduled for
+  # a future time, this method finds that original scheduled time and calculates how
+  # much wait time remains.
+  #
+  # @param step_name [String] the name of the step being resumed
+  # @return [ActiveSupport::Duration, nil] remaining wait time, or nil to run immediately
+  def calculate_remaining_wait_for_resume(step_name)
+    # Find the most recent canceled execution for this step that was paused externally.
+    # The "workflow_paused" outcome indicates external pause (vs "failed" for step failures).
+    paused_execution = step_executions
+      .where(step_name: step_name, outcome: "workflow_paused")
+      .order(created_at: :desc)
+      .first
+
+    return nil unless paused_execution&.scheduled_for
+
+    # Calculate remaining time until the original scheduled execution time
+    remaining_seconds = paused_execution.scheduled_for - Time.current
+
+    # If the original time has passed, run immediately (return nil)
+    # Otherwise, return the remaining time as a duration
+    remaining_seconds > 0 ? remaining_seconds.seconds : nil
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

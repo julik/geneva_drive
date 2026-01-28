@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Preserve original scheduled time when resuming a paused workflow. When a workflow with a future-scheduled step is paused and then resumed before that time, the step is rescheduled for the original time (not run immediately). If the original time has passed, the step runs immediately.
 - Add `max_reattempts:` option for steps with `on_exception: :reattempt!` to limit consecutive reattempts before pausing the workflow (default: 100, set to `nil` to disable)
 - Handle unexpected exceptions during prepare_execution (e.g., NameError from invalid hero_type) by marking step as failed and transitioning workflow based on on_exception policy
 

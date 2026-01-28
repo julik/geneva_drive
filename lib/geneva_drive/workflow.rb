@@ -265,53 +265,43 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(step_def, wait: wait)
   end
 
-  # Resumes a paused workflow.
-  # Creates a new step execution for the next step.
+  # Resumes a paused workflow by creating a new step execution for the next step.
   #
-  # ## Scheduling behavior when resuming after external pause
+  # ## Scheduling behavior
   #
-  # When a workflow is paused externally (via pause!) while waiting for a future-scheduled
-  # step, and then resumed, we preserve the original scheduled time if it's still in the future.
+  # The scheduling depends on why the workflow was paused:
   #
-  # ### Why this matters
+  # - **Paused due to step failure** (`on_exception: :pause!`): The failed step is retried
+  #   immediately. This allows quick retry after fixing the underlying issue.
   #
-  # Consider a workflow with `step :send_reminder, wait: 2.days`. The timeline might be:
+  # - **Paused externally** (via `pause!`): If the paused step had a future scheduled time
+  #   that hasn't passed yet, the step is rescheduled for that original time (preserving
+  #   remaining wait). If the time has passed, the step runs immediately.
   #
-  # 1. T+0h: step_one completes, send_reminder scheduled for T+48h
-  # 2. T+24h: Admin pauses workflow (send_reminder canceled, was scheduled for T+48h)
-  # 3. T+25h: Admin resumes workflow
+  # @example Resuming after step failure (runs immediately)
+  #   # step_two fails with on_exception: :pause!
+  #   workflow.state          # => "paused"
+  #   workflow.resume!        # step_two retries immediately
   #
-  # Without preserving the original time, send_reminder would run immediately at T+25h.
-  # With this fix, send_reminder is rescheduled for T+48h (the original time), preserving
-  # the remaining 23 hours of wait time.
+  # @example Resuming externally paused workflow (preserves wait time)
+  #   # step_two has wait: 2.days, scheduled for tomorrow
+  #   workflow.pause!         # paused today
+  #   workflow.resume!        # step_two still scheduled for tomorrow
   #
-  # ### How it works
-  #
-  # When pause! is called externally (not due to a step failure), it cancels the pending
-  # step execution with `outcome: "workflow_paused"`. This canceled execution record
-  # preserves the original `scheduled_for` timestamp.
-  #
-  # On resume, we:
-  # 1. Look for a canceled execution with outcome "workflow_paused" for the step we're resuming
-  # 2. If found and its scheduled_for is still in the future, calculate remaining wait time
-  # 3. Schedule the new execution for that remaining time
-  # 4. If the original time has passed, or no paused execution exists (e.g., resuming after
-  #    a step failure), run immediately
-  #
-  # ### Edge cases
-  #
-  # - **Resuming after step failure**: When a step fails with `on_exception: :pause!`, there's
-  #   no "workflow_paused" execution - the execution is marked "failed". In this case, the
-  #   step runs immediately on resume (correct behavior: retry failed step ASAP).
-  #
-  # - **Original time passed**: If pause lasted longer than the remaining wait, we run
-  #   immediately rather than using a negative wait time.
-  #
-  # - **Multiple pause/resume cycles**: We use the most recent "workflow_paused" execution
-  #   to find the original scheduled time.
+  # @example Resuming after scheduled time passed (runs immediately)
+  #   # step_two was scheduled for yesterday
+  #   workflow.pause!         # paused last week
+  #   workflow.resume!        # step_two runs immediately (time already passed)
   #
   # @return [StepExecution] the created step execution
   # @raise [InvalidStateError] if workflow is not paused
+  #
+  # ## Implementation details
+  #
+  # When pause! is called externally, it cancels the pending step execution with
+  # outcome "workflow_paused", preserving the original scheduled_for timestamp.
+  # On resume, we look for this canceled execution to calculate remaining wait time.
+  # See calculate_remaining_wait_for_resume for the full algorithm.
   def resume!
     raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 

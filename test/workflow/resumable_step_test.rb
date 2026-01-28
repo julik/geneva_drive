@@ -534,7 +534,7 @@ class ResumableStepTest < ActiveSupport::TestCase
     perform_next_step(workflow)
 
     workflow.reload
-    successor = workflow.current_execution
+    workflow.current_execution
     assert_cursor(workflow, 5)
   end
 

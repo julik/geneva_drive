@@ -402,14 +402,15 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       end
       create_resumable_successor!(paused_resumable_execution)
     elsif externally_paused_execution
-      # Step was externally paused - re-schedule the same step
+      # Step was externally paused - re-schedule the same step with remaining wait time
       step_name = externally_paused_execution.step_name
       logger.info("Resuming externally paused workflow, re-scheduling step #{step_name.inspect}")
       with_lock do
         update!(state: "ready", transitioned_at: nil)
       end
       step_def = steps.named(step_name)
-      create_step_execution(step_def)
+      wait = calculate_remaining_wait_for_resume(step_name)
+      create_step_execution(step_def, wait: wait)
     elsif (scheduled_execution = step_executions.find_by(state: "scheduled"))
       # Already have a scheduled execution
       logger.info("Resuming paused workflow with existing scheduled execution #{scheduled_execution.id}")

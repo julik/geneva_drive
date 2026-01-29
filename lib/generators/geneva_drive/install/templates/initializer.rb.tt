@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
 # How long to keep completed/canceled workflows before automatic deletion.
-# Set to nil to disable automatic cleanup (default).
+# Set to nil to disable automatic cleanup.
 # When enabled, finished and canceled workflows older than this threshold
 # will be deleted along with their step execution records.
 #

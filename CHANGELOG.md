@@ -3,6 +3,7 @@
 ## [Unreleased]
 
 - Change `pause!` to preserve scheduled step executions instead of canceling them. Previously, calling `pause!` would cancel the scheduled execution with outcome "workflow_paused". Now, the scheduled execution remains in "scheduled" state, making it visible in the timeline as "overdue" if time passes while paused. On `resume!`, the same execution is re-enqueued (or a new one created only if the executor canceled it while paused).
+- Improve `HousekeepingJob` to process all eligible records by looping through batches instead of stopping after the first batch. Also uses efficient SQL DELETEs with INNER JOIN for step executions cleanup and fixes cutoff times at the start of each operation for deterministic behavior.
 
 ## [0.4.0]
 

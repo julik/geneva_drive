@@ -47,44 +47,91 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   private
 
   # Cleans up completed/canceled workflows older than the configured threshold.
-  # Uses delete_all for efficiency - step executions are deleted via dependent: :destroy
-  # or a separate bulk delete for performance.
+  # Uses efficient batched SQL DELETEs - step executions are deleted first via
+  # INNER JOIN, then workflows. Loops until all eligible records are deleted.
   #
   # @param results [Hash] results hash to update
   # @return [void]
   def cleanup_completed_workflows!(results)
     threshold = GenevaDrive.delete_completed_workflows_after
-    return unless threshold
+    if threshold.blank?
+      logger.info("GenevaDrive.delete_completed_workflows_after is set to nil, so no old workflows will be deleted from the DB for now")
+      return
+    end
 
+    # Fix cutoff time at start to ensure cleanup completes deterministically
     cutoff_time = threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
 
-    # Find workflows eligible for cleanup
-    workflows_to_delete = GenevaDrive::Workflow
-      .where(state: %w[finished canceled])
-      .where("transitioned_at < ?", cutoff_time)
-      .limit(batch_size)
+    # First pass: delete all step executions for old workflows using INNER JOIN
+    loop do
+      deleted_count = delete_step_executions_batch(cutoff_time, batch_size)
+      logger.info("Deleted #{deleted_count} step executions")
+      results[:step_executions_cleaned_up] += deleted_count
+      break if deleted_count < batch_size
+    end
 
-    workflow_ids = workflows_to_delete.pluck(:id)
-    return if workflow_ids.empty?
-
-    # Delete step executions first (more efficient than dependent: :destroy for bulk)
-    step_exec_count = GenevaDrive::StepExecution
-      .where(workflow_id: workflow_ids)
-      .delete_all
-
-    # Then delete workflows
-    workflow_count = GenevaDrive::Workflow
-      .where(id: workflow_ids)
-      .delete_all
-
-    results[:workflows_cleaned_up] = workflow_count
-    results[:step_executions_cleaned_up] = step_exec_count
+    # Second pass: delete the workflows themselves
+    loop do
+      deleted_count = delete_workflows_batch(cutoff_time, batch_size)
+      logger.info("Deleted #{deleted_count} workflows")
+      results[:workflows_cleaned_up] += deleted_count
+      break if deleted_count < batch_size
+    end
 
     logger.info(
-      "Cleaned up #{workflow_count} workflows " \
-      "and #{step_exec_count} step executions older than #{cutoff_time}"
+      "Cleaned up #{results[:workflows_cleaned_up]} workflows " \
+      "and #{results[:step_executions_cleaned_up]} step executions older than #{cutoff_time}"
     )
+  end
+
+  # Deletes a batch of step executions belonging to old workflows.
+  #
+  # @param cutoff_time [Time] workflows transitioned before this time are eligible
+  # @param batch_size [Integer] maximum records to delete in this batch
+  # @return [Integer] number of records deleted
+  def delete_step_executions_batch(cutoff_time, batch_size)
+    GenevaDrive::StepExecution.connection_pool.with_connection do |conn|
+      step_executions_table = conn.quote_table_name(GenevaDrive::StepExecution.table_name)
+      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
+
+      sql = <<~SQL.squish
+        DELETE FROM #{step_executions_table}
+        WHERE id IN (
+          SELECT se.id
+          FROM #{step_executions_table} se
+          INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
+          WHERE w.state IN ('finished', 'canceled')
+          AND w.transitioned_at < ?
+          LIMIT ?
+        )
+      SQL
+
+      conn.delete(GenevaDrive::StepExecution.sanitize_sql([sql, cutoff_time, batch_size]))
+    end
+  end
+
+  # Deletes a batch of old workflows.
+  #
+  # @param cutoff_time [Time] workflows transitioned before this time are eligible
+  # @param batch_size [Integer] maximum records to delete in this batch
+  # @return [Integer] number of records deleted
+  def delete_workflows_batch(cutoff_time, batch_size)
+    GenevaDrive::Workflow.connection_pool.with_connection do |conn|
+      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
+
+      sql = <<~SQL.squish
+        DELETE FROM #{workflows_table}
+        WHERE id IN (
+          SELECT id FROM #{workflows_table}
+          WHERE state IN ('finished', 'canceled')
+          AND transitioned_at < ?
+          LIMIT ?
+        )
+      SQL
+
+      conn.delete(GenevaDrive::Workflow.sanitize_sql([sql, cutoff_time, batch_size]))
+    end
   end
 
   # Recovers stuck step executions.
@@ -100,48 +147,60 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   end
 
   # Recovers step executions stuck in "in_progress" state.
+  # Loops until all eligible records are processed.
   #
   # @param results [Hash] results hash to update
   # @return [void]
   def recover_stuck_in_progress!(results)
-    threshold = GenevaDrive.stuck_in_progress_threshold
+    # Fix cutoff time at start to ensure recovery completes deterministically
+    cutoff_time = GenevaDrive.stuck_in_progress_threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
-    cutoff_time = threshold.ago
 
-    stuck_executions = GenevaDrive::StepExecution
-      .in_progress
-      .where("started_at < ?", cutoff_time)
-      .limit(batch_size)
+    loop do
+      stuck_executions = GenevaDrive::StepExecution
+        .in_progress
+        .where("started_at < ?", cutoff_time)
+        .limit(batch_size)
+        .to_a
 
-    stuck_executions.find_each do |step_execution|
-      recover_step_execution!(step_execution)
-      results[:stuck_in_progress_recovered] += 1
-    rescue => e
-      logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
-      Rails.error.report(e)
+      break if stuck_executions.empty?
+
+      stuck_executions.each do |step_execution|
+        recover_step_execution!(step_execution)
+        results[:stuck_in_progress_recovered] += 1
+      rescue => e
+        logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
+        Rails.error.report(e)
+      end
     end
   end
 
   # Recovers step executions stuck in "scheduled" state past their scheduled_for time.
+  # Loops until all eligible records are processed.
   #
   # @param results [Hash] results hash to update
   # @return [void]
   def recover_stuck_scheduled!(results)
-    threshold = GenevaDrive.stuck_scheduled_threshold
+    # Fix cutoff time at start to ensure recovery completes deterministically
+    cutoff_time = GenevaDrive.stuck_scheduled_threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
-    cutoff_time = threshold.ago
 
-    stuck_executions = GenevaDrive::StepExecution
-      .scheduled
-      .where("scheduled_for < ?", cutoff_time)
-      .limit(batch_size)
+    loop do
+      stuck_executions = GenevaDrive::StepExecution
+        .scheduled
+        .where("scheduled_for < ?", cutoff_time)
+        .limit(batch_size)
+        .to_a
 
-    stuck_executions.find_each do |step_execution|
-      recover_step_execution!(step_execution)
-      results[:stuck_scheduled_recovered] += 1
-    rescue => e
-      logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
-      Rails.error.report(e)
+      break if stuck_executions.empty?
+
+      stuck_executions.each do |step_execution|
+        recover_step_execution!(step_execution)
+        results[:stuck_scheduled_recovered] += 1
+      rescue => e
+        logger.error("Failed to recover step execution #{step_execution.id}: #{e.message}")
+        Rails.error.report(e)
+      end
     end
   end
 

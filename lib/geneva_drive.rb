@@ -75,7 +75,7 @@ module GenevaDrive
   # Set default configuration values
   self.delete_completed_workflows_after = 30.days
   self.stuck_in_progress_threshold = 1.hour
-  self.stuck_scheduled_threshold = 1.hour
+  self.stuck_scheduled_threshold = 15.minutes
   self.housekeeping_batch_size = 1000
   self.stuck_recovery_action = :reattempt
 end

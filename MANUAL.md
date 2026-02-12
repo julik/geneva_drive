@@ -1008,7 +1008,7 @@ Configure housekeeping thresholds in an initializer:
 # config/initializers/geneva_drive.rb
 GenevaDrive.delete_completed_workflows_after = 30.days
 GenevaDrive.stuck_in_progress_threshold = 1.hour
-GenevaDrive.stuck_scheduled_threshold = 1.hour
+GenevaDrive.stuck_scheduled_threshold = 15.minutes
 GenevaDrive.stuck_recovery_action = :reattempt  # or :cancel
 ```
 

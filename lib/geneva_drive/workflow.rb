@@ -457,7 +457,12 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     execution_id = step_execution.id
     workflow_logger = logger
 
-    # Enqueue job after transaction commits to ensure visibility
+    # Enqueue job after transaction commits to ensure the step execution record is visible
+    # to the job worker. This callback fires after SQL COMMIT but may fire while the
+    # transaction object is still being cleaned up on the Ruby side. That is why
+    # PerformStepJob sets `enqueue_after_transaction_commit = :never` -- without it,
+    # ActiveJob/SolidQueue would see the transaction as "open" and defer the queue
+    # INSERT to a second "after commit" that never fires (the double-deferral bug).
     ActiveRecord.after_all_transactions_commit do
       job = GenevaDrive::PerformStepJob
         .set(**job_options)
@@ -511,8 +516,13 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       wait_msg = wait ? " (scheduled for #{scheduled_for})" : ""
       workflow_logger.debug("Created step execution #{execution_id} for step #{step_definition.name.inspect}#{wait_msg}")
 
-      # Enqueue job after transaction commits to ensure the step execution
-      # record is visible to the job worker
+      # Enqueue job after transaction commits to ensure the step execution record
+      # is visible to the job worker. This callback fires after SQL COMMIT but may
+      # fire while the transaction object is still being cleaned up on the Ruby side.
+      # That is why PerformStepJob sets `enqueue_after_transaction_commit = :never` --
+      # without it, ActiveJob/SolidQueue would see the transaction as "open" and defer
+      # the queue INSERT to a second "after commit" that never fires (the double-deferral
+      # bug). See the extensive comment in PerformStepJob for the full explanation.
       ActiveRecord.after_all_transactions_commit do
         job = GenevaDrive::PerformStepJob
           .set(**job_options)

@@ -478,7 +478,7 @@ What it does:
 ```ruby
 GenevaDrive.delete_completed_workflows_after = 30.days
 GenevaDrive.stuck_in_progress_threshold = 1.hour
-GenevaDrive.stuck_scheduled_threshold = 1.hour
+GenevaDrive.stuck_scheduled_threshold = 15.minutes
 ```
 
 ### Running Housekeeping

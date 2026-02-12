@@ -62,7 +62,7 @@
 # still in "scheduled" state before being considered stuck. This can
 # happen if jobs fail to enqueue or are lost by the queue backend.
 #
-# GenevaDrive.stuck_scheduled_threshold = 1.hour
+# GenevaDrive.stuck_scheduled_threshold = 15.minutes
 
 # Action to take when recovering stuck step executions.
 # - :reattempt - Mark as recovered and schedule a retry (default)

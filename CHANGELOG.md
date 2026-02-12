@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Fix double-deferral bug where `PerformStepJob` could silently fail to enqueue with SolidQueue and other adapters that opt into `enqueue_after_transaction_commit`. When `perform_later` was called from inside an `after_all_transactions_commit` callback, ActiveJob could see the transaction as still "open" and defer the queue INSERT into a second callback that never fires — leaving the step execution with a `job_id` but no corresponding job in the queue backend. Fix: set `enqueue_after_transaction_commit = :never` on `PerformStepJob` (GenevaDrive already handles its own transaction-awareness) and add a poll-retry on step execution lookup as defense-in-depth against replication lag.
+- Reduce default `stuck_scheduled_threshold` from 1 hour to 15 minutes for faster recovery when jobs are lost.
 - Change `pause!` to preserve scheduled step executions instead of canceling them. Previously, calling `pause!` would cancel the scheduled execution with outcome "workflow_paused". Now, the scheduled execution remains in "scheduled" state, making it visible in the timeline as "overdue" if time passes while paused. On `resume!`, the same execution is re-enqueued (or a new one created only if the executor canceled it while paused).
 - Improve `HousekeepingJob` to process all eligible records by looping through batches instead of stopping after the first batch. Also uses efficient SQL DELETEs with INNER JOIN for step executions cleanup and fixes cutoff times at the start of each operation for deterministic behavior.
 

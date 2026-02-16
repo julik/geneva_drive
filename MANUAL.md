@@ -894,57 +894,13 @@ class User < ApplicationRecord
 end
 ```
 
-## Workflows Without Heroes
-
-Some workflows don't operate on a specific record — system maintenance, batch jobs, or scheduled reports:
-
-```ruby
-class SystemMaintenanceWorkflow < GenevaDrive::Workflow
-  may_proceed_without_hero!
-
-  step :cleanup_temp_files do
-    TempFileService.cleanup_older_than(7.days)
-  end
-
-  step :vacuum_database do
-    ActiveRecord::Base.connection.execute("VACUUM ANALYZE")
-  end
-
-  step :notify_ops do
-    OpsMailer.maintenance_complete.deliver_later
-  end
-end
-
-# Create without a hero
-SystemMaintenanceWorkflow.create!
-```
-
 ## When Heroes Disappear
 
-If the hero is deleted while the workflow is running, GenevaDrive cancels the workflow. This prevents steps from failing with `RecordNotFound` errors.
+If the hero is deleted while the workflow is running, GenevaDrive cancels the workflow automatically. This is the right default — in practice, the vast majority of workflows make no sense without their hero. If an admin manually deletes a user, the onboarding workflow for that user should not keep sending emails into the void.
 
-If your workflow needs to continue after the hero is deleted (for example, a GDPR erasure workflow), declare it explicitly:
+If a step tries to access a nil hero, it raises, and the workflow pauses. This is also correct — it surfaces the problem to an operator rather than silently continuing with broken assumptions.
 
-```ruby
-class DataErasureWorkflow < GenevaDrive::Workflow
-  may_proceed_without_hero!
-
-  step :archive_for_compliance do
-    ComplianceArchive.store(hero)
-  end
-
-  step :delete_from_primary do
-    hero.destroy!  # Hero no longer exists after this
-  end
-
-  step :purge_from_backups do
-    # hero is nil here, but we stored the ID we need
-    BackupService.purge(id: @archived_hero_id)
-  end
-end
-```
-
-For an example of a workflow that handles data deletion carefully, see the [Data Retention Workflow](#data-retention-workflow) in the appendix.
+For the extremely rare case where a workflow must continue after the hero has been deleted from the database, the `may_proceed_without_hero!` escape hatch exists. You will almost never need it.
 
 ---
 
@@ -1357,25 +1313,19 @@ class PaymentProcessingWorkflow < GenevaDrive::Workflow
 end
 ```
 
-### Data Retention Workflow
+### User Erasure Workflow
 
-This workflow demonstrates handling hero deletion mid-workflow. It processes GDPR-style data erasure requests while maintaining compliance records.
+This workflow processes a GDPR-style data erasure request. Every step requires the hero to exist — if an admin or another process deletes the user externally before the workflow finishes, the next step will raise on `hero` access, pausing the workflow for an operator to investigate. This is the correct behavior: silent continuation with a missing user would be worse than stopping.
+
+The final step destroys the hero. Because it is the last step, the workflow transitions to `finished` and there are no subsequent steps that need the hero.
 
 ```ruby
-class DataRetentionWorkflow < GenevaDrive::Workflow
-  may_proceed_without_hero!
-
-  step :create_compliance_record do
-    ComplianceRecord.create!(
-      user_id: hero.id,
-      user_email: hero.email,
-      request_type: "erasure",
-      requested_at: Time.current,
-      workflow_id: id
-    )
-  end
-
+class UserErasureWorkflow < GenevaDrive::Workflow
   step :export_to_archive do
+    # Every step accesses hero directly — no nil guards.
+    # If hero was deleted externally, this raises and the
+    # workflow pauses. An operator can then investigate why
+    # the user vanished before erasure completed.
     archive_data = UserDataExporter.export(hero)
     ComplianceArchive.store(
       user_id: hero.id,
@@ -1385,39 +1335,27 @@ class DataRetentionWorkflow < GenevaDrive::Workflow
   end
 
   step :notify_third_parties do
-    # Request deletion from integrated services
     hero.oauth_connections.each do |connection|
       ThirdPartyDeletionService.request(connection)
     end
   end
 
   step :delete_user_data, wait: 24.hours do
-    # Give third parties time to process
-    # hero may be nil if already deleted
-    return unless hero
-
+    # Give third parties time to process deletion requests
     hero.posts.destroy_all
     hero.comments.destroy_all
     hero.messages.destroy_all
     hero.files.each { |f| f.purge_later }
   end
 
-  step :delete_user_record do
-    return unless hero
-
-    hero_id = hero.id
-    hero.destroy!
-
-    # Update compliance record
-    ComplianceRecord.find_by(user_id: hero_id, workflow_id: id)
-      &.update!(completed_at: Time.current)
+  step :send_confirmation do
+    ErasureMailer.complete(hero.email).deliver_later
   end
 
-  step :send_confirmation do
-    record = ComplianceRecord.find_by(workflow_id: id)
-    return unless record
-
-    ComplianceMailer.erasure_complete(record.user_email).deliver_later
+  step :delete_user_record do
+    # Last step — hero is destroyed, workflow finishes.
+    # No subsequent steps need the hero.
+    hero.destroy!
   end
 end
 ```

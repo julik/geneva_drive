@@ -1,6 +1,8 @@
 # GenevaDrive Manual
 
-GenevaDrive provides durable, multi-step workflows for Rails applications. We built it because the prevailing "durable function" approach — where you write an `async` function and expect the runtime to persist it mid-execution — is fundamentally broken. The graph of steps and the code that executes each step must live in separate universes. GenevaDrive delivers on that architecture.
+GenevaDrive provides durable, multi-step workflows for Rails applications. The graph of steps and the code that executes each step live in separate universes — the structure is defined at class load time, the behavior runs later via ActiveJob. GenevaDrive delivers on that architecture.
+
+# Part I — Why GenevaDrive Exists
 
 ## The Problem with Long-Running Processes
 
@@ -12,115 +14,11 @@ Imagine you need to onboard a new user. You send a welcome email, wait three day
 - **Idempotency is hard to get right.** If a job runs twice due to a queue hiccup, you might send two welcome emails or charge a credit card twice.
 - **ActiveJob does not provide a stable ID.** Retried jobs can create duplicate job IDs even though the jobs are distinct. You cannot use the job ID as an idempotency key.
 
-## The problem with "durable functions"
+## The DAG Approach
 
-There is a rather popular approach to building durable execution systems based on the concept of "durable functions". Systems like [Temporal](https://temporal.io) and [absurd](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/) as well as [Vercel Workflows](https://vercel.com/docs/workflow) take that concept quite far. It seems neat on the surface, yet deeply flawed in nature.
+Instead of pretending that a function can be suspended, serialized, and resumed — which no mainstream runtime actually supports — GenevaDrive models workflows as DAGs (directed acyclic graphs). The code driving the DAG and the code driving each node are strictly separate and run in different domains.
 
-The assumption made with those "durable functions" is that it is possible to _pretend that you have a marshalable stack._ For example, this section in a workflow function:
-
-```js
-let step = 0;
-while (step++ < 20) {
-  const { newMessages, finishReason } = await ctx.step("iteration", async () => {
-    return await singleStep(messages);
-  });
-  messages.push(...newMessages);
-  if (finishReason !== "tool-calls") {
-    break;
-  }
-}
-```
-
-can only work if `step` gets marshaled and reinstated if the function gets resumed. Async generators (and Fibers in Ruby, and - in general - any systems based on continuations or coroutines) allow suspension and resumption, but none allow proper _serialization and revival._ If you try to encode a durable function, consisting of multiple steps, as a suspendable and resumable workflow, you essentially have 3 ways to do it:
-
-* Make your function restartable from the very beginning (idempotent)
-* Use a serializable system stack frame, which - usually - comes down to serializing a VM image upon suspension
-* Make the user write functions that only - and ever - use special facilities for accessing transients (current time, database connections, heavy resources)
-
-Most "workflow engines" do their utmost to maintain the guise of resumable functions _while not providing them._ The fact that you have to wait on a Fiber to receive an HTTP result is not very useful if the only program that can receive that result is the very process which has started that HTTP request.
-
-### Why no modern runtime provides stack serialization
-
-The fundamental issue is that no mainstream runtime — V8, SpiderMonkey, YARV, the JVM, the CLR — provides the ability to serialize an executing call stack to bytes and revive it later. This is not an oversight. It is a deliberate engineering decision driven by hard constraints.
-
-A call stack contains pointers: return addresses, references to heap objects, handles to file descriptors and sockets, pointers into native libraries. Serializing a pointer is meaningless — the memory address 0x7fff5fbff8c0 on one machine means nothing on another, or even on the same machine after a restart. To serialize a stack, you must either:
-
-1. **Replace all pointers with symbolic references** that can be resolved at revival time. This requires a complete indirection layer over every memory access — a performance catastrophe for general-purpose code.
-2. **Serialize the entire heap along with the stack**, effectively snapshotting the whole process. This is what Smalltalk images did.
-3. **Restrict the language** so that stacks never contain non-serializable values. This means no closures over native resources, no FFI, no direct system calls.
-
-Modern runtimes chose speed over serializability. JavaScript engines like V8 perform aggressive JIT compilation that inlines functions, eliminates stack frames, and stores values in machine registers. The "stack" you think exists in your `async` function is a fiction maintained for debugging — the actual execution state is scattered across registers, hidden classes, inline caches, and optimized machine code that has no stable representation.
-
-### Systems that actually solved this
-
-True stack serialization is not impossible. It has been done — just not in environments optimized for raw speed.
-
-**Smalltalk images** are the canonical example. A Smalltalk system serializes its entire object memory, including all activation records (stack frames), to a single file. You can save an image mid-computation, quit, restart days later, and continue exactly where you left off. This works because Smalltalk controls everything: the object format, the bytecode interpreter, the garbage collector. There are no opaque pointers to external resources — or if there are, the image-saving mechanism explicitly handles them.
-
-**Erlang/OTP** takes a different approach: processes are so lightweight and isolated that you simply design for crash recovery. A process dies, its supervisor restarts it, and it reconstructs its state from durable storage. There's no pretense that you can freeze and thaw a running computation — you design for restart from the beginning.
-
-**Scheme continuations** (particularly in implementations like Chez Scheme or Gambit) can capture delimited continuations and, in some implementations, serialize them. But these implementations pay the cost: they maintain a CPS-transformed representation that is inherently slower than direct-style execution.
-
-**[Seaside](https://seaside.st/)** deserves special mention. This Smalltalk web framework, developed in the early 2000s, used continuations to model web application control flow. You could write a multi-page wizard as a single method with `call:` and `answer:` — the framework would suspend execution while waiting for user input and resume it when the response arrived. [Wee](https://github.com/mneumann/wee), a Ruby port inspired by Seaside's ideas, attempted the same trick using Ruby's `callcc`. Both frameworks demonstrated genuine continuation-based web development. But they also demonstrated its limits: Seaside required either keeping all session continuations in memory (scaling poorly) or relying on Smalltalk's image persistence (requiring the same VM instance to handle subsequent requests). Wee suffered from Ruby 1.8's notorious continuation memory leaks and remained a curiosity rather than a production tool.
-
-The fundamental problem with continuation-based web frameworks is process affinity. A suspended continuation exists in the memory of a specific process on a specific machine. When the user submits the next form, that exact process must handle the request — no load balancer can route it elsewhere, no autoscaler can spin up a fresh instance to handle the load, no deployment can replace the running code. This is incompatible with modern elastic infrastructure. Kubernetes doesn't care that your user's shopping cart continuation lives in pod `web-7f8d9c-xk2p4` — when traffic spikes, it will route requests wherever capacity exists. When you deploy, it will terminate old pods and start new ones. Your continuations die with them.
-
-### The problem of transient resources
-
-Even if you could serialize a continuation, you would face the problem of transient resources. A continuation captures the call stack, but the call stack contains references to objects that cannot meaningfully survive process boundaries.
-
-Consider a database transaction. Your step opens a connection, begins a transaction, inserts a row, and then — mid-transaction — suspends to wait for user confirmation:
-
-```ruby
-step :reserve_inventory do
-  ActiveRecord::Base.transaction do
-    hero.line_items.each { |item| Inventory.decrement!(item.sku, item.quantity) }
-    # Suspend here, wait for payment confirmation...
-    yield  # In a hypothetical continuation-based system
-    hero.update!(reserved_at: Time.current)
-  end
-end
-```
-
-What happens when you try to revive this continuation on a different machine, or even the same machine after a restart? The `ActiveRecord::Base.connection` object holds a socket to a PostgreSQL server. That socket is gone. You could theoretically reconnect — some systems use lazy connection resolution for exactly this reason — but reconnecting gives you a *new* connection. The transaction you started? It was rolled back the moment the original connection died. The `BEGIN` you issued exists only in the logs. The row locks you held have been released. Some other process may have already modified the rows you thought you had locked.
-
-There is no way to "re-enter" a transaction. Transactions are not addressable resources you can resume — they are ephemeral states of a connection that exist only as long as that connection lives. The same applies to file handles, HTTP connections mid-request, mutex locks, and any other resource that represents a relationship with an external system. A serialized continuation that references such resources is not a suspended computation — it is a lie about the state of the world.
-
-The lesson from these systems is clear: serializable execution state requires either total control over the runtime environment or acceptance of significant performance overhead. You cannot bolt it onto V8 or Ruby's YARV after the fact.
-
-### Why modern developers won't build this
-
-Building a marshalable stack VM is a multi-year, multi-million-dollar undertaking. It requires:
-
-- Deep expertise in compiler construction, garbage collection, and runtime systems
-- Willingness to sacrifice raw performance for serializability
-- Long-term maintenance commitment as the underlying platform evolves
-
-The JavaScript ecosystem optimizes for different goals: startup time, peak throughput, memory efficiency on mobile devices. Google, Mozilla, and Apple compete on V8, SpiderMonkey, and JavaScriptCore benchmarks. No one is competing on "ability to serialize a running function to disk."
-
-The developers building "durable function" frameworks are, by and large, application developers — skilled in their domain, but not runtime engineers. They are building atop V8, not replacing it. They cannot make V8 serialize its internal state because V8 was never designed to expose that state. The best they can do is replay: run the function again from the start, skip the steps that already completed, and hope the interleaving of side effects is deterministic. This is not serialization. It is simulation.
-
-### Pretending is denial
-
-When a framework claims to offer "durable functions" without true stack serialization, it is engaging in denial — not about the laws of physics, but about the semantics of their own system.
-
-Consider what happens when a "durable function" resumes. The framework:
-
-1. Loads the function definition
-2. Starts executing from the beginning
-3. Intercepts calls to "step" functions and returns cached results instead of re-executing
-
-This only works if the control flow between steps is perfectly deterministic. But JavaScript (and Ruby, and Python) are not deterministic languages. The order of object keys, the behavior of `Math.random()`, the resolution of race conditions in `Promise.all()` — all of these can vary between runs. If your loop counter depends on a hash iteration order that changed between Node versions, your "resumed" function takes a different path than the original.
-
-The frameworks paper over this with restrictions: don't use randomness, don't depend on time, don't read from external systems except through blessed APIs. But these restrictions are invisible until you violate them. You write what looks like normal code, you test it, it works — and then six months later, after a Node upgrade, a resumed workflow takes a wrong turn and corrupts your data.
-
-Honesty requires admitting what the system actually provides. If execution state is not truly serialized, don't pretend it is. Make the boundaries explicit. Make the steps explicit. Make the user acknowledge, at every step boundary, that they are persisting state to a database. GenevaDrive takes this position.
-
-### The DAG alternative
-
-Instead, it is useful to look at workflow systems in terms of _DAGs_ (directed acyclic graphs). In that vision, the code driving the DAG and the code driving the nodes in that DAG is strictly separate, and runs in different domains. While the DAG definition code is "single use" and runs during the orchestration, the actual code of the nodes _is_ required to be explicitly restartable, and is required to be explicitly idempotent. There is no pretense that "this function being wrapped in this callback will cleanly resume", and there is way less possibility to "accidentally" call something non-idempotent when defining the nodes.
-
-A geneva_drive workflow is a DAG with a single permitted input and a single permitted output per node, nothing more. It explicitly ditches the illusion of a marshalable VM universe in favor of clarity, cohesion with the host environment (UNIX system running Ruby running Rails) and deliberately picks clarity over pretense of magic.
+A GenevaDrive workflow is a DAG with a single permitted input and a single permitted output per node. It explicitly ditches the illusion of a marshalable VM universe in favor of clarity, cohesion with the host environment (UNIX system running Ruby running Rails) and deliberately picks clarity over pretense of magic.
 
 ```ruby
 class OrderFulfillmentWorkflow < GenevaDrive::Workflow  # DAG context — definition time
@@ -157,6 +55,35 @@ GenevaDrive addresses these challenges with a small set of guarantees:
 - **Database-backed durability.** The workflow state survives process crashes, deployments, and server restarts.
 
 ---
+
+# Part II — Getting Started
+
+## Installation and Setup
+
+### Adding the Gem
+
+```bash
+bundle add geneva_drive
+bin/rails generate geneva_drive:install
+bin/rails db:migrate
+```
+
+The generator creates two migrations: one for workflows and one for step executions.
+
+### Database Tables
+
+GenevaDrive uses a two-table design:
+
+- **`geneva_drive_workflows`** — The workflow records. Each row represents one workflow instance with its current state, hero association, and progress tracking.
+- **`geneva_drive_step_executions`** — The idempotency keys. Each row represents one attempt to execute a step, with timing, outcome, and error information.
+
+This separation keeps the workflows table clean while maintaining a complete audit trail in step executions.
+
+### UUID Primary Keys
+
+If your application uses UUID primary keys, the migrations will detect this and also use UUIDs for the foreign keys and the primary keys of the geneva_drive resources.
+
+Note that you don't want to mix integer IDs and UUIDs in the same application.
 
 ## Core Concepts
 
@@ -248,6 +175,8 @@ end
 ```
 
 ---
+
+# Part III — Defining Workflows
 
 ## Defining Steps
 
@@ -385,7 +314,58 @@ end
 
 The referenced step must already be defined — you can only insert before or after steps that appear earlier in the class body.
 
----
+## Conditional Execution
+
+### Skipping Steps with `skip_if:`
+
+You can declare conditions that cause a step to be skipped without entering the step body:
+
+```ruby
+class NotificationWorkflow < GenevaDrive::Workflow
+  step :send_email, skip_if: -> { hero.email_unsubscribed? } do
+    NotificationMailer.notify(hero).deliver_later
+  end
+
+  step :send_sms, skip_if: :sms_disabled? do
+    SmsService.notify(hero)
+  end
+
+  private
+
+  def sms_disabled?
+    !hero.sms_enabled? || hero.phone.blank?
+  end
+end
+```
+
+The `skip_if` option accepts a lambda, a symbol (method name), or a boolean. The condition is evaluated before the step executes.
+
+For a complete example showing conditional steps in context, see the [User Onboarding Workflow](#user-onboarding-workflow) in the appendix.
+
+### Blanket Cancellation with `cancel_if`
+
+When certain conditions should cancel the entire workflow regardless of which step is running, use `cancel_if`:
+
+```ruby
+class EngagementWorkflow < GenevaDrive::Workflow
+  cancel_if { hero.deactivated? }
+  cancel_if { hero.unsubscribed? }
+
+  step :send_week_1_email do
+    EngagementMailer.week_1(hero).deliver_later
+  end
+
+  step :send_week_2_email, wait: 7.days do
+    EngagementMailer.week_2(hero).deliver_later
+  end
+
+  step :send_week_4_email, wait: 14.days do
+    EngagementMailer.week_4(hero).deliver_later
+  end
+end
+```
+
+GenevaDrive evaluates `cancel_if` conditions before every step. If any condition returns true, the workflow cancels immediately.
 
 ## Flow Control
 
@@ -555,135 +535,6 @@ class OrderFulfillmentWorkflow < GenevaDrive::Workflow
 end
 ```
 
----
-
-## Workflow States
-
-### State Machine Diagram
-
-```mermaid
-stateDiagram-v2
-    [*] --> ready: create
-    ready --> performing: step starts
-    performing --> ready: step completes / reattempt
-    performing --> finished: last step completes / finished!
-    performing --> canceled: cancel!
-    performing --> paused: pause! / exception
-    paused --> ready: resume!
-```
-
-A workflow begins in `ready` state. When a step starts executing, it transitions to `performing`. Upon step completion, it returns to `ready` (unless it was the last step, in which case it transitions to `finished`).
-
-### Step Execution States
-
-Step executions have their own state machine:
-
-| State | Meaning |
-|-------|---------|
-| `scheduled` | Waiting to run |
-| `in_progress` | Currently executing |
-| `completed` | Finished successfully |
-| `failed` | Exception occurred |
-| `canceled` | Canceled before execution |
-| `skipped` | Skipped via `skip_if` or `skip!` |
-
----
-
-## Conditional Execution
-
-### Skipping Steps with `skip_if:`
-
-You can declare conditions that cause a step to be skipped without entering the step body:
-
-```ruby
-class NotificationWorkflow < GenevaDrive::Workflow
-  step :send_email, skip_if: -> { hero.email_unsubscribed? } do
-    NotificationMailer.notify(hero).deliver_later
-  end
-
-  step :send_sms, skip_if: :sms_disabled? do
-    SmsService.notify(hero)
-  end
-
-  private
-
-  def sms_disabled?
-    !hero.sms_enabled? || hero.phone.blank?
-  end
-end
-```
-
-The `skip_if` option accepts a lambda, a symbol (method name), or a boolean. The condition is evaluated before the step executes.
-
-For a complete example showing conditional steps in context, see the [User Onboarding Workflow](#user-onboarding-workflow) in the appendix.
-
-### Blanket Cancellation with `cancel_if`
-
-When certain conditions should cancel the entire workflow regardless of which step is running, use `cancel_if`:
-
-```ruby
-class EngagementWorkflow < GenevaDrive::Workflow
-  cancel_if { hero.deactivated? }
-  cancel_if { hero.unsubscribed? }
-
-  step :send_week_1_email do
-    EngagementMailer.week_1(hero).deliver_later
-  end
-
-  step :send_week_2_email, wait: 7.days do
-    EngagementMailer.week_2(hero).deliver_later
-  end
-
-  step :send_week_4_email, wait: 14.days do
-    EngagementMailer.week_4(hero).deliver_later
-  end
-end
-```
-
-GenevaDrive evaluates `cancel_if` conditions before every step. If any condition returns true, the workflow cancels immediately.
-
----
-
-## The Asynchronous Execution Model
-
-### Key Assumptions
-
-GenevaDrive steps execute asynchronously via ActiveJob. This has important implications:
-
-- **Every step runs on a different machine/process/thread.** Don't assume anything about the execution environment between steps.
-- **Instance variables don't persist between steps.** Each step gets a freshly-loaded workflow instance.
-- **The workflow is always loaded fresh from the database.** Any changes you make to the workflow or hero are persisted and reloaded.
-- **Steps may be separated by seconds or months.** A `wait: 30.days` step means exactly what it says.
-
-### No Shared State Between Steps
-
-> [!WARNING]
-> Instance variables do not persist between steps. Store data in the database.
-
-```ruby
-# WRONG - @data won't exist in next step
-step :fetch do
-  @data = ExternalApi.fetch(hero.external_id)
-end
-
-step :process do
-  process(@data)  # @data is nil here!
-end
-
-# RIGHT - persist to the hero or another record
-step :fetch do
-  hero.update!(external_data: ExternalApi.fetch(hero.external_id))
-end
-
-step :process do
-  process(hero.external_data)
-end
-```
-
-You will almost never have the same `self` between steps. Treat each step as an independent unit that reads from and writes to the database.
-
----
-
 ## Exception Handling
 
 ### Default Behavior
@@ -799,11 +650,184 @@ workflow = GenevaDrive::Workflow.find(id)
 workflow.resume!  # Re-enqueues existing scheduled step or creates new one
 ```
 
+## Workflow States
+
+### State Machine Diagram
+
+```mermaid
+stateDiagram-v2
+    [*] --> ready: create
+    ready --> performing: step starts
+    performing --> ready: step completes / reattempt
+    performing --> finished: last step completes / finished!
+    performing --> canceled: cancel!
+    performing --> paused: pause! / exception
+    paused --> ready: resume!
+```
+
+A workflow begins in `ready` state. When a step starts executing, it transitions to `performing`. Upon step completion, it returns to `ready` (unless it was the last step, in which case it transitions to `finished`).
+
+### Step Execution States
+
+Step executions have their own state machine:
+
+| State | Meaning |
+|-------|---------|
+| `scheduled` | Waiting to run |
+| `in_progress` | Currently executing |
+| `completed` | Finished successfully |
+| `failed` | Exception occurred |
+| `canceled` | Canceled before execution |
+| `skipped` | Skipped via `skip_if` or `skip!` |
+
 ---
 
-## Working with Heroes
+# Part IV — Tips and Recommendations
 
-### Choosing the Right Hero
+## Keep Workflows Short-Lived
+
+A GenevaDrive workflow should be a one-off process with a clear beginning and end — not a long-running loop that retries forever. The best workflows are created, execute their steps over hours or days, reach `finished` (or `canceled`), and are eventually cleaned up by the housekeeping job. If you need a recurring process for a hero, create a new workflow on a schedule rather than building an immortal one.
+
+### Why one-off workflows are better
+
+**Code changes between deploys.** A workflow definition is a Ruby class. When you deploy new code, the class may have different steps, different logic, different wait times. A workflow that was created before the deploy still carries its original step pointer — it will execute the steps as they existed when it was defined. If you keep a single workflow alive for months, it accumulates an increasingly stale relationship with your codebase. A fresh workflow always runs the latest code.
+
+**Step executions are append-only history.** Each step attempt creates a `StepExecution` record. This history is the audit trail for what happened and when. A workflow that runs for two weeks and processes three steps has a concise, readable history. A workflow that has been alive for six months and has reattempted the same polling step 4,000 times has an audit trail that is effectively noise. The step execution table becomes a dumping ground rather than a useful record.
+
+**Terminal states tell you what succeeded and what didn't.** GenevaDrive's state machine is designed around the assumption that workflows end. A `finished` workflow is one that completed all its steps successfully. A `canceled` workflow is one that was stopped deliberately. A `paused` workflow is one that needs attention. These states are meaningful precisely because they are final. A workflow that never finishes — because it is designed to loop forever — can never be `finished`, which means you lose the ability to distinguish "working as intended" from "stuck." Your monitoring and alerting becomes guesswork.
+
+### The cron pattern
+
+Instead of building a workflow that loops endlessly, create a cron job that periodically creates a new workflow for each eligible hero:
+
+```ruby
+# app/jobs/create_billing_check_workflows_job.rb
+class CreateBillingCheckWorkflowsJob < ApplicationJob
+  def perform
+    Account.active.find_each do |account|
+      # Only create if no ongoing workflow exists for this hero
+      next if BillingCheckWorkflow.ongoing.exists?(hero: account)
+      BillingCheckWorkflow.create!(hero: account)
+    end
+  end
+end
+```
+
+Schedule this job with your cron adapter:
+
+```ruby
+# With Solid Queue recurring tasks
+billing_check:
+  class: CreateBillingCheckWorkflowsJob
+  schedule: every day at 6am
+
+# With GoodJob cron
+GoodJob::Cron.schedule(
+  cron: "0 6 * * *",
+  class: "CreateBillingCheckWorkflowsJob"
+)
+```
+
+Each invocation creates a fresh workflow that runs the current code, produces a clean execution history, and terminates with a clear outcome.
+
+### Compare the two approaches
+
+**The immortal workflow (don't do this):**
+
+```ruby
+class BillingCheckWorkflow < GenevaDrive::Workflow
+  step :check_billing do
+    if hero.payment_overdue?
+      BillingMailer.overdue(hero).deliver_later
+    end
+    reattempt!(wait: 1.day)  # Loop forever
+  end
+end
+```
+
+This workflow never finishes. You cannot tell from its state whether it is working correctly or stuck. Its step execution history grows without bound. When you deploy new billing logic, existing workflows keep running the old code path. And if you need to change the check interval from daily to hourly, you must somehow update every running workflow instance.
+
+**The one-off workflow (do this instead):**
+
+```ruby
+class BillingCheckWorkflow < GenevaDrive::Workflow
+  step :check_payment_status do
+    skip! unless hero.payment_overdue?
+    hero.update!(last_overdue_notice_at: Time.current)
+  end
+
+  step :send_overdue_notice, skip_if: -> { hero.last_overdue_notice_at.nil? } do
+    BillingMailer.overdue(hero).deliver_later
+  end
+
+  step :schedule_followup, skip_if: -> { hero.last_overdue_notice_at.nil? } do
+    hero.update!(followup_needed: true)
+  end
+end
+```
+
+Each day, the cron job creates a new `BillingCheckWorkflow` for each account. It runs, does its work, finishes. Tomorrow's workflow will use tomorrow's code. The execution history for each workflow is three steps long. You can query `BillingCheckWorkflow.where(hero: account).finished` to see every successful check, and `BillingCheckWorkflow.where(hero: account).paused` to find the ones that hit problems.
+
+### The partial index allows coexistence
+
+You might wonder: if a cron job creates a new workflow every day, won't old workflows collide with new ones?
+
+No. GenevaDrive maintains a partial unique index on `(type, hero_type, hero_id)` that only covers **ongoing** workflows — those not in `finished` or `canceled` state. This means:
+
+- Only one `BillingCheckWorkflow` for a given account can be `ready`, `performing`, or `paused` at any time.
+- Once a workflow reaches `finished` or `canceled`, it drops out of the index entirely.
+- The next cron run can create a fresh workflow for the same hero without conflict.
+
+This is the designed-for pattern. Yesterday's finished workflow and today's active workflow coexist in the database. The unique index prevents accidental duplicates (two active workflows for the same hero), while the housekeeping job eventually cleans up old finished workflows after your configured retention period.
+
+```ruby
+# This works because yesterday's workflow already finished
+account = Account.find(42)
+BillingCheckWorkflow.where(hero: account).finished.count  # => 30 (last month)
+BillingCheckWorkflow.ongoing.where(hero: account).count    # => 1 (today's)
+```
+
+The short-lived workflow pattern works _with_ the library's design rather than against it. Workflows start, do their work, and end. The database tells you exactly which ones succeeded and which ones didn't. New code applies immediately. History stays readable. This is the intended way to use GenevaDrive.
+
+## The Asynchronous Execution Model
+
+### Key Assumptions
+
+GenevaDrive steps execute asynchronously via ActiveJob. This has important implications:
+
+- **Every step runs on a different machine/process/thread.** Don't assume anything about the execution environment between steps.
+- **Instance variables don't persist between steps.** Each step gets a freshly-loaded workflow instance.
+- **The workflow is always loaded fresh from the database.** Any changes you make to the workflow or hero are persisted and reloaded.
+- **Steps may be separated by seconds or months.** A `wait: 30.days` step means exactly what it says.
+
+### No Shared State Between Steps
+
+> [!WARNING]
+> Instance variables do not persist between steps. Store data in the database.
+
+```ruby
+# WRONG - @data won't exist in next step
+step :fetch do
+  @data = ExternalApi.fetch(hero.external_id)
+end
+
+step :process do
+  process(@data)  # @data is nil here!
+end
+
+# RIGHT - persist to the hero or another record
+step :fetch do
+  hero.update!(external_data: ExternalApi.fetch(hero.external_id))
+end
+
+step :process do
+  process(hero.external_data)
+end
+```
+
+You will almost never have the same `self` between steps. Treat each step as an independent unit that reads from and writes to the database.
+
+## Choosing the Right Hero
 
 Make the hero the specific business object being processed, not the user who owns it. This keeps workflows focused and allows multiple concurrent workflows for the same user.
 
@@ -818,7 +842,7 @@ InvoiceWorkflow.create!(hero: user, invoice_id: invoice.id)
 
 If you're processing a subscription renewal, the hero is the `Subscription`. If you're processing an order, the hero is the `Order`. The more specific your hero, the easier it is to reason about workflow state.
 
-### Associating Workflows from the Hero
+## Associating Workflows from the Hero
 
 GenevaDrive uses STI (Single Table Inheritance) combined with a polymorphic `hero` association. This means a single hero can have multiple different workflow types associated with it, each representing a distinct process the hero is going through.
 
@@ -870,7 +894,7 @@ class User < ApplicationRecord
 end
 ```
 
-### Workflows Without Heroes
+## Workflows Without Heroes
 
 Some workflows don't operate on a specific record — system maintenance, batch jobs, or scheduled reports:
 
@@ -895,7 +919,7 @@ end
 SystemMaintenanceWorkflow.create!
 ```
 
-### When Heroes Disappear
+## When Heroes Disappear
 
 If the hero is deleted while the workflow is running, GenevaDrive cancels the workflow. This prevents steps from failing with `RecordNotFound` errors.
 
@@ -924,34 +948,7 @@ For an example of a workflow that handles data deletion carefully, see the [Data
 
 ---
 
-## Installation and Setup
-
-### Adding the Gem
-
-```bash
-bundle add geneva_drive
-bin/rails generate geneva_drive:install
-bin/rails db:migrate
-```
-
-The generator creates two migrations: one for workflows and one for step executions.
-
-### Database Tables
-
-GenevaDrive uses a two-table design:
-
-- **`geneva_drive_workflows`** — The workflow records. Each row represents one workflow instance with its current state, hero association, and progress tracking.
-- **`geneva_drive_step_executions`** — The idempotency keys. Each row represents one attempt to execute a step, with timing, outcome, and error information.
-
-This separation keeps the workflows table clean while maintaining a complete audit trail in step executions.
-
-### UUID Primary Keys
-
-If your application uses UUID primary keys, the migrations will detect this and also use UUIDs for the foreign keys and the primary keys of the geneva_drive resources.
-
-Note that you don't want to mix integer IDs and UUIDs in the same application.
-
----
+# Part V — Operations
 
 ## ActiveJob Integration
 
@@ -988,8 +985,6 @@ end
 ```
 
 The options are passed directly to ActiveJob's `set` method.
-
----
 
 ## Housekeeping
 
@@ -1031,8 +1026,6 @@ GoodJob::Cron.schedule(
 # Or enqueue manually
 GenevaDrive::HousekeepingJob.perform_later
 ```
-
----
 
 ## Testing
 
@@ -1097,8 +1090,6 @@ test "skips email if user unsubscribed" do
 end
 ```
 
----
-
 ## Observability
 
 ### Logging
@@ -1140,11 +1131,115 @@ end
 
 ---
 
-## Appendix
+# Part VI — Appendix
 
-### Complete Example Workflows
+## Why "Durable Functions" Are a Mirage
 
-#### User Onboarding Workflow
+There is a rather popular approach to building durable execution systems based on the concept of "durable functions". Systems like [Temporal](https://temporal.io) and [absurd](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/) as well as [Vercel Workflows](https://vercel.com/docs/workflow) take that concept quite far. It seems neat on the surface, yet deeply flawed in nature.
+
+The assumption made with those "durable functions" is that it is possible to _pretend that you have a marshalable stack._ For example, this section in a workflow function:
+
+```js
+let step = 0;
+while (step++ < 20) {
+  const { newMessages, finishReason } = await ctx.step("iteration", async () => {
+    return await singleStep(messages);
+  });
+  messages.push(...newMessages);
+  if (finishReason !== "tool-calls") {
+    break;
+  }
+}
+```
+
+can only work if `step` gets marshaled and reinstated if the function gets resumed. Async generators (and Fibers in Ruby, and - in general - any systems based on continuations or coroutines) allow suspension and resumption, but none allow proper _serialization and revival._ If you try to encode a durable function, consisting of multiple steps, as a suspendable and resumable workflow, you essentially have 3 ways to do it:
+
+* Make your function restartable from the very beginning (idempotent)
+* Use a serializable system stack frame, which - usually - comes down to serializing a VM image upon suspension
+* Make the user write functions that only - and ever - use special facilities for accessing transients (current time, database connections, heavy resources)
+
+Most "workflow engines" do their utmost to maintain the guise of resumable functions _while not providing them._ The fact that you have to wait on a Fiber to receive an HTTP result is not very useful if the only program that can receive that result is the very process which has started that HTTP request.
+
+### Why no modern runtime provides stack serialization
+
+The fundamental issue is that no mainstream runtime — V8, SpiderMonkey, YARV, the JVM, the CLR — provides the ability to serialize an executing call stack to bytes and revive it later. This is not an oversight. It is a deliberate engineering decision driven by hard constraints.
+
+A call stack contains pointers: return addresses, references to heap objects, handles to file descriptors and sockets, pointers into native libraries. Serializing a pointer is meaningless — the memory address 0x7fff5fbff8c0 on one machine means nothing on another, or even on the same machine after a restart. To serialize a stack, you must either:
+
+1. **Replace all pointers with symbolic references** that can be resolved at revival time. This requires a complete indirection layer over every memory access — a performance catastrophe for general-purpose code.
+2. **Serialize the entire heap along with the stack**, effectively snapshotting the whole process. This is what Smalltalk images did.
+3. **Restrict the language** so that stacks never contain non-serializable values. This means no closures over native resources, no FFI, no direct system calls.
+
+Modern runtimes chose speed over serializability. JavaScript engines like V8 perform aggressive JIT compilation that inlines functions, eliminates stack frames, and stores values in machine registers. The "stack" you think exists in your `async` function is a fiction maintained for debugging — the actual execution state is scattered across registers, hidden classes, inline caches, and optimized machine code that has no stable representation.
+
+### Systems that actually solved this
+
+True stack serialization is not impossible. It has been done — just not in environments optimized for raw speed.
+
+**Smalltalk images** are the canonical example. A Smalltalk system serializes its entire object memory, including all activation records (stack frames), to a single file. You can save an image mid-computation, quit, restart days later, and continue exactly where you left off. This works because Smalltalk controls everything: the object format, the bytecode interpreter, the garbage collector. There are no opaque pointers to external resources — or if there are, the image-saving mechanism explicitly handles them.
+
+**Erlang/OTP** takes a different approach: processes are so lightweight and isolated that you simply design for crash recovery. A process dies, its supervisor restarts it, and it reconstructs its state from durable storage. There's no pretense that you can freeze and thaw a running computation — you design for restart from the beginning.
+
+**Scheme continuations** (particularly in implementations like Chez Scheme or Gambit) can capture delimited continuations and, in some implementations, serialize them. But these implementations pay the cost: they maintain a CPS-transformed representation that is inherently slower than direct-style execution.
+
+**[Seaside](https://seaside.st/)** deserves special mention. This Smalltalk web framework, developed in the early 2000s, used continuations to model web application control flow. You could write a multi-page wizard as a single method with `call:` and `answer:` — the framework would suspend execution while waiting for user input and resume it when the response arrived. [Wee](https://github.com/mneumann/wee), a Ruby port inspired by Seaside's ideas, attempted the same trick using Ruby's `callcc`. Both frameworks demonstrated genuine continuation-based web development. But they also demonstrated its limits: Seaside required either keeping all session continuations in memory (scaling poorly) or relying on Smalltalk's image persistence (requiring the same VM instance to handle subsequent requests). Wee suffered from Ruby 1.8's notorious continuation memory leaks and remained a curiosity rather than a production tool.
+
+The fundamental problem with continuation-based web frameworks is process affinity. A suspended continuation exists in the memory of a specific process on a specific machine. When the user submits the next form, that exact process must handle the request — no load balancer can route it elsewhere, no autoscaler can spin up a fresh instance to handle the load, no deployment can replace the running code. This is incompatible with modern elastic infrastructure. Kubernetes doesn't care that your user's shopping cart continuation lives in pod `web-7f8d9c-xk2p4` — when traffic spikes, it will route requests wherever capacity exists. When you deploy, it will terminate old pods and start new ones. Your continuations die with them.
+
+### The problem of transient resources
+
+Even if you could serialize a continuation, you would face the problem of transient resources. A continuation captures the call stack, but the call stack contains references to objects that cannot meaningfully survive process boundaries.
+
+Consider a database transaction. Your step opens a connection, begins a transaction, inserts a row, and then — mid-transaction — suspends to wait for user confirmation:
+
+```ruby
+step :reserve_inventory do
+  ActiveRecord::Base.transaction do
+    hero.line_items.each { |item| Inventory.decrement!(item.sku, item.quantity) }
+    # Suspend here, wait for payment confirmation...
+    yield  # In a hypothetical continuation-based system
+    hero.update!(reserved_at: Time.current)
+  end
+end
+```
+
+What happens when you try to revive this continuation on a different machine, or even the same machine after a restart? The `ActiveRecord::Base.connection` object holds a socket to a PostgreSQL server. That socket is gone. You could theoretically reconnect — some systems use lazy connection resolution for exactly this reason — but reconnecting gives you a *new* connection. The transaction you started? It was rolled back the moment the original connection died. The `BEGIN` you issued exists only in the logs. The row locks you held have been released. Some other process may have already modified the rows you thought you had locked.
+
+There is no way to "re-enter" a transaction. Transactions are not addressable resources you can resume — they are ephemeral states of a connection that exist only as long as that connection lives. The same applies to file handles, HTTP connections mid-request, mutex locks, and any other resource that represents a relationship with an external system. A serialized continuation that references such resources is not a suspended computation — it is a lie about the state of the world.
+
+The lesson from these systems is clear: serializable execution state requires either total control over the runtime environment or acceptance of significant performance overhead. You cannot bolt it onto V8 or Ruby's YARV after the fact.
+
+### Why modern developers won't build this
+
+Building a marshalable stack VM is a multi-year, multi-million-dollar undertaking. It requires:
+
+- Deep expertise in compiler construction, garbage collection, and runtime systems
+- Willingness to sacrifice raw performance for serializability
+- Long-term maintenance commitment as the underlying platform evolves
+
+The JavaScript ecosystem optimizes for different goals: startup time, peak throughput, memory efficiency on mobile devices. Google, Mozilla, and Apple compete on V8, SpiderMonkey, and JavaScriptCore benchmarks. No one is competing on "ability to serialize a running function to disk."
+
+The developers building "durable function" frameworks are, by and large, application developers — skilled in their domain, but not runtime engineers. They are building atop V8, not replacing it. They cannot make V8 serialize its internal state because V8 was never designed to expose that state. The best they can do is replay: run the function again from the start, skip the steps that already completed, and hope the interleaving of side effects is deterministic. This is not serialization. It is simulation.
+
+### Pretending is denial
+
+When a framework claims to offer "durable functions" without true stack serialization, it is engaging in denial — not about the laws of physics, but about the semantics of their own system.
+
+Consider what happens when a "durable function" resumes. The framework:
+
+1. Loads the function definition
+2. Starts executing from the beginning
+3. Intercepts calls to "step" functions and returns cached results instead of re-executing
+
+This only works if the control flow between steps is perfectly deterministic. But JavaScript (and Ruby, and Python) are not deterministic languages. The order of object keys, the behavior of `Math.random()`, the resolution of race conditions in `Promise.all()` — all of these can vary between runs. If your loop counter depends on a hash iteration order that changed between Node versions, your "resumed" function takes a different path than the original.
+
+The frameworks paper over this with restrictions: don't use randomness, don't depend on time, don't read from external systems except through blessed APIs. But these restrictions are invisible until you violate them. You write what looks like normal code, you test it, it works — and then six months later, after a Node upgrade, a resumed workflow takes a wrong turn and corrupts your data.
+
+Honesty requires admitting what the system actually provides. If execution state is not truly serialized, don't pretend it is. Make the boundaries explicit. Make the steps explicit. Make the user acknowledge, at every step boundary, that they are persisting state to a database. GenevaDrive takes this position.
+
+## Complete Example Workflows
+
+### User Onboarding Workflow
 
 This workflow demonstrates named steps with wait times, skip conditions, and blanket cancellation. It guides a new user through account setup with timed reminders.
 
@@ -1191,7 +1286,7 @@ class UserOnboardingWorkflow < GenevaDrive::Workflow
 end
 ```
 
-#### Payment Processing Workflow
+### Payment Processing Workflow
 
 This workflow demonstrates manual exception handling, dynamic retry waits, and early termination. It handles the complexity of interacting with an external payment gateway.
 
@@ -1262,7 +1357,7 @@ class PaymentProcessingWorkflow < GenevaDrive::Workflow
 end
 ```
 
-#### Data Retention Workflow
+### Data Retention Workflow
 
 This workflow demonstrates handling hero deletion mid-workflow. It processes GDPR-style data erasure requests while maintaining compliance records.
 
@@ -1327,9 +1422,9 @@ class DataRetentionWorkflow < GenevaDrive::Workflow
 end
 ```
 
-### Quick Reference
+## Quick Reference
 
-#### Flow Control Methods
+### Flow Control Methods
 
 | Method | Effect |
 |--------|--------|
@@ -1339,7 +1434,7 @@ end
 | `skip!` | Skip current step, proceed to next |
 | `finished!` | Complete workflow early |
 
-#### Workflow States
+### Workflow States
 
 | State | Meaning |
 |-------|---------|
@@ -1349,7 +1444,7 @@ end
 | `canceled` | Workflow was canceled |
 | `paused` | Awaiting manual intervention |
 
-#### Step Execution States
+### Step Execution States
 
 | State | Meaning |
 |-------|---------|
@@ -1360,7 +1455,7 @@ end
 | `canceled` | Canceled before execution |
 | `skipped` | Skipped via `skip_if` or `skip!` |
 
-#### Step Options
+### Step Options
 
 | Option | Type | Description |
 |--------|------|-------------|

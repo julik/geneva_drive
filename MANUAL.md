@@ -1,4 +1,4 @@
-# GenevaDrive Manual
+# Introduction
 
 GenevaDrive provides durable, multi-step workflows for Rails applications. The graph of steps and the code that executes each step live in separate universes — the structure is defined at class load time, the behavior runs later via ActiveJob. GenevaDrive delivers on that architecture.
 

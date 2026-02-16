@@ -7,9 +7,11 @@ require "bundler/inline"
 gemfile do
   source "https://rubygems.org"
   gem "redcarpet"
+  gem "nokogiri"
 end
 
 require "redcarpet"
+require "nokogiri"
 require "cgi"
 require "erb"
 
@@ -40,7 +42,24 @@ class SyntaxHighlightingHTML < Redcarpet::Render::HTML
   end
 end
 
-def html_template(title, content)
+def build_toc(html_body)
+  doc = Nokogiri::HTML::DocumentFragment.parse(html_body)
+  headings = doc.css("h1, h2")
+  return "" if headings.empty?
+
+  toc = +%(<nav class="toc-pane"><ul>\n)
+  headings.each do |h|
+    id = h["id"]
+    next unless id
+    level = h.name # "h1" or "h2"
+    css_class = (level == "h2") ? ' class="toc-h2"' : ""
+    toc << %(<li#{css_class}><a href="##{CGI.escapeHTML(id)}">#{CGI.escapeHTML(h.text)}</a></li>\n)
+  end
+  toc << %(</ul></nav>\n)
+  toc
+end
+
+def html_template(title, content, toc: "")
   <<~HTML
 <!DOCTYPE html>
 <html lang="en">
@@ -63,21 +82,73 @@ def html_template(title, content)
       --table-border: #dfe2e5;
       --blockquote-color: #6a737d;
       --blockquote-border: #dfe2e5;
+      --toc-width: 280px;
     }
 
     * {
       box-sizing: border-box;
     }
 
-    body {
+    html, body {
+      margin: 0;
+      padding: 0;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
       font-size: 16px;
       line-height: 1.6;
+      color: var(--text-color);
+      background-color: var(--bg-color);
+    }
+
+    /* TOC sidebar — fixed, scrolls independently */
+    .toc-pane {
+      position: fixed;
+      top: 0;
+      left: 0;
+      width: var(--toc-width);
+      height: 100vh;
+      overflow-y: auto;
+      border-right: 1px solid var(--border-color);
+      padding: 2rem 1.25rem;
+      font-size: 13px;
+      line-height: 1.5;
+      background-color: var(--bg-color);
+    }
+
+    .toc-pane ul {
+      list-style: none;
+      padding: 0;
+      margin: 0;
+    }
+
+    .toc-pane li {
+      margin: 0.25em 0;
+    }
+
+    .toc-pane li.toc-h2 {
+      padding-left: 1em;
+    }
+
+    .toc-pane a {
+      color: var(--link-color);
+      text-decoration: underline;
+    }
+
+    .toc-pane a:hover {
+      color: #0550ae;
+    }
+
+    /* Body scrolls normally — browser scrollbar at window edge */
+    body.has-toc {
+      margin-left: var(--toc-width);
+      padding: 2rem 3rem;
+      max-width: calc(960px + var(--toc-width));
+    }
+
+    /* Without TOC, body is a simple centered column */
+    body:not(.has-toc) {
       max-width: 900px;
       margin: 0 auto;
       padding: 2rem;
-      color: var(--text-color);
-      background-color: var(--bg-color);
     }
 
     /* Headings */
@@ -241,12 +312,7 @@ def html_template(title, content)
       height: auto;
     }
 
-    /* Print footer element - not needed with @page margin boxes */
-    .print-footer {
-      display: none;
-    }
-
-    /* Print styles - using Chrome 131+ @page margin boxes */
+    /* Print styles */
     @media print {
       @page {
         margin: 1.5cm;
@@ -265,7 +331,12 @@ def html_template(title, content)
         }
       }
 
-      body {
+      .toc-pane {
+        display: none;
+      }
+
+      body, body.has-toc {
+        margin-left: 0;
         max-width: none;
         padding: 0;
         font-size: 11pt;
@@ -296,8 +367,8 @@ def html_template(title, content)
     }
   </style>
 </head>
-<body>
-#{content}
+<body#{' class="has-toc"' unless toc.empty?}>
+#{toc}#{content}
 
 <!-- Prism.js for syntax highlighting -->
 <script src="https://cdnjs.cloudflare.com/ajax/libs/prism/1.29.0/components/prism-core.min.js"></script>
@@ -338,7 +409,7 @@ def html_template(title, content)
   HTML
 end
 
-def convert_markdown_to_html(input_path, output_path = nil)
+def convert_markdown_to_html(input_path, output_path = nil, toc: true)
   unless File.exist?(input_path)
     abort "Error: File not found: #{input_path}"
   end
@@ -373,7 +444,8 @@ def convert_markdown_to_html(input_path, output_path = nil)
   })
 
   html_body = markdown.render(markdown_content)
-  html_document = html_template(title, html_body)
+  toc_html = toc ? build_toc(html_body) : ""
+  html_document = html_template(title, html_body, toc: toc_html)
 
   File.write(output_path, html_document)
   puts "Created: #{output_path}"
@@ -382,7 +454,7 @@ def convert_markdown_to_html(input_path, output_path = nil)
 end
 
 if __FILE__ == $0
-  options = {open: true}
+  options = {open: true, toc: true}
 
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: #{$0} [options] INPUT.md [OUTPUT.html]"
@@ -390,11 +462,16 @@ if __FILE__ == $0
     opts.separator "Converts a GitHub-Flavored Markdown file to styled HTML with:"
     opts.separator "  - Prism.js syntax highlighting"
     opts.separator "  - Mermaid.js diagram rendering"
+    opts.separator "  - Table of contents sidebar"
     opts.separator "  - Print-optimized CSS with page numbers"
     opts.separator ""
     opts.separator "If OUTPUT is not specified, uses INPUT filename with .html extension."
     opts.separator ""
     opts.separator "Options:"
+
+    opts.on("--no-toc", "Don't generate table of contents sidebar") do
+      options[:toc] = false
+    end
 
     opts.on("--no-open", "Don't open the result in the browser") do
       options[:open] = false
@@ -416,7 +493,7 @@ if __FILE__ == $0
   input_path = ARGV[0]
   output_path = ARGV[1]
 
-  result_path = convert_markdown_to_html(input_path, output_path)
+  result_path = convert_markdown_to_html(input_path, output_path, toc: options[:toc])
 
   # Open in browser if on macOS and not disabled
   if options[:open] && RUBY_PLATFORM =~ /darwin/

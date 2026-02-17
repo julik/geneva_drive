@@ -10,7 +10,7 @@
 #
 # It's strongly recommended that you check this file into your version control system.
 
-ActiveRecord::Schema[8.1].define(version: 2024_12_17_000005) do
+ActiveRecord::Schema[8.1].define(version: 2024_12_17_000006) do
   # These are extensions that must be enabled in order to support this database
   enable_extension "pg_catalog.plpgsql"
 
@@ -71,6 +71,5 @@ ActiveRecord::Schema[8.1].define(version: 2024_12_17_000005) do
     t.datetime "updated_at", null: false
   end
 
-  add_foreign_key "geneva_drive_step_executions", "geneva_drive_step_executions", column: "continues_from_id", on_delete: :nullify
   add_foreign_key "geneva_drive_step_executions", "geneva_drive_workflows", column: "workflow_id", on_delete: :cascade
 end

@@ -1,12 +1,15 @@
 # frozen_string_literal: true
 
 class AddChainedStepExecutionsToGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
+  include GenevaDrive::MigrationHelpers
+
   def change
-    # Add continues_from_id to link chained step executions
-    add_column :geneva_drive_step_executions, :continues_from_id, :bigint
+    # Add continues_from_id to link chained step executions.
+    # Match the primary key type (bigint or uuid) of the step_executions table.
+    # No foreign key constraint — SQLite rewrites the table on add_foreign_key,
+    # which can destroy data.
+    add_column :geneva_drive_step_executions, :continues_from_id, geneva_drive_key_type
     add_index :geneva_drive_step_executions, :continues_from_id
-    add_foreign_key :geneva_drive_step_executions, :geneva_drive_step_executions,
-                    column: :continues_from_id, on_delete: :nullify
 
     # Remove completed_iterations - it's unnecessary bookkeeping
     remove_column :geneva_drive_step_executions, :completed_iterations, :integer

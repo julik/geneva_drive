@@ -368,6 +368,20 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   def resume!
     raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
 
+    # Check for a resumable step that was paused mid-iteration (completed with cursor)
+    paused_resumable_execution = step_executions.find_by(
+      outcome: "workflow_paused",
+      state: "completed"
+    )
+
+    if paused_resumable_execution && paused_resumable_execution.cursor.present?
+      logger.info("Resuming paused workflow from resumable execution #{paused_resumable_execution.id}, cursor: #{paused_resumable_execution.cursor_value.inspect}")
+      with_lock do
+        update!(state: "ready", transitioned_at: nil)
+      end
+      return create_resumable_successor!(paused_resumable_execution)
+    end
+
     logger.info("Resuming paused workflow, next step: #{next_step_name.inspect}")
 
     with_lock do
@@ -546,6 +560,40 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
 
     step_execution
+  end
+
+  # Creates a successor step execution that continues from a paused resumable step.
+  # Used by resume! when resuming a workflow paused mid-iteration.
+  #
+  # @param paused_execution [StepExecution] the paused execution to continue from
+  # @return [StepExecution] the new successor execution
+  def create_resumable_successor!(paused_execution)
+    successor = GenevaDrive::StepExecution.create!(
+      workflow: self,
+      step_name: paused_execution.step_name,
+      state: "scheduled",
+      scheduled_for: Time.current,
+      continues_from_id: paused_execution.id,
+      cursor: paused_execution.cursor
+    )
+
+    job_options = self.class._step_job_options.dup
+    successor_id = successor.id
+    workflow_logger = logger
+
+    run_after_commit do
+      job = GenevaDrive::PerformStepJob
+        .set(**job_options)
+        .perform_later(successor_id)
+
+      workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for successor execution ##{successor_id}")
+
+      GenevaDrive::StepExecution
+        .where(id: successor_id)
+        .update_all(job_id: job.job_id)
+    end
+
+    successor
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

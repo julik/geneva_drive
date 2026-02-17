@@ -208,7 +208,10 @@ class PerformStepJobDoubleDeferralTest < ActiveSupport::TestCase
     # the poll-retry should give up after 5 attempts and log a warning.
     lookup_count = 0
 
-    GenevaDrive::StepExecution.stub(:find_by, ->(*args, **kwargs) { lookup_count += 1; nil }) do
+    GenevaDrive::StepExecution.stub(:find_by, ->(*args, **kwargs) {
+      lookup_count += 1
+      nil
+    }) do
       # Override sleep on the job instance to avoid 500ms of real sleeping in tests
       job = GenevaDrive::PerformStepJob.new
       job.stub(:sleep, ->(_delay) {}) do

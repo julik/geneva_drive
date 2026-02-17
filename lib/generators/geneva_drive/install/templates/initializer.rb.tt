@@ -30,3 +30,15 @@
 # housekeeping run. Prevents runaway processing if there's a large backlog.
 #
 # GenevaDrive.housekeeping_batch_size = 1000
+
+# Whether to defer job enqueueing until after the database transaction commits.
+# In production this ensures step execution records are visible to job workers
+# before the job runs. In test environments (the default when Rails.env.test?)
+# this is set to false so that jobs are enqueued immediately — transactional
+# tests (especially with SQLite) never commit the outermost transaction, which
+# can cause after_commit callbacks to misbehave or not fire at all.
+#
+# Set to true in tests if you need strict transaction semantics for a specific
+# test suite, or if you are not using transactional tests.
+#
+# GenevaDrive.enqueue_after_commit = !Rails.env.test?

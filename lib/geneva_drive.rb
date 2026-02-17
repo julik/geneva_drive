@@ -70,6 +70,19 @@ module GenevaDrive
     # Can be :reattempt or :cancel
     # @return [Symbol]
     attr_accessor :stuck_recovery_action
+
+    # Whether to defer job enqueueing to after the database transaction commits.
+    # When true (the default in non-test environments), jobs are enqueued inside
+    # an `after_all_transactions_commit` callback to ensure the step execution
+    # record is visible to the job worker.
+    #
+    # When false (the default in test environments), jobs are enqueued immediately.
+    # This is necessary for transactional tests (especially with SQLite) where the
+    # outermost test transaction never commits, causing after_commit callbacks to
+    # misbehave or not fire at all.
+    #
+    # @return [Boolean]
+    attr_accessor :enqueue_after_commit
   end
 
   # Set default configuration values
@@ -78,4 +91,5 @@ module GenevaDrive
   self.stuck_scheduled_threshold = 15.minutes
   self.housekeeping_batch_size = 1000
   self.stuck_recovery_action = :reattempt
+  self.enqueue_after_commit = !Rails.env.test?
 end

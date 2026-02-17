@@ -463,7 +463,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # PerformStepJob sets `enqueue_after_transaction_commit = :never` -- without it,
     # ActiveJob/SolidQueue would see the transaction as "open" and defer the queue
     # INSERT to a second "after commit" that never fires (the double-deferral bug).
-    ActiveRecord.after_all_transactions_commit do
+    run_after_commit do
       job = GenevaDrive::PerformStepJob
         .set(**job_options)
         .perform_later(execution_id)
@@ -523,7 +523,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       # without it, ActiveJob/SolidQueue would see the transaction as "open" and defer
       # the queue INSERT to a second "after commit" that never fires (the double-deferral
       # bug). See the extensive comment in PerformStepJob for the full explanation.
-      ActiveRecord.after_all_transactions_commit do
+      run_after_commit do
         job = GenevaDrive::PerformStepJob
           .set(**job_options)
           .perform_later(execution_id)
@@ -547,6 +547,23 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     logger.info("Workflow finished successfully")
     transition_to!("finished", current_step_name: nil, next_step_name: nil)
     nil
+  end
+
+  # Runs a block either after all transactions commit or immediately,
+  # depending on GenevaDrive.enqueue_after_commit.
+  #
+  # In production, deferring to after_all_transactions_commit ensures that
+  # records written inside the transaction are visible to job workers. In
+  # transactional tests (especially with SQLite) the outermost test
+  # transaction never commits, so deferring can cause callbacks to misbehave
+  # or not fire. Setting GenevaDrive.enqueue_after_commit = false (the
+  # default in test environments) runs the block inline instead.
+  def run_after_commit(&block)
+    if GenevaDrive.enqueue_after_commit
+      ActiveRecord.after_all_transactions_commit(&block)
+    else
+      yield
+    end
   end
 
   # Returns the Logger properly tagged to this Workflow

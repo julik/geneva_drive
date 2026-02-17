@@ -1046,6 +1046,30 @@ test "skips email if user unsubscribed" do
 end
 ```
 
+### Transactional Tests and SQLite
+
+GenevaDrive defers job enqueueing to `after_all_transactions_commit` so that step execution records are visible to the job worker before it runs. This can cause problems with transactional tests on SQLite — the `after_all_transactions_commit` callback writes to the database after the inner transaction commits, but with SQLite's single-writer limitation this can conflict with the test transaction wrapper or other connections. Symptoms include `SQLite3` errors in workflow tests while the rest of the test suite works fine.
+
+By default, GenevaDrive detects `Rails.env.test?` and skips the deferral, enqueueing jobs immediately. This means transactional tests work out of the box with no extra setup.
+
+If you need strict after-commit semantics in a specific test (for example, to verify the exact commit-then-enqueue ordering), you can re-enable deferral:
+
+```ruby
+test "job is enqueued only after commit" do
+  GenevaDrive.enqueue_after_commit = true
+
+  # ... test that relies on real after_commit timing ...
+ensure
+  GenevaDrive.enqueue_after_commit = false
+end
+```
+
+If you are not using transactional tests at all (for example, you use DatabaseCleaner with truncation), you can set this globally in your initializer:
+
+```ruby
+GenevaDrive.enqueue_after_commit = true
+```
+
 ## Observability
 
 ### Logging

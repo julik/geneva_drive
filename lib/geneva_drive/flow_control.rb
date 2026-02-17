@@ -5,7 +5,7 @@
 #
 # @api private
 class GenevaDrive::FlowControlSignal
-  # @return [Symbol] the action to take (:cancel, :pause, :reattempt, :skip, :finished)
+  # @return [Symbol] the action to take (:cancel, :pause, :reattempt, :skip, :finished, :suspend)
   attr_reader :action
 
   # @return [Hash] additional options for the flow control action
@@ -124,16 +124,24 @@ module GenevaDrive::FlowControl
   # Reschedules the current step for another attempt.
   # Useful for handling temporary failures or rate limiting.
   #
+  # For resumable steps, by default continues from the current cursor position.
+  # Use `rewind: true` to restart the step from the beginning.
+  #
   # @param wait [ActiveSupport::Duration, nil] optional delay before retry
+  # @param rewind [Boolean] if true, resets cursor to beginning (resumable steps only)
   # @return [void]
   # @raise [UncaughtThrowError] if called outside of step execution context
   #
   # @example Retry after rate limit
   #   reattempt!(wait: 5.minutes)
-  def reattempt!(wait: nil)
+  #
+  # @example Retry resumable step from the beginning
+  #   reattempt!(rewind: true)
+  def reattempt!(wait: nil, rewind: false)
     wait_msg = wait ? " with wait #{wait.inspect}" : ""
-    logger.info("Flow control: reattempt! called from step#{wait_msg}")
-    throw :flow_control, GenevaDrive::FlowControlSignal.new(:reattempt, wait: wait)
+    rewind_msg = rewind ? " (rewinding cursor)" : ""
+    logger.info("Flow control: reattempt! called from step#{wait_msg}#{rewind_msg}")
+    throw :flow_control, GenevaDrive::FlowControlSignal.new(:reattempt, wait: wait, rewind: rewind)
   end
 
   # Skips the current step and proceeds to the next one.
@@ -160,6 +168,27 @@ module GenevaDrive::FlowControl
   def finished!
     logger.info("Flow control: finished! called from step")
     throw :flow_control, GenevaDrive::FlowControlSignal.new(:finished)
+  end
+
+  # Suspends the current resumable step and re-enqueues for later continuation.
+  # The step will resume from its current cursor position.
+  #
+  # This is primarily for use within resumable steps when you need to explicitly
+  # yield control (e.g., to respect rate limits or system load).
+  #
+  # @param wait [ActiveSupport::Duration, nil] optional delay before re-enqueue
+  # @return [void]
+  # @raise [UncaughtThrowError] if called outside of step execution context
+  #
+  # @example Suspend for rate limiting
+  #   suspend!(wait: 5.minutes)
+  #
+  # @example Suspend to yield control
+  #   suspend!
+  def suspend!(wait: nil)
+    wait_msg = wait ? " with wait #{wait.inspect}" : ""
+    logger.info("Flow control: suspend! called from step#{wait_msg}")
+    throw :flow_control, GenevaDrive::FlowControlSignal.new(:suspend, wait: wait)
   end
 
   private

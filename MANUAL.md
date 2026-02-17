@@ -271,22 +271,30 @@ The loop bodies execute once when Ruby loads the class. Each iteration adds a ne
 
 ### Instance Methods as Steps
 
-For complex steps, you can define instance methods and reference them with `step def`:
+The step definition can be a block, but if you give the step the same name as an instance method of your workflow that method will be called instead:
 
 ```ruby
 class DataExportWorkflow < GenevaDrive::Workflow
-  step def gather_records
-    hero.update!(export_data: hero.exportable_records.to_json)
+  step :anonymize_records
+  
+  def anonymize_records
+    Anonymizer.process_arel(hero.records)
   end
+end
+```
+
+Since `def` in modern Rubies returns the name of the method you define as a `Symbol` you can use the `step def` shorthand as well. Together with "endless methods" this can give you a very compact description:
+
+```ruby
+class DataExportWorkflow < GenevaDrive::Workflow
+  step def gather_records = hero.update!(export_data: hero.exportable_records.to_json)
 
   step def write_to_storage
     Storage.write(hero.export_path, hero.export_data)
     hero.update!(exported_at: Time.current)
   end
 
-  step def notify_user
-    ExportMailer.complete(hero).deliver_later
-  end
+  step def notify_user = ExportMailer.complete(hero).deliver_later
 end
 ```
 
@@ -1392,9 +1400,10 @@ end
 |--------|--------|
 | `cancel!` | Stop workflow, mark canceled |
 | `pause!` | Stop workflow, await manual resume |
-| `reattempt!(wait:)` | Retry current step, optionally after delay |
+| `reattempt!(wait:, rewind:)` | Retry current step; `rewind: true` clears cursor |
 | `skip!` | Skip current step, proceed to next |
 | `finished!` | Complete workflow early |
+| `suspend!(wait:)` | Suspend resumable step, re-enqueue after delay |
 
 ### Workflow States
 
@@ -1416,6 +1425,7 @@ end
 | `failed` | Exception occurred |
 | `canceled` | Canceled before execution |
 | `skipped` | Skipped via `skip_if` or `skip!` |
+| `suspended` | Resumable step paused mid-iteration |
 
 ### Step Options
 
@@ -1427,3 +1437,5 @@ end
 | `max_reattempts:` | Integer, nil | Max consecutive reattempts before pausing (default: 100, `nil` = unlimited) |
 | `before_step:` | Symbol | Insert before this step |
 | `after_step:` | Symbol | Insert after this step |
+| `max_iterations:` | Integer | (resumable_step) Suspend after N iterations |
+| `max_runtime:` | Duration | (resumable_step) Suspend after duration elapsed |

@@ -20,11 +20,11 @@ module GenevaDrive::TestHelpers
   # Executes all steps of a workflow synchronously for testing.
   #
   # This method runs through all scheduled steps, executing each one
-  # immediately regardless of wait times. Useful for testing complete
-  # workflow behavior.
+  # immediately regardless of wait times. Resumable steps are run to
+  # completion (interruption limits are disabled).
   #
   # @param workflow [GenevaDrive::Workflow] the workflow to run
-  # @param max_iterations [Integer] maximum steps to execute (safety limit)
+  # @param max_iterations [Integer] maximum step executions (safety limit)
   # @return [GenevaDrive::Workflow] the workflow after execution
   # @raise [RuntimeError] if max_iterations is exceeded
   #
@@ -38,6 +38,8 @@ module GenevaDrive::TestHelpers
   #
   def speedrun_workflow(workflow, max_iterations: 100)
     iterations = 0
+    # Disable interruption checks so resumable steps run to completion
+    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
 
     loop do
       workflow.reload
@@ -46,7 +48,7 @@ module GenevaDrive::TestHelpers
       step_execution = workflow.current_execution
       break unless step_execution
 
-      step_execution.execute!
+      step_execution.execute!(interrupt_configuration: config)
       iterations += 1
 
       if iterations >= max_iterations
@@ -169,5 +171,89 @@ module GenevaDrive::TestHelpers
     workflow.reload
     assert_equal expected_state.to_s, workflow.state,
       "Expected workflow to be #{expected_state}, but was #{workflow.state}"
+  end
+
+  # === Resumable Step Test Helpers ===
+
+  # Runs the current step to completion without advancing to the next step.
+  #
+  # For regular steps, this is equivalent to `perform_next_step`.
+  # For resumable steps, this disables interruption checks and runs until
+  # the step completes (or fails/cancels/skips).
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow containing the step
+  # @param max_executions [Integer] safety limit on job executions (default: 100)
+  # @return [GenevaDrive::StepExecution] the step execution
+  #
+  # @example Run current step to completion
+  #   workflow = BulkEmailWorkflow.create!(hero: campaign)
+  #   speedrun_current_step(workflow)
+  #   assert_step_executed(workflow, :send_emails)
+  #
+  def speedrun_current_step(workflow, max_executions: 100)
+    workflow.reload
+    step_execution = workflow.current_execution
+    return nil unless step_execution
+
+    executions = 0
+    original_step_name = step_execution.step_name
+    # Disable interruption checks so the step runs to completion
+    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
+
+    loop do
+      step_execution.reload
+      break if step_execution.completed? || step_execution.failed? || step_execution.canceled? || step_execution.skipped?
+
+      step_execution.execute!(interrupt_configuration: config)
+      executions += 1
+
+      if executions >= max_executions
+        raise "speedrun_current_step exceeded max_executions (#{max_executions}). " \
+              "Step '#{original_step_name}' may be in an infinite loop."
+      end
+    end
+
+    workflow.reload
+    step_execution.reload
+    step_execution
+  end
+
+  # Asserts that a resumable step's cursor matches the expected value.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow to check
+  # @param expected_cursor [Object] the expected cursor value
+  # @return [void]
+  #
+  # @example Check cursor position
+  #   assert_cursor(workflow, 42)
+  #   assert_cursor(workflow, "page_token_abc")
+  #
+  def assert_cursor(workflow, expected_cursor)
+    workflow.reload
+    execution = workflow.current_execution
+    actual = execution&.cursor_value
+
+    assert_equal expected_cursor, actual,
+      "Expected cursor #{expected_cursor.inspect}, got #{actual.inspect}"
+  end
+
+  # Asserts that a step completed and has a scheduled successor execution.
+  # Used to verify that a resumable step was interrupted and will continue.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow to check
+  # @param step_name [String, Symbol] the step name to check
+  # @return [void]
+  #
+  # @example Check step has a scheduled successor
+  #   assert_step_has_successor(workflow, :bulk_process)
+  #
+  def assert_step_has_successor(workflow, step_name)
+    workflow.reload
+    completed = workflow.step_executions.find_by(step_name: step_name.to_s, state: "completed")
+    assert completed, "Expected completed execution for step #{step_name}"
+
+    successor = completed.successor
+    assert successor, "Expected successor execution for step #{step_name}, but none found"
+    assert successor.scheduled?, "Expected successor to be scheduled, but was #{successor.state}"
   end
 end

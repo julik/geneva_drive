@@ -49,13 +49,14 @@ class PerformStepJobDoubleDeferralTest < ActiveSupport::TestCase
   # == Configuration tests ==
   # These verify the critical configuration that prevents the double-deferral.
 
-  test "PerformStepJob has enqueue_after_transaction_commit set to :never" do
-    # This is THE critical fix. Without :never, queue adapters like SolidQueue
+  test "PerformStepJob has enqueue_after_transaction_commit disabled" do
+    # This is THE critical fix. Without disabling this, queue adapters like SolidQueue
     # that opt into enqueue_after_transaction_commit will defer the INSERT into
     # a callback that never fires when perform_later is called from inside
-    # after_all_transactions_commit.
-    assert_equal :never, GenevaDrive::PerformStepJob.enqueue_after_transaction_commit,
-      "PerformStepJob.enqueue_after_transaction_commit must be :never to prevent " \
+    # after_all_transactions_commit. Rails 8.0 deprecated :never in favor of false.
+    expected_value = Rails::VERSION::MAJOR >= 8 ? false : :never
+    assert_equal expected_value, GenevaDrive::PerformStepJob.enqueue_after_transaction_commit,
+      "PerformStepJob.enqueue_after_transaction_commit must be disabled to prevent " \
       "the double-deferral bug. GenevaDrive already handles transaction-awareness " \
       "via after_all_transactions_commit -- the queue adapter must NOT add a second " \
       "layer of deferral on top of that."

@@ -22,6 +22,10 @@ class InstallGeneratorTest < Minitest::Test
   end
 
   def test_generator_creates_working_migrations
+    # Skip on non-PostgreSQL databases - this test uses a separate database (geneva_drive_install_test)
+    # that may not exist in MySQL/SQLite CI environments, and the generator was designed for PostgreSQL.
+    skip "Generator test only runs on PostgreSQL" unless postgresql?
+
     # Run the generator
     run_in_dummy("bin/rails generate geneva_drive:install --skip")
 
@@ -79,8 +83,19 @@ class InstallGeneratorTest < Minitest::Test
 
   private
 
+  def postgresql?
+    url = ENV["DATABASE_URL"]
+    return true if url.nil? # Default is PostgreSQL
+    url.start_with?("postgres")
+  end
+
   def run_in_dummy(command)
+    # Clear DATABASE_URL so dummy_install uses its own database.yml (geneva_drive_install_test)
+    # instead of the main test database (geneva_drive_test)
+    env = ENV.to_h.except("DATABASE_URL")
+
     stdout, stderr, status = Open3.capture3(
+      env,
       command,
       chdir: DUMMY_INSTALL_PATH
     )

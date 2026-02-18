@@ -78,8 +78,9 @@ jobs:
           ruby-version: 3.4.4
           bundler-cache: true
 
-      - name: Remove existing schema.rb
-        run: rm -f test/dummy/db/schema.rb
+      - name: Generate migrations
+        run: bundle exec rails generate geneva_drive:install --skip
+        working-directory: test/dummy
 
       - name: Setup database
         env:

@@ -9,21 +9,14 @@
 /doc/
 /.yardoc/
 
-# Test dummy apps
+# Test dummy app
 /test/dummy/db/*.sqlite3
 /test/dummy/db/*.sqlite3-*
+/test/dummy/db/migrate/*geneva_drive*.rb
+/test/dummy/db/schema.rb
 /test/dummy/log/*.log
 /test/dummy/storage/
 /test/dummy/tmp/
-
-/test/dummy_install/db/*.sqlite3
-/test/dummy_install/db/*.sqlite3-*
-/test/dummy_install/db/install_test.sqlite3
-/test/dummy_install/log/*.log
-/test/dummy_install/storage/
-/test/dummy_install/tmp/
-/test/dummy_install/db/migrate/*geneva_drive*.rb
-/test/dummy_install/db/schema.rb
 
 # IDE
 /.idea/

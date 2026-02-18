@@ -25,12 +25,14 @@ jobs:
   test:
     name: "Tests (${{ matrix.rails }}, ${{ matrix.database.name }})"
     runs-on: ubuntu-latest
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.rails }}.gemfile
     strategy:
       fail-fast: false
       matrix:
         rails:
-          - rails-7
-          - rails-8
+          - rails_7
+          - rails_8
         database:
           - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
           - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test' }
@@ -74,12 +76,7 @@ jobs:
         uses: ruby/setup-ruby@v1
         with:
           ruby-version: 3.4.4
-          bundler-cache: false
-
-      - name: Install dependencies
-        run: |
-          bundle install
-          bundle exec appraisal install
+          bundler-cache: true
 
       - name: Remove existing schema.rb
         run: rm -f test/dummy/db/schema.rb
@@ -89,13 +86,12 @@ jobs:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
         run: |
-          cd test/dummy
-          bundle exec appraisal ${{ matrix.rails }} rails db:create || true
-          bundle exec appraisal ${{ matrix.rails }} rails db:migrate
-          cd ../..
+          bundle exec rails db:create || true
+          bundle exec rails db:migrate
+        working-directory: test/dummy
 
       - name: Run tests
         env:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
-        run: bundle exec appraisal ${{ matrix.rails }} bin/test
+        run: bundle exec ruby -Itest bin/test

@@ -125,8 +125,7 @@ GEM
       net-smtp
     marcel (1.1.0)
     mini_mime (1.1.5)
-    minitest (6.0.1)
-      prism (~> 1.5)
+    minitest (5.25.5)
     mysql2 (0.5.7)
       bigdecimal
     net-imap (0.6.3)
@@ -302,7 +301,7 @@ DEPENDENCIES
   appraisal
   debug (>= 1.0.0)
   geneva_drive!
-  minitest
+  minitest (< 5.26)
   mysql2
   pg
   propshaft

@@ -35,7 +35,7 @@ jobs:
           - rails_8
         database:
           - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
-          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test' }
+          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
           - { name: 'SQLite', url: 'sqlite3:test/dummy/db/test.sqlite3' }
 
     services:

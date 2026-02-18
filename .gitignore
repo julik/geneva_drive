@@ -18,6 +18,7 @@
 
 /test/dummy_install/db/*.sqlite3
 /test/dummy_install/db/*.sqlite3-*
+/test/dummy_install/db/install_test.sqlite3
 /test/dummy_install/log/*.log
 /test/dummy_install/storage/
 /test/dummy_install/tmp/

@@ -61,9 +61,9 @@ class GenevaDrive::PerformStepJob < ActiveJob::Base
   # silently deferred into the void.
   #
   # The `respond_to?` guard ensures compatibility with Rails versions before 7.2 that
-  # do not have this class attribute.
+  # do not have this class attribute. Rails 8.0 deprecated `:never` in favor of `false`.
   if respond_to?(:enqueue_after_transaction_commit=)
-    self.enqueue_after_transaction_commit = :never
+    self.enqueue_after_transaction_commit = (Rails::VERSION::MAJOR >= 8) ? false : :never
   end
 
   queue_as :default

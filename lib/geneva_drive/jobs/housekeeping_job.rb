@@ -94,20 +94,25 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     GenevaDrive::StepExecution.connection_pool.with_connection do |conn|
       step_executions_table = conn.quote_table_name(GenevaDrive::StepExecution.table_name)
       workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
+      limit = batch_size.to_i
 
+      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
+      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
       sql = <<~SQL.squish
         DELETE FROM #{step_executions_table}
         WHERE id IN (
-          SELECT se.id
-          FROM #{step_executions_table} se
-          INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
-          WHERE w.state IN ('finished', 'canceled')
-          AND w.transitioned_at < ?
-          LIMIT ?
+          SELECT id FROM (
+            SELECT se.id
+            FROM #{step_executions_table} se
+            INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
+            WHERE w.state IN ('finished', 'canceled')
+            AND w.transitioned_at < ?
+            LIMIT #{limit}
+          ) AS batch_to_delete
         )
       SQL
 
-      conn.delete(GenevaDrive::StepExecution.sanitize_sql([sql, cutoff_time, batch_size]))
+      conn.delete(GenevaDrive::StepExecution.sanitize_sql([sql, cutoff_time]))
     end
   end
 
@@ -119,18 +124,23 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   def delete_workflows_batch(cutoff_time, batch_size)
     GenevaDrive::Workflow.connection_pool.with_connection do |conn|
       workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
+      limit = batch_size.to_i
 
+      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
+      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
       sql = <<~SQL.squish
         DELETE FROM #{workflows_table}
         WHERE id IN (
-          SELECT id FROM #{workflows_table}
-          WHERE state IN ('finished', 'canceled')
-          AND transitioned_at < ?
-          LIMIT ?
+          SELECT id FROM (
+            SELECT id FROM #{workflows_table}
+            WHERE state IN ('finished', 'canceled')
+            AND transitioned_at < ?
+            LIMIT #{limit}
+          ) AS batch_to_delete
         )
       SQL
 
-      conn.delete(GenevaDrive::Workflow.sanitize_sql([sql, cutoff_time, batch_size]))
+      conn.delete(GenevaDrive::Workflow.sanitize_sql([sql, cutoff_time]))
     end
   end
 

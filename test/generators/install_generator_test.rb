@@ -33,7 +33,12 @@ class InstallGeneratorTest < Minitest::Test
     assert step_migration, "Step execution migration should be created"
 
     # Drop and recreate database, run migrations
-    run_in_dummy("bin/rails db:drop db:create db:migrate RAILS_ENV=test")
+    # For SQLite we skip db:drop since it's just a file
+    if sqlite?
+      run_in_dummy("bin/rails db:migrate RAILS_ENV=test")
+    else
+      run_in_dummy("bin/rails db:drop db:create db:migrate RAILS_ENV=test")
+    end
 
     # Query the actual database structure
     schema_info = JSON.parse(run_in_dummy(<<~RUBY))
@@ -79,8 +84,44 @@ class InstallGeneratorTest < Minitest::Test
 
   private
 
+  def sqlite?
+    database_url&.start_with?("sqlite")
+  end
+
+  def database_url
+    ENV["DATABASE_URL"]
+  end
+
+  # Build a DATABASE_URL for the install test database
+  # Changes the database name to avoid conflicts with the main test database
+  def install_test_database_url
+    url = database_url
+    return nil if url.nil?
+
+    if url.start_with?("sqlite")
+      # For SQLite, use a different file in the dummy_install directory
+      "sqlite3:db/install_test.sqlite3"
+    elsif url.start_with?("mysql")
+      # For MySQL, change the database name
+      url.gsub("geneva_drive_test", "geneva_drive_install_test")
+    elsif url.start_with?("postgres")
+      # For PostgreSQL, change the database name
+      url.gsub("geneva_drive_test", "geneva_drive_install_test")
+    else
+      url
+    end
+  end
+
   def run_in_dummy(command)
+    # Set DATABASE_URL for the install test database
+    # This ensures we use a separate database from the main test suite
+    env = {}
+    if (install_url = install_test_database_url)
+      env["DATABASE_URL"] = install_url
+    end
+
     stdout, stderr, status = Open3.capture3(
+      env,
       command,
       chdir: DUMMY_INSTALL_PATH
     )

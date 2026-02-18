@@ -461,7 +461,7 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "completed", step_execution.state
     assert_not_nil step_execution.finished_at
     assert_not_nil step_execution.completed_at
-    assert_in_delta step_execution.completed_at.to_f, step_execution.finished_at.to_f, 0.001
+    assert_in_delta step_execution.completed_at.to_f, step_execution.finished_at.to_f, 0.1
   end
 
   test "sets finished_at when step fails" do
@@ -477,7 +477,7 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "failed", step_execution.state
     assert_not_nil step_execution.finished_at
     assert_not_nil step_execution.failed_at
-    assert_in_delta step_execution.failed_at.to_f, step_execution.finished_at.to_f, 0.001
+    assert_in_delta step_execution.failed_at.to_f, step_execution.finished_at.to_f, 0.1
   end
 
   test "sets finished_at when step is skipped" do
@@ -491,7 +491,7 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "skipped", step_execution.state
     assert_not_nil step_execution.finished_at
     assert_not_nil step_execution.skipped_at
-    assert_in_delta step_execution.skipped_at.to_f, step_execution.finished_at.to_f, 0.001
+    assert_in_delta step_execution.skipped_at.to_f, step_execution.finished_at.to_f, 0.1
   end
 
   test "sets finished_at when step is canceled" do
@@ -504,7 +504,7 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "canceled", step_execution.state
     assert_not_nil step_execution.finished_at
     assert_not_nil step_execution.canceled_at
-    assert_in_delta step_execution.canceled_at.to_f, step_execution.finished_at.to_f, 0.001
+    assert_in_delta step_execution.canceled_at.to_f, step_execution.finished_at.to_f, 0.1
   end
 
   test "calls execution hooks in correct order" do

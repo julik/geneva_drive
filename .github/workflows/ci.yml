@@ -23,14 +23,20 @@ jobs:
         run: bundle exec standardrb
 
   test:
-    name: "Tests (${{ matrix.database.name }})"
+    name: "Tests (${{ matrix.rails }}, ${{ matrix.database.name }})"
     runs-on: ubuntu-latest
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.rails }}.gemfile
     strategy:
+      fail-fast: false
       matrix:
+        rails:
+          - rails_7
+          - rails_8
         database:
-          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/stepper_motor_test?encoding=unicode' }
-        # - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/stepper_motor_test?host=127.0.0.1?encoding=utf8mb4' }
-        # - { name: 'SQLite', url: 'sqlite3:db/test.sqlite3' }
+          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
+          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
+          - { name: 'SQLite', url: 'sqlite3:test/dummy/db/test.sqlite3' }
 
     services:
       postgres:
@@ -38,7 +44,7 @@ jobs:
         env:
           POSTGRES_USER: postgres
           POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: stepper_motor_test
+          POSTGRES_DB: geneva_drive_test
         ports:
           - 5432:5432
         options: >-
@@ -46,22 +52,22 @@ jobs:
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
-    # mysql:
-    #   image: mysql:8.0
-    #   env:
-    #     MYSQL_ROOT_PASSWORD: root
-    #     MYSQL_DATABASE: stepper_motor_test
-    #   ports:
-    #     - 3306:3306
-    #   options: >-
-    #     --health-cmd "mysqladmin ping"
-    #     --health-interval 10s
-    #     --health-timeout 5s
-    #     --health-retries 5
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root
+          MYSQL_DATABASE: geneva_drive_test
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
 
     steps:
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev
 
       - name: Checkout code
         uses: actions/checkout@v6
@@ -80,14 +86,12 @@ jobs:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
         run: |
-          cd test/dummy
-          bundle exec rails db:create
+          bundle exec rails db:create || true
           bundle exec rails db:migrate
-          cd ../..
+        working-directory: test/dummy
 
       - name: Run tests
         env:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
-        run: bin/test
-
+        run: bundle exec ruby -Itest bin/test

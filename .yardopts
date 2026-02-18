@@ -1,2 +1,1 @@
---markup markdown
---exclude lib/generators/geneva_drive/install/templates
+--markup markdown --no-private --exclude test/ --exclude lib/generators/geneva_drive/install/templates/ - MANUAL.md

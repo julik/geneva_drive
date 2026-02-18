@@ -9,13 +9,12 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     # Only specify type for UUID keys - bigint is the Rails default and matches the primary key type
     reference_options = {
       null: false,
-      foreign_key: {to_table: :geneva_drive_workflows, on_delete: :cascade},
       index: true
     }
     reference_options[:type] = key_type if key_type == :uuid
 
     create_table :geneva_drive_step_executions, **geneva_drive_table_options do |t|
-      # Link to workflow (cascade delete when workflow is deleted)
+      # Link to workflow
       t.references :workflow, **reference_options
 
       # Which step this execution represents
@@ -58,9 +57,15 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
     # Index for common query patterns
     add_index :geneva_drive_step_executions, [:workflow_id, :state]
 
+    # Add foreign key separately - MySQL has strict type matching that can fail with inline foreign_key
+    adapter = connection.adapter_name.downcase
+    unless adapter.include?("mysql")
+      add_foreign_key :geneva_drive_step_executions, :geneva_drive_workflows,
+        column: :workflow_id, on_delete: :cascade
+    end
+
     # Database-specific uniqueness constraint for active step executions
     # Ensures only one active (scheduled/in_progress) step per workflow
-    adapter = connection.adapter_name.downcase
     if adapter.include?("postgresql")
       execute <<-SQL
         CREATE UNIQUE INDEX index_geneva_drive_step_executions_one_active

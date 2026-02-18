@@ -92,7 +92,7 @@ class InstallGeneratorTest < Minitest::Test
   def run_in_dummy(command)
     # Clear DATABASE_URL so dummy_install uses its own database.yml (geneva_drive_install_test)
     # instead of the main test database (geneva_drive_test)
-    env = ENV.to_h.except("DATABASE_URL")
+    env = {"DATABASE_URL" => nil}
 
     stdout, stderr, status = Open3.capture3(
       env,

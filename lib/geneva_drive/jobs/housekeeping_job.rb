@@ -95,15 +95,18 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
       step_executions_table = conn.quote_table_name(GenevaDrive::StepExecution.table_name)
       workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
 
+      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
       sql = <<~SQL.squish
         DELETE FROM #{step_executions_table}
         WHERE id IN (
-          SELECT se.id
-          FROM #{step_executions_table} se
-          INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
-          WHERE w.state IN ('finished', 'canceled')
-          AND w.transitioned_at < ?
-          LIMIT ?
+          SELECT id FROM (
+            SELECT se.id
+            FROM #{step_executions_table} se
+            INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
+            WHERE w.state IN ('finished', 'canceled')
+            AND w.transitioned_at < ?
+            LIMIT ?
+          ) AS batch_to_delete
         )
       SQL
 
@@ -120,13 +123,16 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     GenevaDrive::Workflow.connection_pool.with_connection do |conn|
       workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
 
+      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
       sql = <<~SQL.squish
         DELETE FROM #{workflows_table}
         WHERE id IN (
-          SELECT id FROM #{workflows_table}
-          WHERE state IN ('finished', 'canceled')
-          AND transitioned_at < ?
-          LIMIT ?
+          SELECT id FROM (
+            SELECT id FROM #{workflows_table}
+            WHERE state IN ('finished', 'canceled')
+            AND transitioned_at < ?
+            LIMIT ?
+          ) AS batch_to_delete
         )
       SQL
 

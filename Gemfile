@@ -19,7 +19,7 @@ gem "standard", "~> 1.0", require: false
 gem "debug", ">= 1.0.0"
 
 gem "yard"
-gem "kramdown"
+gem "redcarpet" # needed for the yard gem to enable Github Flavored Markdown and for md2html
 
 # Testing with various databases
 gem "sqlite3"

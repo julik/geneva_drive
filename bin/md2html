@@ -454,7 +454,7 @@ def convert_markdown_to_html(input_path, output_path = nil, toc: true)
 end
 
 if __FILE__ == $0
-  options = {open: true, toc: true}
+  options = {open: false, toc: true}
 
   parser = OptionParser.new do |opts|
     opts.banner = "Usage: #{$0} [options] INPUT.md [OUTPUT.html]"
@@ -473,8 +473,8 @@ if __FILE__ == $0
       options[:toc] = false
     end
 
-    opts.on("--no-open", "Don't open the result in the browser") do
-      options[:open] = false
+    opts.on("--open", "Open the result in the browser") do
+      options[:open] = true
     end
 
     opts.on("-h", "--help", "Show this help message") do

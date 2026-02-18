@@ -153,6 +153,7 @@ GEM
       erb
       psych (>= 4.0.0)
       tsort
+    redcarpet (3.6.1)
     regexp_parser (2.11.3)
     reline (0.6.3)
       io-console (~> 0.5)
@@ -230,6 +231,7 @@ DEPENDENCIES
   pg
   propshaft
   puma
+  redcarpet
   sqlite3
   standard (~> 1.0)
   yard

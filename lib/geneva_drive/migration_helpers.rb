@@ -44,8 +44,8 @@ module GenevaDrive::MigrationHelpers
 
   # Returns options hash for create_table based on detected primary key type.
   #
-  # @return [Hash] options for create_table (e.g., `{id: :uuid}` or `{id: :bigint}`)
+  # @return [Hash] options for create_table (e.g., `{id: :uuid}` or `{}`)
   def geneva_drive_table_options
-    (geneva_drive_key_type == :uuid) ? {id: :uuid} : {id: :bigint}
+    (geneva_drive_key_type == :uuid) ? {id: :uuid} : {}
   end
 end

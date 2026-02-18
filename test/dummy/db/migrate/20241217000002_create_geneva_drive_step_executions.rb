@@ -6,13 +6,17 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
   def change
     key_type = geneva_drive_key_type
 
+    # Only specify type for UUID keys - bigint is the Rails default and matches the primary key type
+    reference_options = {
+      null: false,
+      foreign_key: {to_table: :geneva_drive_workflows, on_delete: :cascade},
+      index: true
+    }
+    reference_options[:type] = key_type if key_type == :uuid
+
     create_table :geneva_drive_step_executions, **geneva_drive_table_options do |t|
       # Link to workflow (cascade delete when workflow is deleted)
-      t.references :workflow,
-        null: false,
-        foreign_key: {to_table: :geneva_drive_workflows, on_delete: :cascade},
-        index: true,
-        type: key_type
+      t.references :workflow, **reference_options
 
       # Which step this execution represents
       t.string :step_name, null: false

@@ -39,3 +39,6 @@ additional_reference/
 
 # Playwright used by LLMs
 .playwright-mcp/
+
+# Built gems
+/pkg/

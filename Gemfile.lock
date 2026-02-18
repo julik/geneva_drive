@@ -83,8 +83,6 @@ GEM
       crass (~> 1.0.2)
       nokogiri (>= 1.12.0)
     minitest (5.27.0)
-    mysql2 (0.5.7)
-      bigdecimal
     nio4r (2.7.5)
     nokogiri (1.18.10-aarch64-linux-gnu)
       racc (~> 1.4)
@@ -231,7 +229,6 @@ DEPENDENCIES
   appraisal
   debug (>= 1.0.0)
   geneva_drive!
-  mysql2
   pg
   propshaft
   puma

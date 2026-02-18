@@ -13,5 +13,6 @@ gem "sqlite3"
 gem "mysql2"
 gem "appraisal"
 gem "rails", "~> 7.2.0"
+gem "minitest"
 
 gemspec path: "../"

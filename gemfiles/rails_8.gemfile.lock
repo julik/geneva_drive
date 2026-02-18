@@ -302,6 +302,7 @@ DEPENDENCIES
   appraisal
   debug (>= 1.0.0)
   geneva_drive!
+  minitest
   mysql2
   pg
   propshaft

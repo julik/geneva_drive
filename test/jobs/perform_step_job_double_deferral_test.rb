@@ -54,7 +54,7 @@ class PerformStepJobDoubleDeferralTest < ActiveSupport::TestCase
     # that opt into enqueue_after_transaction_commit will defer the INSERT into
     # a callback that never fires when perform_later is called from inside
     # after_all_transactions_commit. Rails 8.0 deprecated :never in favor of false.
-    expected_value = Rails::VERSION::MAJOR >= 8 ? false : :never
+    expected_value = (Rails::VERSION::MAJOR >= 8) ? false : :never
     assert_equal expected_value, GenevaDrive::PerformStepJob.enqueue_after_transaction_commit,
       "PerformStepJob.enqueue_after_transaction_commit must be disabled to prevent " \
       "the double-deferral bug. GenevaDrive already handles transaction-awareness " \

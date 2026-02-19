@@ -14,7 +14,11 @@ unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
 
   dummy_root = File.expand_path("../test/dummy", __dir__)
   migrations = Dir.glob("#{dummy_root}/db/migrate/*geneva_drive*.rb")
-  tables_exist = ActiveRecord::Base.connection.table_exists?("geneva_drive_workflows") rescue false
+  tables_exist = begin
+    ActiveRecord::Base.connection.table_exists?("geneva_drive_workflows")
+  rescue
+    false
+  end
 
   if migrations.empty? && !tables_exist
     puts "Generating GenevaDrive migrations..."

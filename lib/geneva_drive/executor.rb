@@ -51,17 +51,14 @@ class GenevaDrive::Executor
     @step_execution = step_execution
     @workflow = step_execution.workflow
 
-    # When a logger is provided, inject it as the base for workflow and step
-    # logging. When nil, preserve default Rails behavior where models use
-    # their own logger (ActiveRecord::Base.logger via `super`).
-    if logger
-      @workflow.with_logger(logger) do
-        step_execution.with_logger(@workflow.logger) do
-          execute_with_logger(step_execution)
-        end
+    # Build the full logger chain (base -> workflow -> step tags) and inject
+    # it so step code calling `logger` gets the fully-tagged step execution
+    # logger. Falls back to Rails.logger if no logger is provided.
+    step_logger = build_step_logger(logger || Rails.logger, step_execution)
+    @workflow.with_logger(step_logger) do
+      step_execution.with_logger(step_logger) do
+        execute_with_logger(step_execution)
       end
-    else
-      execute_with_logger(step_execution)
     end
   end
 
@@ -96,6 +93,28 @@ class GenevaDrive::Executor
   end
 
   attr_reader :step_execution, :workflow, :logger
+
+  # Builds a fully-tagged logger for the step execution.
+  # Adds workflow tags and step execution tags to the base logger.
+  #
+  # @param base_logger [Logger] the base logger (typically from the job)
+  # @param step_execution [GenevaDrive::StepExecution] the step execution
+  # @return [Logger] the fully-tagged logger
+  def build_step_logger(base_logger, step_execution)
+    workflow = step_execution.workflow
+
+    # Wrap with TaggedLogging and add workflow tags
+    tagged_logger = ActiveSupport::TaggedLogging.new(base_logger)
+    tag_parts = [workflow.class.name, " id=", workflow.to_param]
+    if workflow.hero_id.present?
+      tag_parts.concat([" hero_type=", workflow.hero_type, " hero_id=", workflow.hero_id])
+    end
+    workflow_tag = tag_parts.join
+    workflow_logger = tagged_logger.tagged(workflow_tag)
+
+    # Add step execution tags
+    workflow_logger.tagged("execution_id=#{step_execution.id} step_name=#{step_execution.step_name}")
+  end
 
   # Executes the step block with instrumentation.
   #

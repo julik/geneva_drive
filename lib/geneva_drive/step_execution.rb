@@ -157,16 +157,17 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
-  # Temporarily uses the given logger as the base for step execution logging.
-  # The base logger will have step-specific tags added (execution_id, step_name).
+  # Temporarily overrides the step execution's logger for the duration of the block.
+  # The passed logger is used directly - it should already include step-specific tags.
+  # The original logger is restored after the block completes.
   #
-  # @param base_logger [Logger] the base logger to use
+  # @param logger [Logger] the logger to use (already fully tagged)
   # @yield the block to execute with the injected logger
   # @return [Object] the result of the block
   # @api private
-  def with_logger(base_logger)
+  def with_logger(logger)
     previous_logger = @logger
-    @logger = base_logger.tagged("execution_id=#{id} step_name=#{step_name}")
+    @logger = logger
     yield
   ensure
     @logger = previous_logger

@@ -6,6 +6,34 @@ ENV["RAILS_ENV"] = "test"
 require_relative "../test/dummy/config/environment"
 ActiveRecord::Migrator.migrations_paths = [File.expand_path("../test/dummy/db/migrate", __dir__)]
 ActiveRecord::Migrator.migrations_paths << File.expand_path("../db/migrate", __dir__)
+
+# Ensure GenevaDrive migrations exist and database is prepared.
+# The generator is the single source of truth for migrations.
+unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
+  GENEVA_DRIVE_TEST_DB_PREPARED = true
+
+  dummy_root = File.expand_path("../test/dummy", __dir__)
+  migrations = Dir.glob("#{dummy_root}/db/migrate/*geneva_drive*.rb")
+  tables_exist = begin
+    ActiveRecord::Base.connection.table_exists?("geneva_drive_workflows")
+  rescue
+    false
+  end
+
+  if migrations.empty? && !tables_exist
+    puts "Generating GenevaDrive migrations..."
+    Dir.chdir(dummy_root) do
+      system("bin/rails", "generate", "geneva_drive:install", "--skip") || abort("Failed to generate migrations")
+      system("bin/rails", "db:migrate") || abort("Failed to run migrations")
+    end
+  elsif migrations.any? && !tables_exist
+    puts "Running pending migrations..."
+    Dir.chdir(dummy_root) do
+      system("bin/rails", "db:prepare") || abort("Failed to prepare database")
+    end
+  end
+end
+
 require "rails/test_help"
 
 # Load fixtures from the engine

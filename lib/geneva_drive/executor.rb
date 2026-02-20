@@ -28,18 +28,50 @@ class GenevaDrive::Executor
   # Executes a step execution with full flow control and exception handling.
   #
   # @param step_execution [GenevaDrive::StepExecution] the step to execute
+  # @param logger [Logger, nil] optional base logger to inject into the workflow.
+  #   If provided, this logger will be used as the base for all workflow logging,
+  #   with workflow and step-specific tags added on top. This allows callers
+  #   (background jobs, controllers, etc.) to pass in a logger that already
+  #   has appropriate context tags (e.g., job_id, request_id).
   # @return [void]
-  def self.execute!(step_execution)
-    new.call(step_execution)
+  #
+  # @example Execute with a pre-tagged logger from a background job
+  #   logger = Rails.logger.tagged("job_id=#{job_id}")
+  #   GenevaDrive::Executor.execute!(step_execution, logger: logger)
+  def self.execute!(step_execution, logger: nil)
+    new.call(step_execution, logger: logger)
   end
 
   # Performs the step execution.
   #
   # @param step_execution [GenevaDrive::StepExecution] the step to execute
+  # @param logger [Logger, nil] optional base logger to inject into the workflow
   # @return [void]
-  def call(step_execution)
+  def call(step_execution, logger: nil)
     @step_execution = step_execution
     @workflow = step_execution.workflow
+
+    # When a logger is provided, inject it as the base for workflow and step
+    # logging. When nil, preserve default Rails behavior where models use
+    # their own logger (ActiveRecord::Base.logger via `super`).
+    if logger
+      @workflow.with_logger(logger) do
+        step_execution.with_logger(@workflow.logger) do
+          execute_with_logger(step_execution)
+        end
+      end
+    else
+      execute_with_logger(step_execution)
+    end
+  end
+
+  private
+
+  # Executes the step with the current logger configuration.
+  #
+  # @param step_execution [GenevaDrive::StepExecution] the step to execute
+  # @return [void]
+  def execute_with_logger(step_execution)
     @logger = step_execution.logger
     # Phase 1: Acquire locks, validate, and prepare for execution
     @logger.debug("Preparing execution context")
@@ -62,8 +94,6 @@ class GenevaDrive::Executor
     @logger.info("Finished step with outcome #{flow_result.inspect}")
     finalize_execution(flow_result)
   end
-
-  private
 
   attr_reader :step_execution, :workflow, :logger
 

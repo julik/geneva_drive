@@ -156,4 +156,19 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
       workflow_tagged_logger.tagged("execution_id=#{id} step_name=#{step_name}")
     end
   end
+
+  # Temporarily uses the given logger as the base for step execution logging.
+  # The base logger will have step-specific tags added (execution_id, step_name).
+  #
+  # @param base_logger [Logger] the base logger to use
+  # @yield the block to execute with the injected logger
+  # @return [Object] the result of the block
+  # @api private
+  def with_logger(base_logger)
+    previous_logger = @logger
+    @logger = base_logger.tagged("execution_id=#{id} step_name=#{step_name}")
+    yield
+  ensure
+    @logger = previous_logger
+  end
 end

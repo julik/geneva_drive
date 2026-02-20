@@ -80,8 +80,8 @@ class GenevaDrive::PerformStepJob < ActiveJob::Base
       return
     end
 
-    step_execution.logger.debug("PerformStepJob starting execution")
-    GenevaDrive::Executor.execute!(step_execution)
+    logger.debug("PerformStepJob starting execution for step #{step_execution_id}")
+    GenevaDrive::Executor.execute!(step_execution, logger: logger)
   end
 
   private

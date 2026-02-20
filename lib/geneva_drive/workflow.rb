@@ -566,12 +566,40 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
   end
 
+  # Temporarily uses the given logger as the base for all workflow logging.
+  # This allows callers (background jobs, controllers, etc.) to pass in
+  # a logger that already has appropriate context tags.
+  #
+  # The injected logger will be wrapped with TaggedLogging and have
+  # workflow-specific tags added. The original logger is restored after
+  # the block completes, even if an exception is raised.
+  #
+  # @param logger [Logger] the base logger to use
+  # @yield the block to execute with the injected logger
+  # @return [Object] the result of the block
+  #
+  # @example Use a job's logger during step execution
+  #   workflow.with_logger(job_logger) do
+  #     GenevaDrive::Executor.execute!(step_execution)
+  #   end
+  public def with_logger(logger)
+    previous_base_logger = @injected_base_logger
+    previous_tagged_logger = @tagged_logger
+    @injected_base_logger = logger
+    @tagged_logger = nil
+    yield
+  ensure
+    @injected_base_logger = previous_base_logger
+    @tagged_logger = previous_tagged_logger
+  end
+
   # Returns the Logger properly tagged to this Workflow
   #
   # @return [Logger]
   public def logger
     @tagged_logger ||= begin
-      tagged_logger = ActiveSupport::TaggedLogging.new(super)
+      base_logger = @injected_base_logger || super
+      tagged_logger = ActiveSupport::TaggedLogging.new(base_logger)
 
       # Tag log entries with the workflow, including hero info if present.
       # Step name is logged separately via the StepExecution logger.

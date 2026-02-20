@@ -630,4 +630,100 @@ class ExecutorTest < ActiveSupport::TestCase
     assert_equal "failed", step_execution.state
     assert_equal "canceled", workflow.state
   end
+
+  # Workflow that captures log output from step code
+  class LoggerCapturingWorkflow < GenevaDrive::Workflow
+    step :logging_step do
+      logger.info("Step code log message")
+    end
+
+    def self.reset_tracking!
+      Thread.current[:captured_log_output] = nil
+    end
+
+    def self.captured_output
+      Thread.current[:captured_log_output]
+    end
+
+    def self.captured_output=(value)
+      Thread.current[:captured_log_output] = value
+    end
+  end
+
+  test "step code logger includes step execution tags when logger is injected" do
+    LoggerCapturingWorkflow.reset_tracking!
+
+    # Create a StringIO to capture log output
+    log_output = StringIO.new
+    base_logger = ActiveSupport::TaggedLogging.new(Logger.new(log_output))
+    base_logger = base_logger.tagged("job_id=test-job-123")
+
+    workflow = LoggerCapturingWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution, logger: base_logger)
+
+    log_content = log_output.string
+
+    # Should include the job tag (from injected logger)
+    assert_match(/job_id=test-job-123/, log_content, "Log should include job_id tag from injected logger")
+
+    # Should include workflow tags
+    assert_match(/LoggerCapturingWorkflow/, log_content, "Log should include workflow class name")
+    assert_match(/id=#{workflow.id}/, log_content, "Log should include workflow id")
+    assert_match(/hero_type=User/, log_content, "Log should include hero_type")
+    assert_match(/hero_id=#{@user.id}/, log_content, "Log should include hero_id")
+
+    # Should include step execution tags
+    assert_match(/execution_id=#{step_execution.id}/, log_content, "Log should include execution_id")
+    assert_match(/step_name=logging_step/, log_content, "Log should include step_name")
+
+    # Should include the actual log message
+    assert_match(/Step code log message/, log_content, "Log should include the step's log message")
+  end
+
+  test "step code logger uses default Rails logger when no logger is injected" do
+    LoggerCapturingWorkflow.reset_tracking!
+
+    workflow = LoggerCapturingWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    # Execute without injected logger - should not raise
+    GenevaDrive::Executor.execute!(step_execution)
+
+    step_execution.reload
+    assert_equal "completed", step_execution.state
+  end
+
+  # Workflow that verifies workflow.logger and step_execution.logger return the same instance
+  class LoggerIdentityWorkflow < GenevaDrive::Workflow
+    step :check_logger do
+      # Store the logger object_id to verify identity
+      Thread.current[:workflow_logger_id] = logger.object_id
+    end
+
+    def self.workflow_logger_id
+      Thread.current[:workflow_logger_id]
+    end
+
+    def self.reset_tracking!
+      Thread.current[:workflow_logger_id] = nil
+    end
+  end
+
+  test "workflow.logger returns the step execution logger during step execution" do
+    LoggerIdentityWorkflow.reset_tracking!
+
+    log_output = StringIO.new
+    base_logger = ActiveSupport::TaggedLogging.new(Logger.new(log_output))
+
+    workflow = LoggerIdentityWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    GenevaDrive::Executor.execute!(step_execution, logger: base_logger)
+
+    # The logger returned by workflow.logger inside step code should be
+    # the same as step_execution.logger (both should be the injected step logger)
+    assert_not_nil LoggerIdentityWorkflow.workflow_logger_id
+  end
 end

@@ -566,30 +566,27 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
   end
 
-  # Temporarily uses the given logger as the base for all workflow logging.
-  # This allows callers (background jobs, controllers, etc.) to pass in
-  # a logger that already has appropriate context tags.
+  # Temporarily overrides the workflow's logger for the duration of the block.
+  # This allows the Executor to inject the step execution's logger (which
+  # includes both workflow and step-specific tags) so that step code calling
+  # `logger` gets the fully-tagged step execution logger.
   #
-  # The injected logger will be wrapped with TaggedLogging and have
-  # workflow-specific tags added. The original logger is restored after
-  # the block completes, even if an exception is raised.
+  # The passed logger is used directly - no additional tagging is applied.
+  # The original logger is restored after the block completes.
   #
-  # @param logger [Logger] the base logger to use
+  # @param logger [Logger] the logger to use (typically the step execution's logger)
   # @yield the block to execute with the injected logger
   # @return [Object] the result of the block
   #
-  # @example Use a job's logger during step execution
-  #   workflow.with_logger(job_logger) do
-  #     GenevaDrive::Executor.execute!(step_execution)
+  # @example Use step execution logger during step code
+  #   workflow.with_logger(step_execution.logger) do
+  #     step_def.execute_in_context(workflow)
   #   end
   public def with_logger(logger)
-    previous_base_logger = @injected_base_logger
     previous_tagged_logger = @tagged_logger
-    @injected_base_logger = logger
-    @tagged_logger = nil
+    @tagged_logger = logger
     yield
   ensure
-    @injected_base_logger = previous_base_logger
     @tagged_logger = previous_tagged_logger
   end
 

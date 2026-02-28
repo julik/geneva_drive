@@ -926,6 +926,40 @@ Co-committing matters because GenevaDrive relies on transactional guarantees. Wh
 
 With non-transactional adapters (Sidekiq, Resque), there's a small window where the job is enqueued but the transaction hasn't committed. GenevaDrive handles this gracefully — the job will see the step execution in the wrong state and skip it — but you may see occasional log warnings.
 
+### Inline Enqueueing for Bulk Operations
+
+When creating many workflows at once, you may want to batch the job inserts for efficiency. Libraries like BulkEnqueue or native adapter bulk methods can significantly reduce database round-trips. However, GenevaDrive's default behavior of deferring job enqueueing to `after_all_transactions_commit` interferes with bulk enqueueing:
+
+1. `BulkEnqueue.in_bulk { }` starts, buffer is set
+2. For each workflow:
+   - Workflow and step execution created in transaction
+   - `after_all_transactions_commit` callback is **registered** (not executed)
+   - Transaction commits
+3. Bulk block ends, flushes **empty** buffer, clears buffer
+4. **Now** `after_all_transactions_commit` callbacks fire
+5. Jobs are enqueued individually (buffer already cleared)
+
+Use `GenevaDrive.with_inline_enqueue` to temporarily disable deferred enqueueing:
+
+```ruby
+BulkEnqueue.in_bulk do
+  GenevaDrive.with_inline_enqueue do
+    drafts.each do |draft|
+      DeliverBriefWorkflow.create!(hero: draft)
+    end
+  end
+end
+```
+
+Inside the block, jobs are enqueued immediately (inline) rather than being deferred to `after_all_transactions_commit`. This allows bulk enqueueing libraries to capture and batch the job inserts.
+
+> [!WARNING]
+> **Only use `with_inline_enqueue` if you have a co-committing, database-backed ActiveJob adapter** (SolidQueue, GoodJob, Gouda) running on the same database as your application. With these adapters, the job INSERT and workflow records are written in the same transaction, guaranteeing atomicity.
+>
+> If you use a non-transactional adapter (Redis-based Sidekiq, Resque, etc.), do **not** use this in production — jobs may be picked up before their associated records are committed, causing "record not found" errors.
+
+The method is thread-safe and won't affect other concurrent requests.
+
 ### Custom Job Options
 
 Override the queue or priority for all steps in a workflow:

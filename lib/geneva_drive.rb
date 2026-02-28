@@ -83,6 +83,72 @@ module GenevaDrive
     #
     # @return [Boolean]
     attr_accessor :enqueue_after_commit
+
+    # Temporarily enables inline job enqueueing for the duration of the block.
+    # Jobs will be enqueued immediately instead of waiting for transaction commit.
+    #
+    # ## When to use this
+    #
+    # This method is useful when creating multiple workflows inside a bulk
+    # enqueueing context (e.g., BulkEnqueue.in_bulk). Normally, GenevaDrive
+    # defers job enqueueing to `after_all_transactions_commit` callbacks.
+    # However, these callbacks fire *after* the bulk enqueue block ends and
+    # clears its buffer, causing jobs to be enqueued individually instead of
+    # in bulk.
+    #
+    # ## Requirements
+    #
+    # **Only use this if you have a co-committing, database-backed ActiveJob
+    # adapter** (such as SolidQueue, GoodJob, or Gouda) running on the same
+    # database as your application models. With such adapters, the job INSERT
+    # and the workflow/step_execution records are written in the same database
+    # transaction, guaranteeing atomicity without needing `after_commit` deferral.
+    #
+    # If you use a non-transactional queue adapter (Redis-based Sidekiq, Resque,
+    # etc.), do NOT use this method in production — jobs may be enqueued before
+    # their associated records are visible, causing "record not found" errors.
+    #
+    # ## Thread safety
+    #
+    # Uses a thread-local flag that won't affect other threads or requests.
+    # Safe to use in multi-threaded web servers (Puma, etc.).
+    #
+    # @yield the block to execute with immediate (inline) job enqueueing
+    # @return [Object] the result of the block
+    #
+    # @example Create workflows in bulk with BulkEnqueue
+    #   BulkEnqueue.in_bulk do
+    #     GenevaDrive.with_inline_enqueue do
+    #       drafts.each do |draft|
+    #         DeliverBriefWorkflow.create!(hero: draft)
+    #       end
+    #     end
+    #   end
+    #
+    # @example Batch workflow creation without bulk enqueue helper
+    #   GenevaDrive.with_inline_enqueue do
+    #     User.pending_onboarding.find_each do |user|
+    #       OnboardingWorkflow.create!(hero: user)
+    #     end
+    #   end
+    #
+    # @see #enqueue_after_commit
+    def with_inline_enqueue
+      previous = Thread.current[:geneva_drive_inline_enqueue]
+      Thread.current[:geneva_drive_inline_enqueue] = true
+      yield
+    ensure
+      Thread.current[:geneva_drive_inline_enqueue] = previous
+    end
+
+    # Returns true if job enqueueing should be deferred to after transaction commit.
+    #
+    # @return [Boolean]
+    # @api private
+    def enqueues_deferred?
+      return false if Thread.current[:geneva_drive_inline_enqueue]
+      enqueue_after_commit
+    end
   end
 
   # Set default configuration values

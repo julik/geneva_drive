@@ -549,17 +549,23 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     nil
   end
 
-  # Runs a block either after all transactions commit or immediately,
-  # depending on GenevaDrive.enqueue_after_commit.
+  # Runs a block either after all transactions commit or immediately.
   #
-  # In production, deferring to after_all_transactions_commit ensures that
-  # records written inside the transaction are visible to job workers. In
-  # transactional tests (especially with SQLite) the outermost test
-  # transaction never commits, so deferring can cause callbacks to misbehave
-  # or not fire. Setting GenevaDrive.enqueue_after_commit = false (the
-  # default in test environments) runs the block inline instead.
+  # The behavior depends on GenevaDrive.enqueues_deferred?, which checks:
+  # - Whether we're inside a GenevaDrive.without_deferred_enqueues block
+  # - The GenevaDrive.enqueue_after_commit global setting
+  #
+  # In production (enqueue_after_commit = true), deferring to
+  # after_all_transactions_commit ensures that records written inside the
+  # transaction are visible to job workers.
+  #
+  # In tests (enqueue_after_commit = false), or inside a
+  # without_deferred_enqueues block, the block runs immediately.
+  #
+  # @yield the block to run (typically contains perform_later call)
+  # @return [void]
   def run_after_commit(&block)
-    if GenevaDrive.enqueue_after_commit
+    if GenevaDrive.enqueues_deferred?
       ActiveRecord.after_all_transactions_commit(&block)
     else
       yield

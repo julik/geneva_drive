@@ -46,6 +46,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   class_attribute :_cancel_conditions, instance_writer: false, default: []
   class_attribute :_step_job_options, instance_writer: false, default: {}
   class_attribute :_may_proceed_without_hero, instance_writer: false, default: false
+  class_attribute :_skip_undefined_steps, instance_writer: false, default: false
 
   # Include flow control methods
   include GenevaDrive::FlowControl
@@ -176,6 +177,33 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   end
     def may_proceed_without_hero!
       self._may_proceed_without_hero = true
+    end
+
+    # Opts the workflow into gracefully skipping undefined steps during execution.
+    #
+    # During rolling deployments, in-flight workflows may reference step names
+    # that no longer exist in the currently-deployed code. By default, GenevaDrive
+    # raises StepNotDefinedError and pauses the workflow, leaving it stuck.
+    #
+    # When this is enabled, an undefined step is replaced with a tombstone step
+    # that calls skip!, allowing the workflow to continue from the first defined
+    # step instead of pausing.
+    #
+    # Only opt in for workflows where all steps are idempotent or have skip guards,
+    # so that re-running from the first step after a skip is safe.
+    #
+    # @return [void]
+    #
+    # @example
+    #   class EmailProcessingWorkflow < GenevaDrive::Workflow
+    #     skip_undefined_steps!
+    #
+    #     step :ensure_inbox do
+    #       # ...
+    #     end
+    #   end
+    def skip_undefined_steps!
+      self._skip_undefined_steps = true
     end
 
     # Returns the step definitions for this workflow class.

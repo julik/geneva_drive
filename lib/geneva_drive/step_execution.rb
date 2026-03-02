@@ -135,9 +135,22 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Returns the step definition for this execution.
   #
-  # @return [StepDefinition, nil] the step definition
+  # If the step is not found and the workflow has opted into skip_undefined_steps!,
+  # returns a tombstone StepDefinition that calls skip! instead of nil. This allows
+  # rolling deployments to proceed without pausing workflows that reference removed
+  # or renamed steps.
+  #
+  # @return [StepDefinition, nil] the step definition, a tombstone, or nil
   def step_definition
-    workflow.class.steps.named(step_name)
+    found = workflow.class.steps.named(step_name)
+    return found if found
+    return nil unless workflow.class._skip_undefined_steps
+
+    logger.warn(
+      "[DeployGuard] Step '#{step_name}' is not defined in #{workflow.class.name}. " \
+      "Skipping -- this typically happens during rolling deployments."
+    )
+    GenevaDrive::StepDefinition.new(name: step_name, callable: proc { skip! })
   end
 
   # Executes this step using the Executor.

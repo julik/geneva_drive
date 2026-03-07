@@ -186,14 +186,14 @@ class GenevaDrive::Executor
     result = with_execution_lock do
       # Validate step execution can start
       unless step_execution.state == "scheduled"
-        logger.info("Step execution is in #{step_execution.state.inspect} and can't be stepped, dropping through")
+        logger.info("Step execution #{step_execution.id} is already #{step_execution.state.inspect}, skipping duplicate job")
 
         next nil
       end
 
       # Validate workflow is in a state that allows execution
       unless %w[ready performing].include?(workflow.state)
-        logger.info("Workflow is in #{workflow.state.inspect} state and can't be stepped, canceling and dropping through")
+        logger.info("Workflow #{workflow.id} is #{workflow.state.inspect}, cannot execute step — canceling step execution")
 
         step_execution.update!(
           state: "canceled",
@@ -206,7 +206,7 @@ class GenevaDrive::Executor
 
       # Check hero exists (unless workflow opts out)
       if workflow.hero.blank? && !workflow.class._may_proceed_without_hero
-        logger.info("No hero present and this workflow is not set to run without one. Canceling and dropping through")
+        logger.info("Workflow #{workflow.id} has no hero and requires one — canceling workflow")
         transition_step!("canceled", outcome: "canceled")
         transition_workflow!("canceled")
         next nil

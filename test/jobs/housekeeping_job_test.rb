@@ -411,11 +411,11 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     assert_equal 7, result[:stuck_scheduled_recovered]
   end
 
-  # Large-scale tests with deterministic random data
+  # Multi-batch tests with deterministic random data
 
-  test "large scale cleanup: processes 2000+ workflows with varied ages" do
+  test "multi-batch cleanup: processes workflows with varied ages" do
     GenevaDrive.delete_completed_workflows_after = 30.days
-    GenevaDrive.housekeeping_batch_size = 100
+    GenevaDrive.housekeeping_batch_size = 25
 
     rng = Random.new(42) # Fixed seed for deterministic test
     workflow_classes = [SimpleWorkflow, ThreeStepWorkflow, WaitingWorkflow]
@@ -424,9 +424,9 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     created_old_workflows = 0
     created_recent_workflows = 0
 
-    # Create 2500 workflows with random ages
+    # Create 150 workflows with random ages (requires multiple batches of 25)
     # Roughly 80% old (should be deleted), 20% recent (should be kept)
-    2500.times do |i|
+    150.times do |i|
       workflow_class = workflow_classes[rng.rand(workflow_classes.size)]
       workflow = workflow_class.create!(hero: @user, allow_multiple: true)
       state = terminal_states[rng.rand(terminal_states.size)]
@@ -469,10 +469,10 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     end
   end
 
-  test "large scale recovery: processes 1000+ stuck in_progress workflows" do
+  test "multi-batch recovery: processes stuck in_progress workflows" do
     GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :cancel
-    GenevaDrive.housekeeping_batch_size = 50
+    GenevaDrive.housekeeping_batch_size = 25
 
     rng = Random.new(123) # Fixed seed for deterministic test
     workflow_classes = [SimpleWorkflow, ThreeStepWorkflow, WaitingWorkflow]
@@ -480,9 +480,9 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     created_stuck_count = 0
     created_recent_count = 0
 
-    # Create 1200 workflows with random stuck durations
+    # Create 150 workflows with random stuck durations (requires multiple batches of 25)
     # 85% should be stuck (>1 hour), 15% should be recent (<1 hour)
-    1200.times do |i|
+    150.times do |i|
       workflow_class = workflow_classes[rng.rand(workflow_classes.size)]
       workflow = workflow_class.create!(hero: @user, allow_multiple: true)
       step_execution = workflow.step_executions.first
@@ -516,10 +516,10 @@ class HousekeepingJobTest < ActiveSupport::TestCase
       "Expected #{created_recent_count} recent in_progress executions to remain"
   end
 
-  test "large scale recovery: processes 1000+ stuck scheduled workflows" do
+  test "multi-batch recovery: processes stuck scheduled workflows" do
     GenevaDrive.stuck_scheduled_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :cancel
-    GenevaDrive.housekeeping_batch_size = 50
+    GenevaDrive.housekeeping_batch_size = 25
 
     rng = Random.new(456) # Fixed seed for deterministic test
     workflow_classes = [SimpleWorkflow, ThreeStepWorkflow, WaitingWorkflow]
@@ -528,9 +528,9 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     created_recent_count = 0
     created_future_count = 0
 
-    # Create 1200 workflows with random scheduled times
+    # Create 150 workflows with random scheduled times (requires multiple batches of 25)
     # 70% stuck (>1 hour ago), 15% recent (<1 hour ago), 15% future
-    1200.times do |i|
+    150.times do |i|
       workflow_class = workflow_classes[rng.rand(workflow_classes.size)]
       workflow = workflow_class.create!(hero: @user, allow_multiple: true)
       step_execution = workflow.step_executions.first
@@ -567,12 +567,12 @@ class HousekeepingJobTest < ActiveSupport::TestCase
       "Expected #{expected_remaining} non-stuck scheduled executions to remain"
   end
 
-  test "large scale combined: cleanup and recovery together" do
+  test "multi-batch combined: cleanup and recovery together" do
     GenevaDrive.delete_completed_workflows_after = 30.days
     GenevaDrive.stuck_in_progress_threshold = 1.hour
     GenevaDrive.stuck_scheduled_threshold = 1.hour
     GenevaDrive.stuck_recovery_action = :reattempt
-    GenevaDrive.housekeeping_batch_size = 75
+    GenevaDrive.housekeeping_batch_size = 25
 
     rng = Random.new(789) # Fixed seed for deterministic test
     workflow_classes = [SimpleWorkflow, ThreeStepWorkflow, WaitingWorkflow]
@@ -583,8 +583,8 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     stuck_scheduled_count = 0
     active_count = 0
 
-    # Create 3000 workflows in various states
-    3000.times do |i|
+    # Create 200 workflows in various states (requires multiple batches of 25)
+    200.times do |i|
       workflow_class = workflow_classes[rng.rand(workflow_classes.size)]
       workflow = workflow_class.create!(hero: @user, allow_multiple: true)
 

@@ -12,6 +12,7 @@
 - Change `pause!` to preserve scheduled step executions instead of canceling them. Previously, calling `pause!` would cancel the scheduled execution with outcome "workflow_paused". Now, the scheduled execution remains in "scheduled" state, making it visible in the timeline as "overdue" if time passes while paused. On `resume!`, the same execution is re-enqueued (or a new one created only if the executor canceled it while paused).
 - Improve `HousekeepingJob` to process all eligible records by looping through batches instead of stopping after the first batch. Also uses efficient SQL DELETEs with INNER JOIN for step executions cleanup and fixes cutoff times at the start of each operation for deterministic behavior.
 - Add `GenevaDrive.with_inline_enqueue` block method for bulk workflow creation. Temporarily disables deferred job enqueueing so that bulk enqueueing libraries (e.g., BulkEnqueue) can capture and batch job inserts. Only recommended for use with co-committing, database-backed ActiveJob adapters (SolidQueue, GoodJob, Gouda) on the same database.
+- Allow `GenevaDrive::Workflow.cancel!` to be called outside steps as well - previously it could only be called from within a step.
 
 ## [0.4.0]
 

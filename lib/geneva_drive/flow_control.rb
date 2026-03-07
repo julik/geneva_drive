@@ -94,13 +94,19 @@ class GenevaDrive::PreconditionError < GenevaDrive::StepExecutionError; end
 #   workflow.pause!  # Pauses workflow from outside a step
 module GenevaDrive::FlowControl
   # Cancels the workflow immediately.
-  # The current step is marked as canceled and the workflow transitions to 'canceled' state.
+  #
+  # When called inside a step (workflow state is 'performing'): interrupts execution via throw/catch.
+  # When called outside a step (workflow state is 'ready' or 'paused'): directly cancels the workflow.
   #
   # @return [void]
-  # @raise [UncaughtThrowError] if called outside of step execution context
+  # @raise [InvalidStateError] if called on a non-ready/non-paused/non-performing workflow
   def cancel!
-    logger.info("Flow control: cancel! called from step")
-    throw :flow_control, GenevaDrive::FlowControlSignal.new(:cancel)
+    if state == "performing"
+      logger.info("Flow control: cancel! called from step")
+      throw :flow_control, GenevaDrive::FlowControlSignal.new(:cancel)
+    else
+      external_cancel!
+    end
   end
 
   # Pauses the workflow for manual intervention.
@@ -183,6 +189,29 @@ module GenevaDrive::FlowControl
       update!(state: "paused", transitioned_at: Time.current)
     end
     logger.info("Workflow paused")
+  end
+
+  # Cancels the workflow from outside a step execution.
+  # Cancels any scheduled step execution and transitions the workflow to 'canceled'.
+  #
+  # @raise [InvalidStateError] if workflow is not in 'ready' or 'paused' state
+  # @return [void]
+  def external_cancel!
+    unless %w[ready paused].include?(state)
+      raise GenevaDrive::InvalidStateError, "Cannot cancel a #{state} workflow"
+    end
+
+    logger.info("Canceling workflow externally")
+    with_lock do
+      # with_lock reloads automatically; re-check state in case it changed
+      unless %w[ready paused].include?(state)
+        raise GenevaDrive::InvalidStateError, "Cannot cancel a #{state} workflow"
+      end
+
+      current_execution&.mark_canceled!(outcome: "canceled")
+      update!(state: "canceled", transitioned_at: Time.current)
+    end
+    logger.info("Workflow canceled")
   end
 
   # Skips the current step from outside a step execution.

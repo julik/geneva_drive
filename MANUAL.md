@@ -1147,7 +1147,7 @@ end
 
 # Part VI — Appendix
 
-## Why "Durable Functions" Are a Mirage
+## Appendix: Why "Durable Functions" Are a Mirage
 
 There is a rather popular approach to building durable execution systems based on the concept of "durable functions". Systems like [Temporal](https://temporal.io) and [absurd](https://lucumr.pocoo.org/2025/11/3/absurd-workflows/) as well as [Vercel Workflows](https://vercel.com/docs/workflow) take that concept quite far. It seems neat on the surface, yet deeply flawed in nature.
 
@@ -1250,6 +1250,76 @@ This only works if the control flow between steps is perfectly deterministic. Bu
 The frameworks paper over this with restrictions: don't use randomness, don't depend on time, don't read from external systems except through blessed APIs. But these restrictions are invisible until you violate them. You write what looks like normal code, you test it, it works — and then six months later, after a Node upgrade, a resumed workflow takes a wrong turn and corrupts your data.
 
 Honesty requires admitting what the system actually provides. If execution state is not truly serialized, don't pretend it is. Make the boundaries explicit. Make the steps explicit. Make the user acknowledge, at every step boundary, that they are persisting state to a database. GenevaDrive takes this position.
+
+## Appendix: Pause as an Operational Safety Valve
+
+When a step raises an unhandled exception, the default behavior is to **pause** the workflow. This is not a coincidence — it is the most operationally useful thing we can do. A paused workflow is not broken. It is stopped, intact, waiting for a human to decide what happens next.
+
+### Why pause instead of letting the exception propagate, retry, or cancel?
+
+Consider the alternatives:
+
+- **Let the exception propagate.** The step execution job raises, and the workflow stays in `performing` state. This is bad — a `performing` workflow cannot have a new step execution started, so there is no way to advance it once the bug is fixed or the upstream problem is resolved. The workflow appears to hang indefinitely.
+- **Infinite retry** can hammer a broken external service, burn API quota, or loop on a bug that no amount of retrying will fix.
+- **Cancel** throws away all the work the workflow has already done. If five of seven steps completed successfully, canceling means starting over — or worse, leaving the system in a half-finished state with no record of what happened.
+
+Pausing avoids all of these. The workflow stops advancing, but every piece of state is preserved: which step failed, what exception was raised, the full backtrace, and which step would run next. An operator can inspect the situation, fix the underlying problem (deploy a bug fix, correct bad data, restore an external service), and then decide how to proceed.
+
+### The slot stays occupied
+
+A paused workflow is still **ongoing**. It keeps its slot in the unique index on `(type, hero_type, hero_id)`. This means no competing workflow can be created for the same hero while the paused one exists. If a cron job or a controller action tries to create a duplicate, the unique constraint rejects it.
+
+This is a feature, not a limitation. Imagine a payment processing workflow pauses because the gateway returned an unexpected error. You do not want a second payment workflow starting for the same order while the first one is stopped mid-flight — that risks double-charging. The paused workflow holds the slot, acting as a lock that says "a human needs to look at this before anything else happens for this hero."
+
+### Unpausing a workflow
+
+You have three options when a workflow is paused:
+
+**`resume!`** sets the workflow back to `ready` and re-enqueues the step that was about to run. If the step was originally scheduled for some time in the future and that time has now passed, it runs immediately — the system recognizes it is overdue. If the scheduled time is still in the future, it waits the remaining duration. This is the most common recovery path: fix the root cause, then resume.
+
+```ruby
+workflow = PaymentProcessingWorkflow.find(id)
+workflow.resume!  # Re-enqueues the failed step
+```
+
+**`skip!`** marks the current step as skipped and advances to the next one. This is useful when the step is no longer relevant — perhaps you resolved the issue out-of-band, or the step was attempting something that has since been handled manually.
+
+```ruby
+workflow = PaymentProcessingWorkflow.find(id)
+workflow.skip!  # Advances past the failed step
+```
+
+**`cancel!`** terminates the workflow entirely. The slot in the unique index is released, and a new workflow for the same hero can be created.
+
+```ruby
+workflow = PaymentProcessingWorkflow.find(id)
+workflow.cancel!  # Ends the workflow, frees the hero slot
+```
+
+### Deliberate pause from step code
+
+Steps can also call `pause!` explicitly to request human intervention before the workflow continues. This is the "emergency stop button" — the step has detected a condition that requires a conscious decision rather than automatic progression.
+
+The payment processing example in this manual demonstrates this pattern. When the gateway flags a transaction as potentially fraudulent, the step pauses the workflow rather than proceeding:
+
+```ruby
+step :capture_payment, wait: 1.hour do
+  result = PaymentGateway.capture(
+    authorization_id: hero.authorization_id,
+    idempotency_key: "capture-#{hero.id}"
+  )
+  hero.update!(captured_at: Time.current, transaction_id: result.transaction_id)
+rescue PaymentGateway::FraudSuspected
+  hero.flag_for_fraud_review!
+  pause!  # A human must review before we continue
+end
+```
+
+The workflow will sit in `paused` state — holding the slot, preventing duplicates — until a fraud analyst reviews the case and calls `resume!` or `cancel!`.
+
+### Pause on missing step definitions
+
+There is one more scenario where pause happens automatically. If a workflow references a step name that no longer exists in the class definition — typically after a deploy that removed or renamed a step — the executor pauses the workflow rather than silently skipping or crashing. This gives operators a chance to notice the mismatch and decide whether to skip, cancel, or deploy a fix.
 
 ## Complete Example Workflows
 

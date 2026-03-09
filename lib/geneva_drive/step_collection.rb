@@ -67,13 +67,19 @@ class GenevaDrive::StepCollection
 
   # Returns the next step after the given step name.
   #
+  # If the step name is not in the collection (e.g. a step removed during a rolling
+  # deployment that was skipped via skip_undefined_steps!), falls back to the first
+  # step so the workflow continues rather than finishing prematurely.
+  #
   # @param current_name [String, Symbol, nil] the current step name
-  # @return [StepDefinition, nil] the next step or nil if at end
+  # @return [StepDefinition, nil] the next step, nil if at end, or first if unknown
   def next_after(current_name)
     return first if current_name.nil?
 
     current_index = ordered_steps.index { |s| s.name == current_name.to_s }
-    return nil unless current_index
+
+    # Step not in collection (e.g. removed during rolling deploy) -- restart from first
+    return first unless current_index
 
     self[current_index + 1]
   end

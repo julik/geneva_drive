@@ -2,6 +2,11 @@
 
 ## [Unreleased]
 
+- Add class-level `on_exception` for declaring exception policies that apply to all steps in a workflow. Supports blanket policies, exception-class-specific policies, and imperative block handlers. Step-level `on_exception:` overrides class-level policies.
+- Add `GenevaDrive::ExceptionPolicy` value object for reusable exception handling configuration. Can be passed directly to `on_exception:` at step level or class level.
+- Add `terminal_action:` option to `on_exception: :reattempt!` to control what happens when `max_reattempts` is exceeded. Accepts `:pause!` (default) or `:cancel!`.
+- Add optional `metadata` JSON column to step executions for structured data (reattempt reasons, exception info). The column is optional — writing is a silent no-op if the migration has not been applied yet.
+- Double-write exception info (class, message, backtrace) into step execution metadata alongside the dedicated error columns, preparing for future column removal.
 - Add injectable logger support to `Executor.execute!`. Callers (background jobs, controllers) can pass a `logger:` parameter to inject a pre-tagged logger as the base for all workflow logging during step execution. The injected logger will have workflow and step-specific tags added on top. `PerformStepJob` now passes its own logger to the executor.
 - Add `GenevaDrive.enqueue_after_commit` configuration setting to control job enqueueing behavior. When `true` (default in production), jobs are enqueued via `after_all_transactions_commit` to ensure records are visible to workers. When `false` (default in test), jobs are enqueued inline to avoid issues with transactional tests that never commit.
 - Fix MySQL compatibility in `HousekeepingJob`: wrap LIMIT subqueries in an extra SELECT (MySQL doesn't support LIMIT in IN subqueries), and interpolate LIMIT values directly (MySQL doesn't handle bind parameters for LIMIT clauses).

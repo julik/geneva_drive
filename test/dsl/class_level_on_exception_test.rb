@@ -7,7 +7,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "registers a blanket declarative policy" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception :reattempt!, max_reattempts: 3
-      step(:work) { }
+      step(:work) {}
     end
 
     assert_equal 1, workflow_class._exception_policies.size
@@ -20,7 +20,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "registers a specific declarative policy with exception classes" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception ArgumentError, TypeError, action: :cancel!
-      step(:work) { }
+      step(:work) {}
     end
 
     assert_equal 1, workflow_class._exception_policies.size
@@ -33,7 +33,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "registers a policy with action as first positional arg and exception classes" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception :reattempt!, wait: 15.seconds
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class._exception_policies.first
@@ -44,7 +44,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "registers an imperative policy with block" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception(RuntimeError) { |_e| cancel! }
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class._exception_policies.first
@@ -72,7 +72,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "subclass inherits parent policies" do
     parent = Class.new(GenevaDrive::Workflow) do
       on_exception :reattempt!, max_reattempts: 3
-      step(:work) { }
+      step(:work) {}
     end
 
     child = Class.new(parent) do
@@ -86,7 +86,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "subclass does not mutate parent policies" do
     parent = Class.new(GenevaDrive::Workflow) do
       on_exception :pause!
-      step(:work) { }
+      step(:work) {}
     end
 
     Class.new(parent) do
@@ -101,7 +101,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception :pause!
       on_exception ArgumentError, action: :cancel!
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class.resolve_exception_policy(ArgumentError.new("test"))
@@ -115,7 +115,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception ArgumentError, action: :pause!
       on_exception ArgumentError, action: :cancel!
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class.resolve_exception_policy(ArgumentError.new("test"))
@@ -125,7 +125,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "resolves subclass blanket over parent blanket" do
     parent = Class.new(GenevaDrive::Workflow) do
       on_exception :pause!
-      step(:work) { }
+      step(:work) {}
     end
 
     child = Class.new(parent) do
@@ -140,7 +140,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "resolves subclass specific policy before parent blanket" do
     parent = Class.new(GenevaDrive::Workflow) do
       on_exception :pause!
-      step(:work) { }
+      step(:work) {}
     end
 
     child = Class.new(parent) do
@@ -154,7 +154,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
   test "returns nil when no policies match" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       on_exception ArgumentError, action: :cancel!
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class.resolve_exception_policy(RuntimeError.new("test"))
@@ -163,7 +163,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
 
   test "returns nil when no policies defined" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
-      step(:work) { }
+      step(:work) {}
     end
 
     policy = workflow_class.resolve_exception_policy(RuntimeError.new("test"))

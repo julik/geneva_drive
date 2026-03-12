@@ -529,10 +529,10 @@ class GenevaDrive::Executor
     step_execution.update!(error_attributes_for(error))
     transition_step!("failed", outcome: "failed")
 
-    if step_def
-      policy = resolve_exception_policy(error, step_def)
+    policy = if step_def
+      resolve_exception_policy(error, step_def)
     else
-      policy = GenevaDrive::ExceptionPolicy.new(:pause!)
+      GenevaDrive::ExceptionPolicy.new(:pause!)
     end
 
     apply_prepare_exception_policy(policy, error, step_def)

@@ -148,7 +148,7 @@ class GenevaDrive::StepDefinition
     when Proc
       GenevaDrive::ExceptionPolicy.new(&on_exc)
     when Symbol
-      max = @max_reattempts_raw.nil? && !explicitly_set_max_reattempts? ? default_max_reattempts(on_exc) : @max_reattempts_raw
+      max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(on_exc) : @max_reattempts_raw
       GenevaDrive::ExceptionPolicy.new(on_exc, max_reattempts: max)
     end
   end
@@ -202,7 +202,7 @@ class GenevaDrive::StepDefinition
       raise GenevaDrive::StepConfigurationError,
         "Step '#{@name}' has invalid on_exception: must be one of #{EXCEPTION_HANDLERS.join(", ")}"
     when GenevaDrive::ExceptionPolicy, Proc
-      return
+      nil
     else
       raise GenevaDrive::StepConfigurationError,
         "Step '#{@name}' has invalid on_exception: must be a Symbol, ExceptionPolicy, or Proc"

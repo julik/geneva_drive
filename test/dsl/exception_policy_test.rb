@@ -12,7 +12,7 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     assert_nil policy.wait
     assert_nil policy.max_reattempts
     assert_nil policy.handler
-    assert_empty policy.exception_classes
+    assert_empty policy.exception_matchers
   end
 
   test "creates a declarative policy with all options" do
@@ -91,7 +91,7 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
 
   test "specific policy matches only listed exception classes" do
     policy = GenevaDrive::ExceptionPolicy.new(:cancel!)
-    policy.exception_classes.concat([ArgumentError, TypeError])
+    policy.exception_matchers.concat([ArgumentError, TypeError])
 
     assert policy.matches?(ArgumentError.new)
     assert policy.matches?(TypeError.new)
@@ -102,7 +102,7 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
 
   test "specific policy matches subclasses" do
     policy = GenevaDrive::ExceptionPolicy.new(:cancel!)
-    policy.exception_classes << StandardError
+    policy.exception_matchers << StandardError
 
     assert policy.matches?(RuntimeError.new)
     assert policy.matches?(ArgumentError.new)
@@ -143,5 +143,23 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) do
       GenevaDrive::ExceptionPolicy.new(terminal_action: :cancel!) { |_e| reattempt! }
     end
+  end
+
+  # LazyExceptionMatcher tests
+  test "LazyExceptionMatcher matches by class name at runtime" do
+    matcher = GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new("ArgumentError")
+    assert matcher === ArgumentError.new("test")
+    refute matcher === RuntimeError.new("test")
+  end
+
+  test "LazyExceptionMatcher matches subclasses" do
+    matcher = GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new("StandardError")
+    assert matcher === ArgumentError.new("test")
+    assert matcher === RuntimeError.new("test")
+  end
+
+  test "LazyExceptionMatcher returns false for unresolvable class names" do
+    matcher = GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new("Nonexistent::FakeError")
+    refute matcher === RuntimeError.new("test")
   end
 end

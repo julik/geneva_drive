@@ -15,6 +15,33 @@
 #
 # @api public
 class GenevaDrive::ExceptionPolicy
+  # Matches exceptions by class name without requiring the constant to be
+  # loaded at definition time. The class lookup happens lazily on each #===
+  # call. If the constant cannot be resolved, the matcher returns false
+  # (no match) rather than raising.
+  #
+  # @example
+  #   on_exception "SomeLib::TransientError", action: :reattempt!
+  #
+  # @api private
+  class LazyExceptionMatcher
+    # @param class_name [String] fully-qualified exception class name
+    def initialize(class_name)
+      @class_name = class_name.to_s.freeze
+    end
+
+    # @param error [Exception]
+    # @return [Boolean]
+    def ===(error)
+      klass = @class_name.safe_constantize
+      klass ? error.is_a?(klass) : false
+    end
+
+    def inspect
+      "#<LazyExceptionMatcher #{@class_name}>"
+    end
+  end
+
   # Valid action values (same as StepDefinition::EXCEPTION_HANDLERS)
   VALID_ACTIONS = %i[pause! cancel! reattempt! skip!].freeze
 
@@ -30,8 +57,9 @@ class GenevaDrive::ExceptionPolicy
   # @return [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
   attr_reader :terminal_action
 
-  # @return [Array<Class>] exception classes this policy matches (empty = match all)
-  attr_reader :exception_classes
+  # @return [Array<#===>] exception matchers this policy checks (empty = match all).
+  #   Each entry can be an Exception subclass or any object responding to #===.
+  attr_reader :exception_matchers
 
   # @return [Proc, nil] the handler block (imperative mode)
   attr_reader :handler
@@ -73,7 +101,7 @@ class GenevaDrive::ExceptionPolicy
       validate!
     end
 
-    @exception_classes = []
+    @exception_matchers = []
   end
 
   # Returns true if this is a declarative policy (action symbol, no block).
@@ -89,21 +117,21 @@ class GenevaDrive::ExceptionPolicy
   # @param error [Exception] the exception to check
   # @return [Boolean]
   def matches?(error)
-    exception_classes.empty? || exception_classes.any? { |klass| error.is_a?(klass) }
+    exception_matchers.empty? || exception_matchers.any? { |matcher| matcher === error }
   end
 
-  # Returns true if this policy has exception class filters.
+  # Returns true if this policy has exception matchers.
   #
   # @return [Boolean]
   def specific?
-    exception_classes.any?
+    exception_matchers.any?
   end
 
-  # Returns true if this is a blanket policy (no exception class filters).
+  # Returns true if this is a blanket policy (no exception matchers).
   #
   # @return [Boolean]
   def blanket?
-    exception_classes.empty?
+    exception_matchers.empty?
   end
 
   private

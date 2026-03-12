@@ -26,7 +26,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
     assert_equal 1, workflow_class._exception_policies.size
     policy = workflow_class._exception_policies.first
     assert_equal :cancel!, policy.action
-    assert_equal [ArgumentError, TypeError], policy.exception_classes
+    assert_equal [ArgumentError, TypeError], policy.exception_matchers
     assert policy.specific?
   end
 
@@ -49,7 +49,7 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
 
     policy = workflow_class._exception_policies.first
     refute policy.declarative?
-    assert_equal [RuntimeError], policy.exception_classes
+    assert_equal [RuntimeError], policy.exception_matchers
   end
 
   test "rejects non-Exception classes" do
@@ -58,6 +58,34 @@ class ClassLevelOnExceptionTest < ActiveSupport::TestCase
         on_exception String, action: :cancel!
       end
     end
+  end
+
+  test "accepts string class names and wraps them in LazyExceptionMatcher" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      on_exception "SomeLib::TransientError", action: :reattempt!
+      step(:work) {}
+    end
+
+    policy = workflow_class._exception_policies.first
+    assert policy.specific?
+    matcher = policy.exception_matchers.first
+    assert_instance_of GenevaDrive::ExceptionPolicy::LazyExceptionMatcher, matcher
+  end
+
+  test "accepts custom matcher objects responding to ===" do
+    custom_matcher = Object.new
+    def custom_matcher.===(error)
+      error.message.include?("transient")
+    end
+
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      on_exception custom_matcher, action: :reattempt!
+      step(:work) {}
+    end
+
+    policy = workflow_class._exception_policies.first
+    assert policy.matches?(RuntimeError.new("transient failure"))
+    refute policy.matches?(RuntimeError.new("permanent failure"))
   end
 
   test "rejects both positional action and action: keyword" do

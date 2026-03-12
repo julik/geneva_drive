@@ -183,21 +183,21 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # Policies are checked when a step raises an exception and the step itself
     # does not have an explicit `on_exception:` override.
     #
-    # @overload on_exception(action, *exception_classes, wait: nil, max_reattempts: nil)
+    # @overload on_exception(action, *exception_matchers, wait: nil, max_reattempts: nil)
     #   Declarative mode — specify an action symbol.
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
-    #   @param exception_classes [Array<Class>] optional exception classes to match
+    #   @param exception_matchers [Array<Class>] optional exception classes to match
     #   @param wait [ActiveSupport::Duration, nil] wait before reattempt
     #   @param max_reattempts [Integer, nil] max consecutive reattempts
     #
-    # @overload on_exception(*exception_classes, action:, wait: nil, max_reattempts: nil)
+    # @overload on_exception(*exception_matchers, action:, wait: nil, max_reattempts: nil)
     #   Declarative mode with exception classes as leading args and action as keyword.
-    #   @param exception_classes [Array<Class>] exception classes to match
+    #   @param exception_matchers [Array<Class>] exception classes to match
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
     #
-    # @overload on_exception(*exception_classes, &block)
+    # @overload on_exception(*exception_matchers, &block)
     #   Imperative mode — block receives exception, runs in workflow context.
-    #   @param exception_classes [Array<Class>] optional exception classes to match
+    #   @param exception_matchers [Array<Class>] optional exception classes to match
     #   @yield [error] the exception that was raised
     #
     # @example Blanket default for all exceptions
@@ -218,11 +218,20 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         action = args.shift
       end
 
-      exception_classes = args
-      exception_classes.each do |klass|
-        unless klass.is_a?(Class) && klass <= Exception
+      exception_matchers = args.map do |matcher|
+        if matcher.is_a?(String)
+          GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new(matcher)
+        elsif matcher.is_a?(Class)
+          unless matcher <= Exception
+            raise GenevaDrive::StepConfigurationError,
+              "Expected an Exception subclass, got #{matcher.inspect}"
+          end
+          matcher
+        elsif matcher.respond_to?(:===)
+          matcher
+        else
           raise GenevaDrive::StepConfigurationError,
-            "Expected an Exception subclass, got #{klass.inspect}"
+            "Expected an exception matcher (Exception subclass, String, or object responding to #===), got #{matcher.inspect}"
         end
       end
 
@@ -233,7 +242,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action)
       end
 
-      policy.exception_classes.concat(exception_classes)
+      policy.exception_matchers.concat(exception_matchers)
 
       # Duplicate parent's array to avoid mutation
       if _exception_policies.equal?(superclass._exception_policies)

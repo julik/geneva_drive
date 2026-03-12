@@ -9,6 +9,9 @@ class GenevaDrive::StepDefinition
   # Valid exception handler values
   EXCEPTION_HANDLERS = %i[pause! cancel! reattempt! skip!].freeze
 
+  # Sentinel value to distinguish "on_exception not provided" from "on_exception: :pause!"
+  NOT_SET = Object.new.freeze
+
   # Valid types for skip conditions
   VALID_SKIP_CONDITION_TYPES = [Symbol, Proc, TrueClass, FalseClass, NilClass].freeze
 
@@ -24,7 +27,7 @@ class GenevaDrive::StepDefinition
   # @return [Proc, Symbol, Boolean, nil] condition for skipping this step
   attr_reader :skip_condition
 
-  # @return [Symbol] exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+  # @return [Symbol, GenevaDrive::ExceptionPolicy, Proc] exception handler
   attr_reader :on_exception
 
   # @return [String, nil] name of step this should be placed before
@@ -65,12 +68,38 @@ class GenevaDrive::StepDefinition
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]
     @skip_condition = @skip_if_option || @if_option
-    @on_exception = options[:on_exception] || :pause!
+    @on_exception_raw = options.fetch(:on_exception, NOT_SET)
+    @on_exception = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
     @before_step = options[:before_step]&.to_s
     @after_step = options[:after_step]&.to_s
     @max_reattempts = options.key?(:max_reattempts) ? options[:max_reattempts] : default_max_reattempts
 
     validate!
+  end
+
+  # Returns true if `on_exception:` was explicitly provided (not defaulted).
+  # Used by the executor to determine whether step-level should override class-level.
+  #
+  # @return [Boolean]
+  def has_explicit_exception_policy?
+    @on_exception_raw != NOT_SET
+  end
+
+  # Returns an ExceptionPolicy object for this step's exception handling.
+  # Constructs one from symbol + options if needed.
+  #
+  # @return [GenevaDrive::ExceptionPolicy, Proc]
+  def exception_policy
+    case @on_exception
+    when GenevaDrive::ExceptionPolicy, Proc
+      @on_exception
+    when Symbol
+      if @on_exception == :reattempt! && (@max_reattempts || @wait)
+        GenevaDrive::ExceptionPolicy.new(@on_exception, wait: @wait, max_reattempts: @max_reattempts)
+      else
+        GenevaDrive::ExceptionPolicy.new(@on_exception)
+      end
+    end
   end
 
   # Evaluates whether this step should be skipped for the given workflow.
@@ -110,7 +139,7 @@ class GenevaDrive::StepDefinition
 
   # Returns the default max_reattempts value based on on_exception setting.
   #
-  # @return [Integer, nil] 100 if on_exception is :reattempt!, nil otherwise
+  # @return [Integer, nil] 100 if on_exception is :reattempt! (symbol form), nil otherwise
   def default_max_reattempts
     (@on_exception == :reattempt!) ? 100 : nil
   end
@@ -141,10 +170,18 @@ class GenevaDrive::StepDefinition
   #
   # @raise [StepConfigurationError] if on_exception is invalid
   def validate_exception_handler!
-    return if EXCEPTION_HANDLERS.include?(@on_exception)
-
-    raise GenevaDrive::StepConfigurationError,
-      "Step '#{@name}' has invalid on_exception: must be one of #{EXCEPTION_HANDLERS.join(", ")}"
+    case @on_exception
+    when Symbol
+      return if EXCEPTION_HANDLERS.include?(@on_exception)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has invalid on_exception: must be one of #{EXCEPTION_HANDLERS.join(", ")}"
+    when GenevaDrive::ExceptionPolicy, Proc
+      # Valid — these are fully-formed policies
+      return
+    else
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has invalid on_exception: must be a Symbol, ExceptionPolicy, or Proc"
+    end
   end
 
   # Validates the step positioning options.
@@ -180,6 +217,13 @@ class GenevaDrive::StepDefinition
   def validate_max_reattempts!
     # nil is always valid (disables the check)
     return if @max_reattempts.nil?
+
+    # Can't pass max_reattempts when on_exception is already a policy or proc
+    if @on_exception.is_a?(GenevaDrive::ExceptionPolicy) || @on_exception.is_a?(Proc)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has max_reattempts: but on_exception: is an ExceptionPolicy or Proc " \
+        "(set max_reattempts on the policy instead)"
+    end
 
     # max_reattempts only makes sense with on_exception: :reattempt!
     unless @on_exception == :reattempt!

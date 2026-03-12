@@ -63,7 +63,7 @@ module GenevaDrive::StepExecution::MetadataAccessor
   # @return [Object, nil] the value, or nil if the column is absent
   def read_metadata(key)
     return nil unless self.class.metadata_column?
-    (metadata || {})[key.to_s]
+    parsed_metadata[key.to_s]
   end
 
   # Merges a key/value pair into the metadata hash (in-memory only, does
@@ -75,7 +75,15 @@ module GenevaDrive::StepExecution::MetadataAccessor
   # @return [void]
   def write_metadata(key, value)
     return unless self.class.metadata_column?
-    self.metadata = (metadata || {}).merge(key.to_s => value)
+    merged = parsed_metadata.merge(key.to_s => value)
+    # When the JSON attribute type is active, assign the Hash directly so
+    # AR handles serialization. When it's not (record loaded before lazy
+    # registration), write a JSON string so the text column gets valid JSON.
+    if metadata.is_a?(Hash) || metadata.nil?
+      self.metadata = merged
+    else
+      write_attribute(:metadata, merged.to_json)
+    end
   end
 
   # Returns the reattempt reason from metadata.
@@ -92,5 +100,25 @@ module GenevaDrive::StepExecution::MetadataAccessor
   # @return [Hash, nil]
   def exception_info
     read_metadata("exception")
+  end
+
+  private
+
+  # Returns metadata as a Hash regardless of whether the JSON attribute
+  # type has been applied to this instance. On SQLite/MySQL the raw value
+  # may still be a JSON string if the record was loaded before the
+  # attribute type was lazily registered.
+  #
+  # @return [Hash]
+  def parsed_metadata
+    raw = metadata
+    case raw
+    when Hash then raw
+    when String then JSON.parse(raw)
+    when NilClass then {}
+    else {}
+    end
+  rescue JSON::ParserError
+    {}
   end
 end

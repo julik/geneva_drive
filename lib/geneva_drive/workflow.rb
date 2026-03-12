@@ -46,6 +46,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   class_attribute :_cancel_conditions, instance_writer: false, default: []
   class_attribute :_step_job_options, instance_writer: false, default: {}
   class_attribute :_may_proceed_without_hero, instance_writer: false, default: false
+  class_attribute :_exception_policies, instance_writer: false, default: []
 
   # Include flow control methods
   include GenevaDrive::FlowControl
@@ -176,6 +177,103 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   end
     def may_proceed_without_hero!
       self._may_proceed_without_hero = true
+    end
+
+    # Declares a class-level exception handling policy.
+    # Policies are checked when a step raises an exception and the step itself
+    # does not have an explicit `on_exception:` override.
+    #
+    # @overload on_exception(action, *exception_matchers, wait: nil, max_reattempts: nil)
+    #   Declarative mode — specify an action symbol.
+    #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
+    #   @param exception_matchers [Array<Class>] optional exception classes to match
+    #   @param wait [ActiveSupport::Duration, nil] wait before reattempt
+    #   @param max_reattempts [Integer, nil] max consecutive reattempts
+    #
+    # @overload on_exception(*exception_matchers, action:, wait: nil, max_reattempts: nil)
+    #   Declarative mode with exception classes as leading args and action as keyword.
+    #   @param exception_matchers [Array<Class>] exception classes to match
+    #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
+    #
+    # @overload on_exception(*exception_matchers, &block)
+    #   Imperative mode — block receives exception, runs in workflow context.
+    #   @param exception_matchers [Array<Class>] optional exception classes to match
+    #   @yield [error] the exception that was raised
+    #
+    # @example Blanket default for all exceptions
+    #   on_exception :reattempt!, wait: 15.seconds, max_reattempts: 3
+    #
+    # @example Match specific exception classes
+    #   on_exception OAuth2::Error, action: :reattempt!, wait: 15.seconds
+    #   on_exception Google::Apis::ClientError, action: :cancel!
+    #
+    # @example Imperative block handler
+    #   on_exception RateLimitError do |error|
+    #     reattempt! wait: error.retry_after.seconds
+    #   end
+    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
+      # Separate exception classes from a leading action symbol
+      if args.first.is_a?(Symbol)
+        raise ArgumentError, "Cannot pass both a positional action and action: keyword" if action
+        action = args.shift
+      end
+
+      exception_matchers = args.map do |matcher|
+        if matcher.is_a?(String)
+          GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new(matcher)
+        elsif matcher.is_a?(Class)
+          unless matcher <= Exception
+            raise GenevaDrive::StepConfigurationError,
+              "Expected an Exception subclass, got #{matcher.inspect}"
+          end
+          matcher
+        elsif matcher.respond_to?(:===)
+          matcher
+        else
+          raise GenevaDrive::StepConfigurationError,
+            "Expected an exception matcher (Exception subclass, String, or object responding to #===), got #{matcher.inspect}"
+        end
+      end
+
+      policy = if block
+        GenevaDrive::ExceptionPolicy.new(&block)
+      else
+        raise ArgumentError, "Either an action or a block is required" unless action
+        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action)
+      end
+
+      policy.exception_matchers.concat(exception_matchers)
+
+      # Duplicate parent's array to avoid mutation
+      if _exception_policies.equal?(superclass._exception_policies)
+        self._exception_policies = _exception_policies.dup
+      end
+
+      _exception_policies << policy
+    end
+
+    # Resolves the class-level exception policy for a given error.
+    # Checks policies in reverse definition order (most recent first).
+    # Specific (exception class) policies are checked before blanket policies.
+    #
+    # @param error [Exception] the exception to match
+    # @return [ExceptionPolicy, nil] the matching policy, or nil if none
+    def resolve_exception_policy(error)
+      # Walk in reverse order (most recently defined first).
+      # Check specific policies (with exception class filters) first,
+      # then blanket policies (no filters).
+      blanket_policy = nil
+
+      _exception_policies.reverse_each do |policy|
+        if policy.specific?
+          return policy if policy.matches?(error)
+        else
+          # Remember the first (most recent) blanket policy
+          blanket_policy ||= policy
+        end
+      end
+
+      blanket_policy
     end
 
     # Returns the step definitions for this workflow class.

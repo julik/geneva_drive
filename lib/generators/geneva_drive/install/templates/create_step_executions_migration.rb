@@ -45,6 +45,15 @@ class CreateGenevaDriveStepExecutions < ActiveRecord::Migration[7.2]
       # Job tracking (for debugging)
       t.string :job_id
 
+      # Freeform JSON metadata for executor bookkeeping
+      if adapter.include?("postgresql")
+        t.jsonb :metadata
+      elsif adapter.include?("mysql")
+        t.text :metadata, limit: 4_294_967_295
+      else
+        t.text :metadata
+      end
+
       t.timestamps
     end
 

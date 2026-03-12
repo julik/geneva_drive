@@ -547,9 +547,9 @@ step :risky_operation do
 end
 ```
 
-### Configuring Exception Policy
+### Step-Level Exception Policy
 
-You can change how a step handles exceptions using `on_exception`:
+Use `on_exception:` on a step to control what happens when that step raises:
 
 ```ruby
 class ResilientApiWorkflow < GenevaDrive::Workflow
@@ -559,20 +559,65 @@ class ResilientApiWorkflow < GenevaDrive::Workflow
 end
 ```
 
-Available exception handlers:
+Available actions:
 
 - `:pause!` — (default) Pause the workflow for manual review
 - `:cancel!` — Cancel the workflow
-- `:reattempt!` — Retry the step
+- `:reattempt!` — Retry the step (creates a new step execution)
 - `:skip!` — Skip the step and continue to the next
+
+### Class-Level Exception Policy
+
+Declare `on_exception` at the class level to set a default for all steps. Steps without an explicit `on_exception:` override inherit this policy:
+
+```ruby
+class ResilientWorkflow < GenevaDrive::Workflow
+  on_exception :reattempt!, max_reattempts: 5
+
+  step :fetch_data do
+    ExternalApi.fetch(hero)  # Inherits reattempt! policy
+  end
+
+  step :send_email, on_exception: :skip! do
+    Mailer.deliver(hero)  # Step-level overrides class-level
+  end
+end
+```
+
+You can declare multiple class-level policies to handle different exception types:
+
+```ruby
+class OAuthWorkflow < GenevaDrive::Workflow
+  # Specific: only matches OAuth2::Error and its subclasses
+  on_exception OAuth2::Error, action: :reattempt!, wait: 15.seconds
+
+  # Specific: cancel on permanent client errors
+  on_exception Google::Apis::ClientError, action: :cancel!
+
+  # Blanket: everything else gets reattempted
+  on_exception :reattempt!, max_reattempts: 3
+
+  step :sync do
+    GoogleCalendar.sync(hero)
+  end
+end
+```
+
+#### Precedence Rules
+
+When a step raises an exception, GenevaDrive resolves the policy in this order:
+
+1. **Step-level** — if the step has an explicit `on_exception:`, use it
+2. **Class-level specific** — walk class-level policies (most recently defined first); use the first one whose exception class filter matches
+3. **Class-level blanket** — use the most recently defined policy with no exception class filter
+4. **Default** — pause the workflow
 
 ### Limiting Reattempts
 
-When using `on_exception: :reattempt!`, you can limit the number of consecutive reattempts before the workflow pauses. This prevents infinite retry loops when an error is persistent rather than transient.
+When using `:reattempt!`, limit consecutive reattempts with `max_reattempts:`. This prevents infinite retry loops when an error is persistent:
 
 ```ruby
 class ExternalApiWorkflow < GenevaDrive::Workflow
-  # Will pause after 5 consecutive failures
   step :sync_to_crm, on_exception: :reattempt!, max_reattempts: 5 do
     CrmApi.sync(hero)
   end
@@ -581,30 +626,92 @@ end
 
 The `max_reattempts:` option:
 
-- **Defaults to 100** when `on_exception: :reattempt!` is used — a safety net against infinite loops
-- **Set to `nil`** to disable the limit and allow unlimited reattempts
+- **Defaults to 100** when `:reattempt!` is used — a safety net against infinite loops
+- **Set to `nil`** to disable the limit entirely
 - **Only counts consecutive reattempts** — if the step succeeds, the count resets
 - **Does not affect manual `reattempt!` calls** — only automatic exception handling respects this limit
 
-When the limit is exceeded, GenevaDrive logs a warning and pauses the workflow, storing the original exception for debugging:
+When the limit is exceeded, GenevaDrive logs a warning and pauses the workflow by default. Use `terminal_action:` to change this behavior:
 
 ```ruby
-# Unlimited reattempts (explicit opt-out of the safety limit)
-step :polling_step, on_exception: :reattempt!, max_reattempts: nil do
-  check_external_status!
-end
-
-# Custom limit
-step :flaky_api, on_exception: :reattempt!, max_reattempts: 10 do
+# Cancel the workflow instead of pausing when reattempts are exhausted
+step :flaky_api, on_exception: :reattempt!, max_reattempts: 10, terminal_action: :cancel! do
   FlakyService.call(hero)
 end
 ```
 
-This option only makes sense with `on_exception: :reattempt!` — specifying `max_reattempts:` with other exception handlers will raise a `StepConfigurationError`.
+`terminal_action:` accepts `:pause!` (default) or `:cancel!`.
+
+### Reusable Exception Policies
+
+For policies shared across multiple workflows, create an `ExceptionPolicy` object:
+
+```ruby
+# Store in a constant or module for reuse
+TRANSIENT_RETRY = GenevaDrive::ExceptionPolicy.new(
+  :reattempt!,
+  wait: 30.seconds,
+  max_reattempts: 5,
+  terminal_action: :cancel!
+)
+
+class OrderWorkflow < GenevaDrive::Workflow
+  step :charge_card, on_exception: TRANSIENT_RETRY do
+    PaymentGateway.charge(hero)
+  end
+end
+
+class ShippingWorkflow < GenevaDrive::Workflow
+  step :book_courier, on_exception: TRANSIENT_RETRY do
+    CourierApi.book(hero)
+  end
+end
+```
+
+You can also pass an `ExceptionPolicy` to the class-level `on_exception`. Exception class filters are set on the policy after creation:
+
+```ruby
+class ApiWorkflow < GenevaDrive::Workflow
+  on_exception Timeout::Error, action: :reattempt!, wait: 10.seconds, max_reattempts: 3
+  on_exception :cancel!  # Everything else cancels
+
+  step :call_api do
+    SlowApi.call(hero)
+  end
+end
+```
+
+### Imperative Exception Handlers
+
+For full control, pass a block to `on_exception`. The block receives the exception and runs in the workflow context — you must call a flow control method (`reattempt!`, `cancel!`, `pause!`, or `skip!`):
+
+```ruby
+class SmartRetryWorkflow < GenevaDrive::Workflow
+  on_exception RateLimitError do |error|
+    reattempt! wait: error.retry_after.seconds
+  end
+
+  on_exception do |error|
+    if error.message.include?("temporary")
+      reattempt!
+    else
+      cancel!
+    end
+  end
+
+  step :call_api do
+    ExternalApi.call(hero)
+  end
+end
+```
+
+If the block returns without calling a flow control method, the workflow pauses.
+
+Imperative handlers cannot be combined with `max_reattempts:`, `wait:`, or `terminal_action:` — manage that logic inside the block.
 
 ### Manual Exception Handling
 
-For granular control, handle exceptions within the step:
+For the most granular control, handle exceptions directly within the step using standard Ruby `rescue`:
 
 ```ruby
 class PaymentWorkflow < GenevaDrive::Workflow
@@ -620,6 +727,8 @@ class PaymentWorkflow < GenevaDrive::Workflow
   end
 end
 ```
+
+This bypasses the exception policy entirely — the step catches the error before GenevaDrive sees it.
 
 For a complete example showing granular exception handling, see the [Payment Processing Workflow](#payment-processing-workflow) in the appendix.
 

@@ -18,6 +18,9 @@
 class GenevaDrive::StepExecution < ActiveRecord::Base
   self.table_name = "geneva_drive_step_executions"
 
+  require_relative "step_execution/metadata_accessor"
+  include MetadataAccessor
+
   # Step execution states as enum with string values
   # Provides: scheduled?, in_progress?, etc. predicates
   # Provides: scheduled, in_progress, etc. scopes

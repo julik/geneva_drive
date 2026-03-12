@@ -710,13 +710,13 @@ class GenevaDrive::Executor
     end
   end
 
-  # Writes reattempt reason to step execution metadata.
+  # Writes reattempt reason to step execution metadata and persists.
   #
   # @param reason [String] the reattempt reason
   # @return [void]
   def write_reattempt_metadata(reason)
-    return unless step_execution.has_attribute?(:metadata)
-    step_execution.update!(metadata: step_execution.metadata.merge("reattempt_reason" => reason))
+    step_execution.write_metadata("reattempt_reason", reason)
+    step_execution.save! if step_execution.changed?
   end
 
   # Builds the attributes hash for storing error information on a step execution.
@@ -735,7 +735,6 @@ class GenevaDrive::Executor
 
   # Counts consecutive exception-policy reattempts for the current step.
   # Only counts reattempts caused by exception policies (not flow-control reattempts).
-  # Falls back to counting all reattempts if the metadata column is not present.
   #
   # @param step_name [String] the step name to count reattempts for
   # @return [Integer] the number of consecutive exception-policy reattempts
@@ -752,17 +751,7 @@ class GenevaDrive::Executor
     scope = workflow.step_executions.where(step_name: step_name, outcome: "reattempted")
     scope = scope.where("id > ?", last_non_reattempt_id) if last_non_reattempt_id
 
-    # If metadata column exists, only count exception-policy and precondition reattempts
-    if step_execution.has_attribute?(:metadata)
-      reattempts = scope.pluck(:metadata)
-      reattempts.count do |meta|
-        reason = meta.is_a?(Hash) ? meta["reattempt_reason"] : nil
-        # Count exception_policy, precondition, and nil (legacy records without metadata)
-        reason != "flow_control"
-      end
-    else
-      scope.count
-    end
+    GenevaDrive::StepExecution.count_error_reattempts(scope)
   end
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.

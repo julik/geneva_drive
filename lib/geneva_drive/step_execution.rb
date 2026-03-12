@@ -18,9 +18,8 @@
 class GenevaDrive::StepExecution < ActiveRecord::Base
   self.table_name = "geneva_drive_step_executions"
 
-  # Freeform JSON metadata for executor bookkeeping.
-  # Defaults to empty hash so callers never see nil.
-  attribute :metadata, :json, default: -> { {} }
+  require_relative "step_execution/metadata_accessor"
+  include MetadataAccessor
 
   # Step execution states as enum with string values
   # Provides: scheduled?, in_progress?, etc. predicates
@@ -135,14 +134,6 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
         outcome: outcome
       )
     end
-  end
-
-  # Returns the reattempt reason from metadata.
-  # Possible values: "flow_control", "exception_policy", "precondition", or nil.
-  #
-  # @return [String, nil]
-  def reattempt_reason
-    metadata.dig("reattempt_reason")
   end
 
   # Returns the step definition for this execution.

@@ -27,6 +27,9 @@ class GenevaDrive::ExceptionPolicy
   # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
   attr_reader :max_reattempts
 
+  # @return [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
+  attr_reader :terminal_action
+
   # @return [Array<Class>] exception classes this policy matches (empty = match all)
   attr_reader :exception_classes
 
@@ -35,32 +38,38 @@ class GenevaDrive::ExceptionPolicy
 
   # Creates a new exception policy.
   #
-  # @overload initialize(action, wait: nil, max_reattempts: nil)
+  # Valid terminal_action values
+  VALID_TERMINAL_ACTIONS = %i[pause! cancel!].freeze
+
+  # @overload initialize(action, wait: nil, max_reattempts: nil, terminal_action: :pause!)
   #   Declarative mode — specify action and options.
   #   @param action [Symbol] the flow control action (:pause!, :cancel!, :reattempt!, :skip!)
   #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
+  #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
   #
   # @overload initialize(&block)
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
   #   @yield [error] the exception that was raised
-  def initialize(action = nil, wait: nil, max_reattempts: nil, &block)
+  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
     if block
-      if action || wait || max_reattempts
+      if action || wait || max_reattempts || terminal_action != :pause!
         raise ArgumentError,
-          "Cannot pass action, wait, or max_reattempts when a block is given"
+          "Cannot pass action, wait, max_reattempts, or terminal_action when a block is given"
       end
       @handler = block
       @action = nil
       @wait = nil
       @max_reattempts = nil
+      @terminal_action = :pause!
     else
       raise ArgumentError, "Either an action or a block is required" unless action
       @handler = nil
       @action = action
       @wait = wait
       @max_reattempts = max_reattempts
+      @terminal_action = terminal_action
       validate!
     end
 
@@ -123,6 +132,16 @@ class GenevaDrive::ExceptionPolicy
         raise ArgumentError,
           "max_reattempts: must be a positive integer or nil"
       end
+    end
+
+    unless VALID_TERMINAL_ACTIONS.include?(@terminal_action)
+      raise ArgumentError,
+        "terminal_action: must be one of #{VALID_TERMINAL_ACTIONS.join(", ")}, got #{@terminal_action.inspect}"
+    end
+
+    if @terminal_action != :pause! && @action != :reattempt!
+      raise ArgumentError,
+        "terminal_action: only makes sense with action: :reattempt!"
     end
   end
 end

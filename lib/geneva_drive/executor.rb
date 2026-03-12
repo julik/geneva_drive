@@ -595,10 +595,11 @@ class GenevaDrive::Executor
     case action
     when :reattempt!
       if reattempt_limit_exceeded_for_policy?(policy, step_def)
-        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded - pausing workflow instead")
+        terminal = policy.terminal_action
+        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded — applying terminal_action: #{terminal}")
         step_execution.update!(error_attributes_for(error))
-        transition_step!("failed", outcome: "failed")
-        transition_workflow!("paused")
+        transition_step!("failed", outcome: (terminal == :cancel!) ? "canceled" : "failed")
+        transition_workflow!((terminal == :cancel!) ? "canceled" : "paused")
       else
         logger.info("Exception policy: reattempt! - rescheduling step")
         transition_step!("completed", outcome: "reattempted")
@@ -683,8 +684,9 @@ class GenevaDrive::Executor
     case action
     when :reattempt!
       if step_def && reattempt_limit_exceeded_for_policy?(policy, step_def)
-        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded - pausing workflow instead")
-        transition_workflow!("paused")
+        terminal = policy.terminal_action
+        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded — applying terminal_action: #{terminal}")
+        transition_workflow!((terminal == :cancel!) ? "canceled" : "paused")
       else
         logger.info("Prepare exception policy: reattempt! - rescheduling step")
         transition_workflow!("ready")

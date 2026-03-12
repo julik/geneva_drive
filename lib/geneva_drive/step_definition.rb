@@ -69,6 +69,7 @@ class GenevaDrive::StepDefinition
     @on_exception_raw = options.fetch(:on_exception, NOT_SET)
     @max_reattempts_raw = options[:max_reattempts]
     @max_reattempts_explicitly_set = options.key?(:max_reattempts)
+    @terminal_action_raw = options[:terminal_action]
     @before_step = options[:before_step]&.to_s
     @after_step = options[:after_step]&.to_s
 
@@ -131,6 +132,7 @@ class GenevaDrive::StepDefinition
     validate_wait!
     validate_on_exception_raw!
     validate_max_reattempts_raw!
+    validate_terminal_action_raw!
     validate_positioning!
     validate_skip_condition!
   end
@@ -149,7 +151,9 @@ class GenevaDrive::StepDefinition
       GenevaDrive::ExceptionPolicy.new(&on_exc)
     when Symbol
       max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(on_exc) : @max_reattempts_raw
-      GenevaDrive::ExceptionPolicy.new(on_exc, max_reattempts: max)
+      opts = {max_reattempts: max}
+      opts[:terminal_action] = @terminal_action_raw if @terminal_action_raw
+      GenevaDrive::ExceptionPolicy.new(on_exc, **opts)
     end
   end
 
@@ -234,6 +238,33 @@ class GenevaDrive::StepDefinition
     unless @max_reattempts_raw.is_a?(Integer) && @max_reattempts_raw > 0
       raise GenevaDrive::StepConfigurationError,
         "Step '#{@name}' has invalid max_reattempts: must be a positive integer or nil"
+    end
+  end
+
+  # Validates the terminal_action option.
+  #
+  # @raise [StepConfigurationError] if terminal_action is invalid
+  def validate_terminal_action_raw!
+    return if @terminal_action_raw.nil?
+
+    on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
+
+    # Can't pass terminal_action when on_exception is already a policy or proc
+    if on_exc.is_a?(GenevaDrive::ExceptionPolicy) || on_exc.is_a?(Proc)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has terminal_action: but on_exception: is an ExceptionPolicy or Proc " \
+        "(set terminal_action on the policy instead)"
+    end
+
+    # terminal_action only makes sense with on_exception: :reattempt!
+    unless on_exc == :reattempt!
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has terminal_action: but on_exception: is not :reattempt!"
+    end
+
+    unless GenevaDrive::ExceptionPolicy::VALID_TERMINAL_ACTIONS.include?(@terminal_action_raw)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has invalid terminal_action: must be :pause! or :cancel!"
     end
   end
 

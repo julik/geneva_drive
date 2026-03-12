@@ -48,6 +48,24 @@ class ReattemptOnExceptionIntegrationTest < ActiveSupport::TestCase
     end
   end
 
+  # Workflow that cancels when max reattempts exceeded
+  class CancelOnGiveUpWorkflow < GenevaDrive::Workflow
+    on_exception :reattempt!, max_reattempts: 2, terminal_action: :cancel!
+
+    step :always_fails do
+      raise TransientError, "always fails"
+    end
+  end
+
+  # Workflow that pauses when max reattempts exceeded (default)
+  class PauseOnGiveUpWorkflow < GenevaDrive::Workflow
+    on_exception :reattempt!, max_reattempts: 2
+
+    step :always_fails do
+      raise TransientError, "always fails"
+    end
+  end
+
   setup do
     ReattemptingWorkflow.reset_tracking!
     clean_database!
@@ -225,6 +243,56 @@ class ReattemptOnExceptionIntegrationTest < ActiveSupport::TestCase
     assert_equal "completed", step_execution.state
     assert_equal "reattempted", step_execution.outcome
     assert_equal 2, workflow.step_executions.count
+  end
+
+  test "terminal_action: :cancel! cancels workflow when max reattempts exceeded" do
+    workflow = CancelOnGiveUpWorkflow.create!(hero: @user)
+
+    # Exhaust the 2 reattempts
+    2.times do
+      step_execution = workflow.step_executions.scheduled.last
+      assert_raises(TransientError) do
+        GenevaDrive::Executor.execute!(step_execution)
+      end
+      workflow.reload
+    end
+
+    # Both reattempts used, workflow is still ready
+    assert_equal "ready", workflow.state
+    assert_equal 3, workflow.step_executions.count # 2 reattempted + 1 scheduled
+
+    # Third attempt should trigger terminal_action: :cancel!
+    step_execution = workflow.step_executions.scheduled.last
+    assert_raises(TransientError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+    workflow.reload
+
+    assert_equal "canceled", workflow.state
+  end
+
+  test "terminal_action: :pause! (default) pauses workflow when max reattempts exceeded" do
+    workflow = PauseOnGiveUpWorkflow.create!(hero: @user)
+
+    # Exhaust the 2 reattempts
+    2.times do
+      step_execution = workflow.step_executions.scheduled.last
+      assert_raises(TransientError) do
+        GenevaDrive::Executor.execute!(step_execution)
+      end
+      workflow.reload
+    end
+
+    assert_equal "ready", workflow.state
+
+    # Third attempt should trigger terminal_action: :pause! (default)
+    step_execution = workflow.step_executions.scheduled.last
+    assert_raises(TransientError) do
+      GenevaDrive::Executor.execute!(step_execution)
+    end
+    workflow.reload
+
+    assert_equal "paused", workflow.state
   end
 
   private

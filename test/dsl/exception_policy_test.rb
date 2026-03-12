@@ -115,4 +115,33 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
       assert_equal action, policy.action
     end
   end
+
+  # terminal_action tests
+  test "terminal_action defaults to :pause!" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)
+    assert_equal :pause!, policy.terminal_action
+  end
+
+  test "terminal_action: :cancel! sets terminal_action" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5, terminal_action: :cancel!)
+    assert_equal :cancel!, policy.terminal_action
+  end
+
+  test "terminal_action: rejects invalid values" do
+    assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, terminal_action: :skip!)
+    end
+  end
+
+  test "terminal_action: only makes sense with :reattempt!" do
+    assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(:pause!, terminal_action: :cancel!)
+    end
+  end
+
+  test "terminal_action: rejected with block" do
+    assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(terminal_action: :cancel!) { |_e| reattempt! }
+    end
+  end
 end

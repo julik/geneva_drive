@@ -97,6 +97,41 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
     assert_match(/ExceptionPolicy or Proc/, error.message)
   end
 
+  # terminal_action at step level
+  test "step accepts terminal_action: :cancel! with reattempt!" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :my_step, on_exception: :reattempt!, max_reattempts: 3, terminal_action: :cancel! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal :cancel!, step_def.exception_policy.terminal_action
+  end
+
+  test "step rejects terminal_action with non-reattempt exception handler" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :my_step, on_exception: :pause!, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/not :reattempt!/, error.message)
+  end
+
+  test "step rejects terminal_action when on_exception is an ExceptionPolicy" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5, terminal_action: :cancel!)
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :my_step, on_exception: policy, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/ExceptionPolicy or Proc/, error.message)
+  end
+
   # Rejects invalid types
   test "rejects invalid on_exception types" do
     error = assert_raises(GenevaDrive::StepConfigurationError) do

@@ -602,7 +602,7 @@ class GenevaDrive::Executor
       else
         logger.info("Exception policy: reattempt! - rescheduling step")
         transition_step!("completed", outcome: "reattempted")
-        write_reattempt_metadata(reattempt_reason)
+        write_reattempt_metadata(reattempt_reason, error: error)
         transition_workflow!("ready")
         workflow.reschedule_current_step!(wait: policy.wait)
       end
@@ -651,7 +651,7 @@ class GenevaDrive::Executor
 
     if signal.is_a?(GenevaDrive::FlowControlSignal)
       handle_flow_control_signal(signal)
-      write_reattempt_metadata(reattempt_reason) if signal.action == :reattempt
+      write_reattempt_metadata(reattempt_reason, error: error) if signal.action == :reattempt
     else
       # Handler didn't call a flow control method — default to pause
       logger.info("Imperative handler did not call flow control — defaulting to pause!")
@@ -710,17 +710,34 @@ class GenevaDrive::Executor
     end
   end
 
-  # Writes reattempt reason to step execution metadata and persists.
+  # Writes reattempt reason (and exception info when present) to step
+  # execution metadata and persists.
   #
   # @param reason [String] the reattempt reason
+  # @param error [Exception, nil] the exception that triggered the reattempt
   # @return [void]
-  def write_reattempt_metadata(reason)
+  def write_reattempt_metadata(reason, error: nil)
     step_execution.write_metadata("reattempt_reason", reason)
+    write_exception_metadata(error) if error
     step_execution.save! if step_execution.changed?
+  end
+
+  # Writes exception details into metadata for future migration away
+  # from dedicated error columns. Silent no-op without the column.
+  #
+  # @param error [Exception]
+  # @return [void]
+  def write_exception_metadata(error)
+    step_execution.write_metadata("exception", {
+      "class" => error.class.name,
+      "message" => error.message,
+      "backtrace" => error.backtrace
+    })
   end
 
   # Builds the attributes hash for storing error information on a step execution.
   # Conditionally includes error_class_name if the column exists (migration may not have run yet).
+  # Also double-writes the error into metadata for future migration away from dedicated columns.
   #
   # @param error [Exception]
   # @return [Hash]
@@ -730,6 +747,7 @@ class GenevaDrive::Executor
       error_backtrace: error.backtrace&.join("\n")
     }
     attrs[:error_class_name] = error.class.name if step_execution.has_attribute?(:error_class_name)
+    write_exception_metadata(error)
     attrs
   end
 

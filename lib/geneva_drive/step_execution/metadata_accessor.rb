@@ -85,4 +85,12 @@ module GenevaDrive::StepExecution::MetadataAccessor
   def reattempt_reason
     read_metadata("reattempt_reason")
   end
+
+  # Returns the exception info hash from metadata, if recorded.
+  # Keys: "class", "message", "backtrace" (backtrace is an Array of strings).
+  #
+  # @return [Hash, nil]
+  def exception_info
+    read_metadata("exception")
+  end
 end

@@ -70,6 +70,33 @@ class MetadataAccessorTest < ActiveSupport::TestCase
     end
   end
 
+  test "exception_info is double-written into metadata on step failure" do
+    user = create_user
+    workflow = FailingWorkflow.create!(hero: user)
+
+    assert_raises(FailingWorkflow::TestError) do
+      GenevaDrive::Executor.execute!(workflow.step_executions.scheduled.last)
+    end
+    workflow.reload
+
+    # The reattempted execution should have exception info in metadata
+    execution = workflow.step_executions.order(:created_at).first
+    info = execution.exception_info
+    assert_equal "MetadataAccessorTest::FailingWorkflow::TestError", info["class"]
+    assert_equal "boom", info["message"]
+    assert_kind_of Array, info["backtrace"]
+  end
+
+  test "exception_info returns nil without the column" do
+    GenevaDrive::StepExecution.stub(:metadata_column?, false) do
+      user = create_user
+      workflow = SimpleWorkflow.create!(hero: user)
+      execution = workflow.step_executions.last
+
+      assert_nil execution.exception_info
+    end
+  end
+
   test "consecutive reattempt count includes flow_control reattempts without metadata column" do
     GenevaDrive::StepExecution.stub(:metadata_column?, false) do
       user = create_user

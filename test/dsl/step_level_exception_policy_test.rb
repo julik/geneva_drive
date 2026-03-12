@@ -13,7 +13,7 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
     end
 
     step_def = workflow_class.step_definitions.first
-    assert_equal policy, step_def.on_exception
+    assert_equal :reattempt!, step_def.on_exception
     assert step_def.has_explicit_exception_policy?
     assert_equal policy, step_def.exception_policy
   end
@@ -28,8 +28,9 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
     end
 
     step_def = workflow_class.step_definitions.first
-    assert_equal handler, step_def.on_exception
+    assert_nil step_def.on_exception # Proc-based policies have no action symbol
     assert step_def.has_explicit_exception_policy?
+    assert_equal handler, step_def.exception_policy.handler
   end
 
   # Symbol still works

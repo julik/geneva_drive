@@ -479,36 +479,15 @@ class GenevaDrive::Executor
   # @param step_def [StepDefinition] the step definition
   # @return [GenevaDrive::ExceptionPolicy] the resolved policy
   def resolve_exception_policy(error, step_def)
-    # 1. Step-level always wins if explicitly set
-    if step_def.has_explicit_exception_policy?
-      policy = step_def.exception_policy
-      return policy.is_a?(GenevaDrive::ExceptionPolicy) ? policy : wrap_policy(policy, step_def)
-    end
+    # 1. Step-level always wins if explicitly set (already an ExceptionPolicy)
+    return step_def.exception_policy if step_def.has_explicit_exception_policy?
 
     # 2-3. Walk class-level policies (specific match first, then blanket)
     class_policy = workflow.class.resolve_exception_policy(error)
     return class_policy if class_policy
 
-    # 4. Hardcoded default
-    GenevaDrive::ExceptionPolicy.new(:pause!)
-  end
-
-  # Wraps a step-level on_exception value into an ExceptionPolicy if needed.
-  #
-  # @param value [Symbol, Proc, ExceptionPolicy] the on_exception value
-  # @param step_def [StepDefinition] for extracting max_reattempts/wait
-  # @return [GenevaDrive::ExceptionPolicy]
-  def wrap_policy(value, step_def)
-    case value
-    when GenevaDrive::ExceptionPolicy
-      value
-    when Proc
-      GenevaDrive::ExceptionPolicy.new(&value)
-    when Symbol
-      GenevaDrive::ExceptionPolicy.new(value, wait: step_def.wait, max_reattempts: step_def.max_reattempts)
-    else
-      GenevaDrive::ExceptionPolicy.new(:pause!)
-    end
+    # 4. Hardcoded default (same as step_def.exception_policy when not explicitly set)
+    step_def.exception_policy
   end
 
   # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
@@ -616,8 +595,7 @@ class GenevaDrive::Executor
     case action
     when :reattempt!
       if reattempt_limit_exceeded_for_policy?(policy, step_def)
-        max = policy.max_reattempts || step_def&.max_reattempts
-        logger.warn("Max reattempts (#{max}) exceeded - pausing workflow instead")
+        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded - pausing workflow instead")
         step_execution.update!(error_attributes_for(error))
         transition_step!("failed", outcome: "failed")
         transition_workflow!("paused")
@@ -705,8 +683,7 @@ class GenevaDrive::Executor
     case action
     when :reattempt!
       if step_def && reattempt_limit_exceeded_for_policy?(policy, step_def)
-        max = policy.max_reattempts || step_def.max_reattempts
-        logger.warn("Max reattempts (#{max}) exceeded - pausing workflow instead")
+        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded - pausing workflow instead")
         transition_workflow!("paused")
       else
         logger.info("Prepare exception policy: reattempt! - rescheduling step")
@@ -791,25 +768,13 @@ class GenevaDrive::Executor
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.
   #
   # @param policy [GenevaDrive::ExceptionPolicy] the resolved policy
-  # @param step_def [StepDefinition, nil] the step definition (for fallback max_reattempts)
+  # @param step_def [StepDefinition, nil] the step definition (for step name fallback)
   # @return [Boolean] true if limit exceeded, false otherwise
   def reattempt_limit_exceeded_for_policy?(policy, step_def)
-    max_reattempts = policy.max_reattempts || step_def&.max_reattempts
+    max_reattempts = policy.max_reattempts
     return false if max_reattempts.nil?
 
     count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    count >= max_reattempts
-  end
-
-  # Legacy method — delegates to policy-based check.
-  #
-  # @param step_def [StepDefinition]
-  # @return [Boolean]
-  def reattempt_limit_exceeded?(step_def)
-    max_reattempts = step_def.max_reattempts
-    return false if max_reattempts.nil?
-
-    count = consecutive_reattempt_count(step_def.name)
     count >= max_reattempts
   end
 

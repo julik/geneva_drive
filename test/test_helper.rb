@@ -49,6 +49,13 @@ class ActiveSupport::TestCase
   # Run tests in parallel with specified workers
   parallelize(workers: :number_of_processors)
 
+  # Reset the metadata column detection cache before each test so that
+  # stubs in one test don't poison the cache for subsequent tests in the
+  # same parallel process.
+  setup do
+    GenevaDrive::StepExecution.reset_metadata_column_cache!
+  end
+
   # Helper to create a test user
   def create_user(attrs = {})
     User.create!({email: "test@example.com", name: "Test User"}.merge(attrs))

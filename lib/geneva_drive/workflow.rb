@@ -211,7 +211,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   on_exception RateLimitError do |error|
     #     reattempt! wait: error.retry_after.seconds
     #   end
-    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
+    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, jitter: nil, &block)
       # Separate exception classes from a leading action symbol
       if args.first.is_a?(Symbol)
         raise ArgumentError, "Cannot pass both a positional action and action: keyword" if action
@@ -239,7 +239,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         GenevaDrive::ExceptionPolicy.new(&block)
       else
         raise ArgumentError, "Either an action or a block is required" unless action
-        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action)
+        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action, jitter: jitter)
       end
 
       policy.exception_matchers.concat(exception_matchers)

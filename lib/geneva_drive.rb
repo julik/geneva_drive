@@ -39,6 +39,7 @@ module GenevaDrive
   autoload :StepExecution, "geneva_drive/step_execution"
   autoload :Executor, "geneva_drive/executor"
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
+  autoload :BackoffStrategies, "geneva_drive/backoff_strategies"
   autoload :MigrationHelpers, "geneva_drive/migration_helpers"
   autoload :TestHelpers, "geneva_drive/test_helpers"
 

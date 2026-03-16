@@ -5,6 +5,7 @@ PATH
       activejob (>= 7.2.2)
       activerecord (>= 7.2.2)
       activesupport (>= 7.2.2)
+      measurometer (>= 1.3.0)
       railties (>= 7.2.2)
 
 GEM
@@ -82,6 +83,7 @@ GEM
     loofah (2.25.0)
       crass (~> 1.0.2)
       nokogiri (>= 1.12.0)
+    measurometer (1.3.0)
     minitest (5.27.0)
     nio4r (2.7.5)
     nokogiri (1.18.10-aarch64-linux-gnu)

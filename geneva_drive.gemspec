@@ -27,4 +27,5 @@ Gem::Specification.new do |spec|
   spec.add_dependency "activejob", ">= 7.2.2"
   spec.add_dependency "activesupport", ">= 7.2.2"
   spec.add_dependency "railties", ">= 7.2.2"
+  spec.add_dependency "measurometer", ">= 1.3.0"
 end

@@ -2,6 +2,7 @@
 
 require "geneva_drive/version"
 require "geneva_drive/engine"
+require "measurometer"
 
 # GenevaDrive provides durable workflows for Rails applications.
 #

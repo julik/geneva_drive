@@ -39,12 +39,32 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
 
     cleanup_completed_workflows!(results)
     recover_stuck_step_executions!(results)
+    report_workflow_gauges!
 
     logger.info("Completed: #{results}")
     results
   end
 
   private
+
+  # Reports workflow count gauges to Measurometer.
+  # For each state (ready, paused, finished), sets:
+  # - A total gauge without tags
+  # - Per-workflow-class gauges tagged with `workflow: ClassName`
+  #
+  # @return [void]
+  def report_workflow_gauges!
+    counts = GenevaDrive::Workflow.group(:state, :type).count
+
+    counts.each_with_object(Hash.new(0)) { |((state, _type), count), totals| totals[state] += count }
+      .each do |state, total|
+        Measurometer.set_gauge("geneva_drive.#{state}", total)
+      end
+
+    counts.each do |(state, type), count|
+      Measurometer.set_gauge("geneva_drive.#{state}", count, workflow: type)
+    end
+  end
 
   # Cleans up completed/canceled workflows older than the configured threshold.
   # Uses efficient batched SQL DELETEs - step executions are deleted first via

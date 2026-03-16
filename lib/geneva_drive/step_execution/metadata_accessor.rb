@@ -14,9 +14,14 @@ module GenevaDrive::StepExecution::MetadataAccessor
   extend ActiveSupport::Concern
 
   class_methods do
-    # Lazily checks whether the metadata column exists and registers
-    # the JSON attribute type on first positive detection. Never hits the
+    # Lazily checks whether the metadata column exists. Never hits the
     # database at class definition time — only on the first runtime call.
+    #
+    # Serialization is handled manually in read/write_metadata rather
+    # than via `attribute :metadata, :json` to avoid timing issues —
+    # registering the JSON type after instances are already loaded
+    # causes those instances to persist Hashes via text-type `#to_s`
+    # instead of `#to_json`.
     #
     # @return [Boolean]
     def metadata_column?
@@ -24,9 +29,7 @@ module GenevaDrive::StepExecution::MetadataAccessor
         return @_metadata_column
       end
 
-      available = table_exists? && column_names.include?("metadata")
-      attribute(:metadata, :json, default: -> { {} }) if available
-      @_metadata_column = available
+      @_metadata_column = table_exists? && column_names.include?("metadata")
     end
 
     # Counts reattempted step executions in the given scope, excluding
@@ -42,7 +45,8 @@ module GenevaDrive::StepExecution::MetadataAccessor
         return scope.count
       end
 
-      scope.pluck(:metadata).count do |meta|
+      scope.pluck(:metadata).count do |raw|
+        meta = raw.is_a?(String) ? JSON.parse(raw) : raw
         reason = meta.is_a?(Hash) ? meta["reattempt_reason"] : nil
         reason != "flow_control"
       end
@@ -76,14 +80,7 @@ module GenevaDrive::StepExecution::MetadataAccessor
   def write_metadata(key, value)
     return unless self.class.metadata_column?
     merged = parsed_metadata.merge(key.to_s => value)
-    # When the JSON attribute type is active, assign the Hash directly so
-    # AR handles serialization. When it's not (record loaded before lazy
-    # registration), write a JSON string so the text column gets valid JSON.
-    if metadata.is_a?(Hash) || metadata.nil?
-      self.metadata = merged
-    else
-      write_attribute(:metadata, merged.to_json)
-    end
+    write_attribute(:metadata, merged.to_json)
   end
 
   # Returns the reattempt reason from metadata.

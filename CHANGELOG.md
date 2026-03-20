@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Detect dominant UUID default function from application tables when generating migrations. When the host app uses a custom UUID default (e.g. `uuidv7()` instead of `gen_random_uuid()`), GenevaDrive tables now inherit the same default by quorum from existing tables.
 - Add class-level `on_exception` for declaring exception policies that apply to all steps in a workflow. Supports blanket policies, exception-class-specific policies, and imperative block handlers. Step-level `on_exception:` overrides class-level policies.
 - Add `GenevaDrive::ExceptionPolicy` value object for reusable exception handling configuration. Can be passed directly to `on_exception:` at step level or class level.
 - Add `terminal_action:` option to `on_exception: :reattempt!` to control what happens when `max_reattempts` is exceeded. Accepts `:pause!` (default) or `:cancel!`.

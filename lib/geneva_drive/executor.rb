@@ -509,19 +509,10 @@ class GenevaDrive::Executor
     step_execution.update!(error_attributes_for(error))
     transition_step!("failed", outcome: "failed")
 
-    # Find the matching leaf policy but don't execute imperative handlers
-    # in prepare phase — the workflow may not be fully initialized.
     combined = build_resolution_policy(step_def)
-    leaf = combined.policies.find { |p| p.captures?(error) }
-
-    if leaf&.declarative?
-      count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-      result = leaf.apply(error, reattempt_count: count, workflow: workflow)
-      apply_prepare_policy_result(result)
-    else
-      logger.info("Prepare exception: imperative policy not supported, defaulting to pause!")
-      transition_workflow!("paused")
-    end
+    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
+    result = combined.apply(error, reattempt_count: count, workflow: workflow)
+    apply_prepare_policy_result(result || {action: :pause, error: error})
 
     error
   end

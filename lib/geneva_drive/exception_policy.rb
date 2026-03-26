@@ -147,7 +147,7 @@ class GenevaDrive::ExceptionPolicy
       validate!
     end
 
-    @exception_matchers = normalize_matchers(matching)
+    @exception_matchers = build_matchers(matching)
   end
 
   # Returns true if this is a declarative policy (action symbol, no block).
@@ -157,14 +157,17 @@ class GenevaDrive::ExceptionPolicy
     handler.nil?
   end
 
-  # Returns true if this policy matches the given error.
-  # A policy with no exception classes matches all errors.
+  # Returns true if this policy captures the given error.
+  # A policy with no exception matchers captures all errors (blanket policy).
+  # A policy with matchers only captures errors matching the given class(es).
   #
   # @param error [Exception] the exception to check
   # @return [Boolean]
-  def matches?(error)
+  def captures?(error)
     exception_matchers.empty? || exception_matchers.any? { |matcher| matcher === error }
   end
+
+  alias_method :matches?, :captures?
 
   # Returns true if this policy has exception matchers.
   #
@@ -180,16 +183,92 @@ class GenevaDrive::ExceptionPolicy
     exception_matchers.empty?
   end
 
+  # Applies this policy to the given error and returns a result Hash describing
+  # the action to take.
+  #
+  # For declarative policies, checks the reattempt limit and returns the
+  # appropriate action. For imperative policies, executes the handler block
+  # in the workflow context and translates the resulting flow control signal
+  # into a result.
+  #
+  # The returned Hash always contains +:action+ (Symbol without +!+) and
+  # +:error+ (the original exception). Reattempt results also include +:wait+.
+  #
+  # @param error [Exception] the exception that was raised
+  # @param reattempt_count [Integer] consecutive reattempts so far for this step
+  # @param workflow [GenevaDrive::Workflow] the workflow instance (needed for imperative handlers)
+  # @return [Hash] result with +:action+, +:error+, and optionally +:wait+ keys
+  #
+  # @example Declarative policy result
+  #   policy = ExceptionPolicy.new(:reattempt!, wait: 5.seconds, max_reattempts: 3)
+  #   policy.apply(error, reattempt_count: 0, workflow: wf)
+  #   # => { action: :reattempt, wait: 5.seconds, error: error }
+  #
+  # @see CombinedExceptionPolicy#apply
+  def apply(error, reattempt_count:, workflow:)
+    if handler
+      apply_imperative(error, workflow)
+    else
+      apply_declarative(error, reattempt_count)
+    end
+  end
+
+  # Returns this policy wrapped in an Array for uniform iteration.
+  #
+  # {CombinedExceptionPolicy} stores its children in an Array via {#policies}.
+  # This method lets callers use +exception_policy.policies+ on either type
+  # without branching, producing a flat list of leaf policies.
+  #
+  # @return [Array<GenevaDrive::ExceptionPolicy>]
+  # @see CombinedExceptionPolicy#policies
+  def policies
+    [self]
+  end
+
   private
 
-  # Normalizes the matching: argument into an array of exception matchers.
-  # Applies the same rules as Workflow.on_exception: strings become
-  # LazyExceptionMatcher, classes must be Exception subclasses, and
-  # anything else must respond to #===.
+  # Applies an imperative policy by executing the handler block in the workflow
+  # context. The block must call a flow control method (reattempt!, cancel!, etc.).
+  # If it doesn't, defaults to :pause.
+  #
+  # @param error [Exception]
+  # @param workflow [GenevaDrive::Workflow]
+  # @return [Hash]
+  def apply_imperative(error, workflow)
+    signal = catch(:flow_control) do
+      workflow.instance_exec(error, &handler)
+      nil
+    end
+
+    if signal.is_a?(GenevaDrive::FlowControlSignal)
+      {action: signal.action, wait: signal.options[:wait], error: error}
+    else
+      {action: :pause, error: error}
+    end
+  end
+
+  # Applies a declarative policy by checking the reattempt limit and returning
+  # the appropriate action.
+  #
+  # @param error [Exception]
+  # @param reattempt_count [Integer]
+  # @return [Hash]
+  def apply_declarative(error, reattempt_count)
+    if action == :reattempt! && max_reattempts && reattempt_count >= max_reattempts
+      terminal = (terminal_action == :cancel!) ? :cancel : :pause
+      {action: terminal, error: error}
+    else
+      {action: action.to_s.chomp("!").to_sym, wait: wait, error: error}
+    end
+  end
+
+  # Builds an array of exception matchers from the matching: argument.
+  # Strings become LazyExceptionMatcher, classes must be Exception subclasses,
+  # and anything else must respond to #===.
   #
   # @param raw [Class, String, #===, Array, nil]
   # @return [Array<#===>]
-  def normalize_matchers(raw)
+  def build_matchers(raw)
     return [] if raw.nil?
 
     Array(raw).map do |matcher|

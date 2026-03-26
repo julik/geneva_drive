@@ -4,26 +4,27 @@
 #
 # Created automatically when a step's +on_exception:+ receives an Array of
 # {ExceptionPolicy} objects. You never need to instantiate this class directly;
-# it is produced by {StepDefinition} during validation.
+# it is produced by {StepDefinition} during validation. The executor also builds
+# a CombinedExceptionPolicy at resolution time by composing step-level,
+# class-level, and default policies into one stack.
 #
 # ## Resolution order
 #
-# When an exception is raised, {#resolve} walks the constituent policies:
+# {#apply} walks the constituent policies in order. The first policy whose
+# {ExceptionPolicy#captures? captures?} returns +true+ for the error wins.
+# Ordering determines precedence: specific policies (those with +matching:+)
+# should be listed before blanket policies, like +rescue+ clauses in Ruby.
 #
-# 1. **Specific policies** (those with +matching:+) are checked first, in
-#    definition order. The first policy whose exception matchers match the
-#    error wins.
-# 2. **Blanket policy** (the first policy without +matching:+) is used as a
-#    fallback if no specific policy matches.
-# 3. If neither matches, {#resolve} returns +nil+ and the executor falls
-#    through to class-level exception resolution.
+# If no policy captures the error, {#apply} returns +nil+.
 #
 # ## Global reattempt cap
 #
 # {#max_reattempts} returns the *minimum* +max_reattempts+ value across all
-# constituent policies (ignoring +nil+, which means unlimited). This prevents
-# runaway retries when different exception types alternate — the total
-# consecutive reattempt count is capped at the tightest limit in the array.
+# constituent policies (ignoring +nil+, which means unlimited). When {#apply}
+# delegates to a child that wants to reattempt, it checks this global cap
+# first. If the cap is exceeded, the matched policy's +terminal_action+ is
+# applied instead. This prevents runaway retries when different exception
+# types alternate.
 #
 # @example Policies defined on a step
 #   step :sync, on_exception: [
@@ -46,28 +47,51 @@ class GenevaDrive::CombinedExceptionPolicy
   # @return [Array<GenevaDrive::ExceptionPolicy>] the constituent policies
   attr_reader :policies
 
-  # @param policies [Array<GenevaDrive::ExceptionPolicy>] policies to combine (will be flattened)
+  # @param policies [Array<GenevaDrive::ExceptionPolicy>] policies to combine
   def initialize(policies)
-    @policies = Array(policies).flatten
+    @policies = Array(policies)
   end
 
-  # Resolves which policy matches the given error.
-  # Walks policies looking for a specific match first, then falls back to
-  # the first blanket policy. Returns nil if nothing matches (so the caller
-  # can fall through to class-level resolution).
+  # Returns true if any constituent policy captures the given error.
   #
   # @param error [Exception]
-  # @return [GenevaDrive::ExceptionPolicy, nil]
-  def resolve(error)
-    blanket_policy = nil
-    @policies.each do |policy|
-      if policy.specific?
-        return policy if policy.matches?(error)
-      else
-        blanket_policy ||= policy
-      end
+  # @return [Boolean]
+  def captures?(error)
+    @policies.any? { |policy| policy.captures?(error) }
+  end
+
+  alias_method :matches?, :captures?
+
+  # Applies the first matching policy to the given error.
+  #
+  # Walks policies in order, delegating to the first one that captures the
+  # error. Before delegating a reattempt, checks the global cap
+  # ({#max_reattempts}) and overrides with the matched policy's
+  # +terminal_action+ if exceeded.
+  #
+  # @param error [Exception] the exception that was raised
+  # @param reattempt_count [Integer] consecutive reattempts so far
+  # @param workflow [GenevaDrive::Workflow] the workflow instance
+  # @return [Hash, nil] result Hash (see {ExceptionPolicy#apply}), or nil if
+  #   no policy captures the error
+  #
+  # @see ExceptionPolicy#apply
+  def apply(error, reattempt_count:, workflow:)
+    child = @policies.find { |p| p.captures?(error) }
+    return nil unless child
+
+    result = child.apply(error, reattempt_count: reattempt_count, workflow: workflow)
+
+    # Enforce global reattempt cap (min max_reattempts across all children).
+    # If the matched policy wants to reattempt but the global cap is exceeded,
+    # override with the matched policy's terminal_action.
+    cap = max_reattempts
+    if cap && result[:action] == :reattempt && reattempt_count >= cap
+      terminal = (child.terminal_action == :cancel!) ? :cancel : :pause
+      return {action: terminal, error: error}
     end
-    blanket_policy
+
+    result
   end
 
   # Returns the effective global reattempt cap: the minimum max_reattempts

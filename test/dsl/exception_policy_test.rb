@@ -217,35 +217,76 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
 end
 
 class CombinedExceptionPolicyTest < ActiveSupport::TestCase
-  test "resolve returns specific match over blanket" do
+  setup do
+    @mock_workflow = Minitest::Mock.new
+  end
+
+  test "captures? returns true when any constituent policy matches" do
     specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
     blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
     combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
 
-    assert_equal specific, combined.resolve(ArgumentError.new)
+    assert combined.captures?(ArgumentError.new)
+    assert combined.captures?(RuntimeError.new)
   end
 
-  test "resolve falls back to blanket when no specific match" do
-    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
-    blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
-    combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
-
-    assert_equal blanket, combined.resolve(RuntimeError.new)
-  end
-
-  test "resolve returns nil when no policy matches" do
+  test "captures? returns false when no policy matches" do
     specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
     combined = GenevaDrive::CombinedExceptionPolicy.new([specific])
 
-    assert_nil combined.resolve(RuntimeError.new)
+    refute combined.captures?(RuntimeError.new)
   end
 
-  test "resolve prefers first specific match" do
-    first = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: StandardError)
+  test "apply delegates to specific match over blanket" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5)
+    blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 0, workflow: @mock_workflow)
+    assert_equal :reattempt, result[:action]
+  end
+
+  test "apply falls back to blanket when no specific match" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5)
+    blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
+
+    result = combined.apply(RuntimeError.new, reattempt_count: 0, workflow: @mock_workflow)
+    assert_equal :pause, result[:action]
+  end
+
+  test "apply returns nil when no policy matches" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific])
+
+    assert_nil combined.apply(RuntimeError.new, reattempt_count: 0, workflow: @mock_workflow)
+  end
+
+  test "apply prefers first matching policy" do
+    first = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: StandardError, max_reattempts: 5)
     second = GenevaDrive::ExceptionPolicy.new(:cancel!, matching: ArgumentError)
     combined = GenevaDrive::CombinedExceptionPolicy.new([first, second])
 
-    assert_equal first, combined.resolve(ArgumentError.new)
+    result = combined.apply(ArgumentError.new, reattempt_count: 0, workflow: @mock_workflow)
+    assert_equal :reattempt, result[:action]
+  end
+
+  test "apply enforces global reattempt cap across policies" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10)
+    p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 3, workflow: @mock_workflow)
+    assert_equal :pause, result[:action]
+  end
+
+  test "apply uses terminal_action when global cap exceeded" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10, terminal_action: :cancel!)
+    p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 3, workflow: @mock_workflow)
+    assert_equal :cancel, result[:action]
   end
 
   test "max_reattempts returns minimum across policies" do

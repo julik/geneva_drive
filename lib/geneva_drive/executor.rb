@@ -475,19 +475,33 @@ class GenevaDrive::Executor
   # Resolves the exception policy for a given error and step definition.
   # Precedence: step-level > class-level (specific match) > class-level (blanket) > :pause!
   #
+  # When step has an explicit array of policies, walks them looking for a
+  # specific match first, then a blanket fallback. If no policy in the array
+  # matches, falls through to class-level resolution.
+  #
   # @param error [Exception] the exception that was raised
   # @param step_def [StepDefinition] the step definition
   # @return [GenevaDrive::ExceptionPolicy] the resolved policy
   def resolve_exception_policy(error, step_def)
-    # 1. Step-level always wins if explicitly set (already an ExceptionPolicy)
-    return step_def.exception_policy if step_def.has_explicit_exception_policy?
+    if step_def.has_explicit_exception_policy?
+      policy = step_def.exception_policy
 
-    # 2-3. Walk class-level policies (specific match first, then blanket)
+      if policy.is_a?(GenevaDrive::CombinedExceptionPolicy)
+        # Combined policy: resolve against the array, fall through to class-level if nil
+        resolved = policy.resolve(error)
+        return resolved if resolved
+      else
+        # Single policy wins unconditionally
+        return policy
+      end
+    end
+
+    # Walk class-level policies (specific match first, then blanket)
     class_policy = workflow.class.resolve_exception_policy(error)
     return class_policy if class_policy
 
-    # 4. Hardcoded default (same as step_def.exception_policy when not explicitly set)
-    step_def.exception_policy
+    # Hardcoded default
+    GenevaDrive::ExceptionPolicy.new(:pause!)
   end
 
   # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
@@ -776,15 +790,25 @@ class GenevaDrive::Executor
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.
   #
+  # When the step has an array of policies, the global consecutive reattempt
+  # count is checked against the *minimum* max_reattempts across all policies
+  # in the array (ignoring nil = unlimited). This prevents runaway retries
+  # when exception types alternate.
+  #
   # @param policy [GenevaDrive::ExceptionPolicy] the resolved policy
   # @param step_def [StepDefinition, nil] the step definition (for step name fallback)
   # @return [Boolean] true if limit exceeded, false otherwise
   def reattempt_limit_exceeded_for_policy?(policy, step_def)
-    max_reattempts = policy.max_reattempts
-    return false if max_reattempts.nil?
+    effective_max = if step_def&.exception_policy.is_a?(GenevaDrive::CombinedExceptionPolicy)
+      step_def.exception_policy.max_reattempts
+    else
+      policy.max_reattempts
+    end
+
+    return false if effective_max.nil?
 
     count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    count >= max_reattempts
+    count >= effective_max
   end
 
   # Handles a flow control signal.

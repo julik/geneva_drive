@@ -162,4 +162,121 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     matcher = GenevaDrive::ExceptionPolicy::LazyExceptionMatcher.new("Nonexistent::FakeError")
     refute matcher === RuntimeError.new("test")
   end
+
+  # matching: kwarg tests
+  test "matching: with a single class populates exception_matchers" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
+
+    assert policy.specific?
+    assert policy.matches?(ArgumentError.new)
+    refute policy.matches?(RuntimeError.new)
+  end
+
+  test "matching: with an array of classes populates exception_matchers" do
+    policy = GenevaDrive::ExceptionPolicy.new(:cancel!, matching: [ArgumentError, TypeError])
+
+    assert policy.specific?
+    assert policy.matches?(ArgumentError.new)
+    assert policy.matches?(TypeError.new)
+    refute policy.matches?(RuntimeError.new)
+  end
+
+  test "matching: with a string creates a LazyExceptionMatcher" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: "ArgumentError")
+
+    assert policy.specific?
+    assert policy.matches?(ArgumentError.new)
+    refute policy.matches?(RuntimeError.new)
+    assert_instance_of GenevaDrive::ExceptionPolicy::LazyExceptionMatcher, policy.exception_matchers.first
+  end
+
+  test "matching: with mixed classes and strings" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: [ArgumentError, "TypeError"])
+
+    assert policy.matches?(ArgumentError.new)
+    assert policy.matches?(TypeError.new)
+    refute policy.matches?(RuntimeError.new)
+  end
+
+  test "matching: rejects non-Exception classes" do
+    assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(:cancel!, matching: String)
+    end
+  end
+
+  test "matching: is rejected with block (imperative mode)" do
+    assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(matching: ArgumentError) { |_e| pause! }
+    end
+  end
+
+  test "matching: nil leaves exception_matchers empty" do
+    policy = GenevaDrive::ExceptionPolicy.new(:pause!, matching: nil)
+    assert policy.blanket?
+  end
+end
+
+class CombinedExceptionPolicyTest < ActiveSupport::TestCase
+  test "resolve returns specific match over blanket" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
+    blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
+
+    assert_equal specific, combined.resolve(ArgumentError.new)
+  end
+
+  test "resolve falls back to blanket when no specific match" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
+    blanket = GenevaDrive::ExceptionPolicy.new(:pause!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific, blanket])
+
+    assert_equal blanket, combined.resolve(RuntimeError.new)
+  end
+
+  test "resolve returns nil when no policy matches" do
+    specific = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([specific])
+
+    assert_nil combined.resolve(RuntimeError.new)
+  end
+
+  test "resolve prefers first specific match" do
+    first = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: StandardError)
+    second = GenevaDrive::ExceptionPolicy.new(:cancel!, matching: ArgumentError)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([first, second])
+
+    assert_equal first, combined.resolve(ArgumentError.new)
+  end
+
+  test "max_reattempts returns minimum across policies" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10)
+    p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    assert_equal 3, combined.max_reattempts
+  end
+
+  test "max_reattempts ignores nil (unlimited) policies" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10)
+    p2 = GenevaDrive::ExceptionPolicy.new(:cancel!, matching: TypeError)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    assert_equal 10, combined.max_reattempts
+  end
+
+  test "max_reattempts returns nil when all policies have unlimited reattempts" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:cancel!, matching: ArgumentError)
+    p2 = GenevaDrive::ExceptionPolicy.new(:pause!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    assert_nil combined.max_reattempts
+  end
+
+  test "policies returns the flat array of constituent policies" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5)
+    p2 = GenevaDrive::ExceptionPolicy.new(:cancel!)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    assert_equal [p1, p2], combined.policies
+  end
 end

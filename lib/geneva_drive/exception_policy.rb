@@ -80,11 +80,15 @@ class GenevaDrive::ExceptionPolicy
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
   #   @yield [error] the exception that was raised
-  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
+  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, &block)
     if block
       if action || wait || max_reattempts || terminal_action != :pause!
         raise ArgumentError,
           "Cannot pass action, wait, max_reattempts, or terminal_action when a block is given"
+      end
+      if matching
+        raise ArgumentError,
+          "Cannot pass matching: when a block is given"
       end
       @handler = block
       @action = nil
@@ -101,7 +105,7 @@ class GenevaDrive::ExceptionPolicy
       validate!
     end
 
-    @exception_matchers = []
+    @exception_matchers = normalize_matchers(matching)
   end
 
   # Returns true if this is a declarative policy (action symbol, no block).
@@ -135,6 +139,34 @@ class GenevaDrive::ExceptionPolicy
   end
 
   private
+
+  # Normalizes the matching: argument into an array of exception matchers.
+  # Applies the same rules as Workflow.on_exception: strings become
+  # LazyExceptionMatcher, classes must be Exception subclasses, and
+  # anything else must respond to #===.
+  #
+  # @param raw [Class, String, #===, Array, nil]
+  # @return [Array<#===>]
+  def normalize_matchers(raw)
+    return [] if raw.nil?
+
+    Array(raw).map do |matcher|
+      if matcher.is_a?(String)
+        LazyExceptionMatcher.new(matcher)
+      elsif matcher.is_a?(Class)
+        unless matcher <= Exception
+          raise ArgumentError,
+            "Expected an Exception subclass, got #{matcher.inspect}"
+        end
+        matcher
+      elsif matcher.respond_to?(:===)
+        matcher
+      else
+        raise ArgumentError,
+          "Expected an exception matcher (Exception subclass, String, or object responding to #===), got #{matcher.inspect}"
+      end
+    end
+  end
 
   # Validates declarative mode configuration.
   #

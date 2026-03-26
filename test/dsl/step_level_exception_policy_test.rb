@@ -82,7 +82,7 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/ExceptionPolicy or Proc/, error.message)
+    assert_match(/ExceptionPolicy/, error.message)
   end
 
   # Rejects max_reattempts with Proc
@@ -94,7 +94,7 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/ExceptionPolicy or Proc/, error.message)
+    assert_match(/ExceptionPolicy/, error.message)
   end
 
   # terminal_action at step level
@@ -129,7 +129,7 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/ExceptionPolicy or Proc/, error.message)
+    assert_match(/ExceptionPolicy/, error.message)
   end
 
   # Rejects invalid types
@@ -141,6 +141,6 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
       end
     end
 
-    assert_match(/Symbol, ExceptionPolicy, or Proc/, error.message)
+    assert_match(/invalid on_exception/, error.message)
   end
 end

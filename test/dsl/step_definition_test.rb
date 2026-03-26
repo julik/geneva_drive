@@ -160,13 +160,13 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_equal [:pause!, :cancel!, :reattempt!, :skip!], handlers
   end
 
-  test "defaults to pause! for on_exception" do
+  test "defaults to nil exception_policy when on_exception not specified" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       step :default_handler do
       end
     end
 
-    assert_equal :pause!, workflow_class.step_definitions.first.on_exception
+    assert_nil workflow_class.step_definitions.first.exception_policy
   end
 
   test "rejects invalid on_exception values" do
@@ -194,7 +194,6 @@ class StepDefinitionTest < ActiveSupport::TestCase
     end
 
     step_def = workflow_class.step_definitions.first
-    assert step_def.has_explicit_exception_policy?
     assert_kind_of GenevaDrive::CombinedExceptionPolicy, step_def.exception_policy
     assert_equal 2, step_def.exception_policy.policies.length
   end

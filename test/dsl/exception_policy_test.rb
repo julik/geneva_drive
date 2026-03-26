@@ -204,10 +204,13 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     end
   end
 
-  test "matching: is rejected with block (imperative mode)" do
-    assert_raises(ArgumentError) do
-      GenevaDrive::ExceptionPolicy.new(matching: ArgumentError) { |_e| pause! }
-    end
+  test "matching: works with block (imperative mode)" do
+    policy = GenevaDrive::ExceptionPolicy.new(matching: ArgumentError) { |_e| pause! }
+
+    assert policy.specific?
+    assert policy.captures?(ArgumentError.new)
+    refute policy.captures?(RuntimeError.new)
+    assert_instance_of Proc, policy.handler
   end
 
   test "matching: nil leaves exception_matchers empty" do

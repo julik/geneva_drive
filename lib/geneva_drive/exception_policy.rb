@@ -105,10 +105,11 @@ class GenevaDrive::ExceptionPolicy
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
   #
-  # @overload initialize(&block)
+  # @overload initialize(matching: nil, &block)
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
-  #   Cannot be combined with +matching:+.
+  #   Can be combined with +matching:+ to target specific exception classes.
+  #   @param matching [Class, String, #===, Array<Class, String, #===>, nil] exception classes
   #   @yield [error] the exception that was raised
   #
   # @example Blanket reattempt policy
@@ -122,15 +123,14 @@ class GenevaDrive::ExceptionPolicy
   #
   # @example Imperative policy
   #   ExceptionPolicy.new { |error| reattempt!(wait: error.retry_after) }
+  #
+  # @example Imperative policy with exception matching
+  #   ExceptionPolicy.new(matching: Timeout::Error) { |error| reattempt!(wait: error.retry_after) }
   def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, &block)
     if block
       if action || wait || max_reattempts || terminal_action != :pause!
         raise ArgumentError,
           "Cannot pass action, wait, max_reattempts, or terminal_action when a block is given"
-      end
-      if matching
-        raise ArgumentError,
-          "Cannot pass matching: when a block is given"
       end
       @handler = block
       @action = nil

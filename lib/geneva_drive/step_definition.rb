@@ -79,19 +79,12 @@ class GenevaDrive::StepDefinition
     @exception_policy = build_exception_policy
   end
 
-  # Returns true if `on_exception:` was explicitly provided (not defaulted).
-  # Used by the executor to determine whether step-level should override class-level.
-  #
-  # @return [Boolean]
-  def has_explicit_exception_policy?
-    @on_exception_raw != NOT_SET
-  end
-
   # Returns the action symbol from the exception policy.
   # Provided for backward compatibility with code that reads step_def.on_exception.
   #
   # @return [Symbol, nil] the action symbol, or nil for imperative/combined policies
   def on_exception
+    return nil unless @exception_policy
     return nil if @exception_policy.is_a?(GenevaDrive::CombinedExceptionPolicy)
     @exception_policy.action
   end
@@ -101,7 +94,7 @@ class GenevaDrive::StepDefinition
   #
   # @return [Integer, nil]
   def max_reattempts
-    @exception_policy.max_reattempts
+    @exception_policy&.max_reattempts
   end
 
   # Evaluates whether this step should be skipped for the given workflow.
@@ -145,20 +138,20 @@ class GenevaDrive::StepDefinition
   #
   # @return [GenevaDrive::ExceptionPolicy, GenevaDrive::CombinedExceptionPolicy]
   def build_exception_policy
-    on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
+    return nil if @on_exception_raw == NOT_SET
 
-    case on_exc
+    case @on_exception_raw
     when Array
-      GenevaDrive::CombinedExceptionPolicy.new(on_exc)
+      GenevaDrive::CombinedExceptionPolicy.new(@on_exception_raw)
     when GenevaDrive::ExceptionPolicy
-      on_exc
+      @on_exception_raw
     when Proc
-      GenevaDrive::ExceptionPolicy.new(&on_exc)
+      GenevaDrive::ExceptionPolicy.new(&@on_exception_raw)
     when Symbol
-      max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(on_exc) : @max_reattempts_raw
+      max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(@on_exception_raw) : @max_reattempts_raw
       opts = {max_reattempts: max}
       opts[:terminal_action] = @terminal_action_raw if @terminal_action_raw
-      GenevaDrive::ExceptionPolicy.new(on_exc, **opts)
+      GenevaDrive::ExceptionPolicy.new(@on_exception_raw, **opts)
     end
   end
 

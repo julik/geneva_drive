@@ -568,9 +568,7 @@ class GenevaDrive::Executor
   def build_resolution_policy(step_def)
     policies = []
 
-    if step_def&.has_explicit_exception_policy?
-      policies.concat(step_def.exception_policy.policies)
-    end
+    policies << step_def.exception_policy if step_def&.exception_policy
 
     class_reversed = workflow.class._exception_policies.reverse
     policies.concat(class_reversed.select(&:specific?))
@@ -713,27 +711,6 @@ class GenevaDrive::Executor
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.
   #
-  # When the step has an array of policies, the global consecutive reattempt
-  # count is checked against the *minimum* max_reattempts across all policies
-  # in the array (ignoring nil = unlimited). This prevents runaway retries
-  # when exception types alternate.
-  #
-  # @param policy [GenevaDrive::ExceptionPolicy] the resolved policy
-  # @param step_def [StepDefinition, nil] the step definition (for step name fallback)
-  # @return [Boolean] true if limit exceeded, false otherwise
-  def reattempt_limit_exceeded_for_policy?(policy, step_def)
-    effective_max = if step_def&.has_explicit_exception_policy?
-      step_def.exception_policy.max_reattempts
-    else
-      policy.max_reattempts
-    end
-
-    return false if effective_max.nil?
-
-    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    count >= effective_max
-  end
-
   # Handles a flow control signal.
   #
   # @param signal [FlowControlSignal]

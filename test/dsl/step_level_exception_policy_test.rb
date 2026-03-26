@@ -14,7 +14,6 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
 
     step_def = workflow_class.step_definitions.first
     assert_equal :reattempt!, step_def.on_exception
-    assert step_def.has_explicit_exception_policy?
     assert_equal policy, step_def.exception_policy
   end
 
@@ -29,7 +28,6 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
 
     step_def = workflow_class.step_definitions.first
     assert_nil step_def.on_exception # Proc-based policies have no action symbol
-    assert step_def.has_explicit_exception_policy?
     assert_equal handler, step_def.exception_policy.handler
   end
 
@@ -42,19 +40,18 @@ class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
 
     step_def = workflow_class.step_definitions.first
     assert_equal :skip!, step_def.on_exception
-    assert step_def.has_explicit_exception_policy?
+    assert_not_nil step_def.exception_policy
   end
 
-  # Default is NOT explicit
-  test "default on_exception is not explicit" do
+  # Default has no step-level policy
+  test "default on_exception has nil exception_policy" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       step :my_step do
       end
     end
 
     step_def = workflow_class.step_definitions.first
-    assert_equal :pause!, step_def.on_exception
-    refute step_def.has_explicit_exception_policy?
+    assert_nil step_def.exception_policy
   end
 
   # exception_policy constructs from symbol

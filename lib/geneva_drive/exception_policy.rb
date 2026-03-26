@@ -13,6 +13,30 @@
 # and calls flow control methods in the workflow context:
 #   ExceptionPolicy.new { |error| reattempt!(wait: error.retry_after) }
 #
+# Policies can optionally target specific exception classes via the +matching:+
+# keyword. A policy without +matching:+ is a "blanket" policy that matches any
+# exception. A policy with +matching:+ is a "specific" policy that only fires
+# for errors matching the given class(es).
+#
+# Multiple policies can be composed into an array and passed to a step's
+# +on_exception:+ option. GenevaDrive wraps the array in a
+# {CombinedExceptionPolicy} that walks specific policies first, then falls back
+# to the first blanket policy. If no policy in the array matches, resolution
+# continues at the class level.
+#
+# @example Declarative policy with exception matching
+#   ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, max_reattempts: 5)
+#
+# @example Composing multiple policies for a step
+#   step :sync, on_exception: [
+#     ExceptionPolicy.new(:reattempt!, matching: Timeout::Error, max_reattempts: 10),
+#     ExceptionPolicy.new(:cancel!,    matching: OAuth2::Error),
+#     ExceptionPolicy.new(:skip!)  # blanket fallback
+#   ] do
+#     ExternalApi.sync(hero)
+#   end
+#
+# @see CombinedExceptionPolicy
 # @api public
 class GenevaDrive::ExceptionPolicy
   # Matches exceptions by class name without requiring the constant to be
@@ -69,9 +93,14 @@ class GenevaDrive::ExceptionPolicy
   # Valid terminal_action values
   VALID_TERMINAL_ACTIONS = %i[pause! cancel!].freeze
 
-  # @overload initialize(action, wait: nil, max_reattempts: nil, terminal_action: :pause!)
+  # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!)
   #   Declarative mode — specify action and options.
   #   @param action [Symbol] the flow control action (:pause!, :cancel!, :reattempt!, :skip!)
+  #   @param matching [Class, String, #===, Array<Class, String, #===>, nil] exception classes
+  #     this policy applies to. When +nil+ (the default), the policy matches any exception
+  #     (blanket policy). When set, only errors matching the given class(es) trigger this policy
+  #     (specific policy). Strings are resolved lazily via +safe_constantize+, so the exception
+  #     class does not need to be loaded at definition time.
   #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
@@ -79,7 +108,20 @@ class GenevaDrive::ExceptionPolicy
   # @overload initialize(&block)
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
+  #   Cannot be combined with +matching:+.
   #   @yield [error] the exception that was raised
+  #
+  # @example Blanket reattempt policy
+  #   ExceptionPolicy.new(:reattempt!, wait: 30.seconds, max_reattempts: 5)
+  #
+  # @example Specific policy matching a single exception class
+  #   ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, max_reattempts: 10)
+  #
+  # @example Specific policy matching multiple exception classes
+  #   ExceptionPolicy.new(:cancel!, matching: [OAuth2::Error, "Faraday::ConnectionFailed"])
+  #
+  # @example Imperative policy
+  #   ExceptionPolicy.new { |error| reattempt!(wait: error.retry_after) }
   def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, &block)
     if block
       if action || wait || max_reattempts || terminal_action != :pause!

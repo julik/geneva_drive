@@ -50,7 +50,9 @@ class GenevaDrive::StepDefinition
   # @option options [ActiveSupport::Duration, nil] :wait delay before execution
   # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
   # @option options [Proc, Symbol, Boolean, nil] :if condition for running (inverse of skip_if)
-  # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc] :on_exception how to handle exceptions
+  # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
+  #   how to handle exceptions. An Array of {ExceptionPolicy} objects is wrapped in a
+  #   {CombinedExceptionPolicy} that resolves specific policies first, then blanket fallback.
   # @option options [Integer, nil] :max_reattempts max consecutive reattempts (symbol form only)
   # @option options [String, Symbol, nil] :before_step position before this step
   # @option options [String, Symbol, nil] :after_step position after this step
@@ -139,9 +141,9 @@ class GenevaDrive::StepDefinition
   end
 
   # Builds the ExceptionPolicy from validated raw inputs.
-  # This is the single place where symbols, procs, and policies are normalized.
+  # This is the single place where symbols, procs, arrays, and policies are normalized.
   #
-  # @return [GenevaDrive::ExceptionPolicy]
+  # @return [GenevaDrive::ExceptionPolicy, GenevaDrive::CombinedExceptionPolicy]
   def build_exception_policy
     on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
 

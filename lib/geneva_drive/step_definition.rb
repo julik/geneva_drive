@@ -70,6 +70,7 @@ class GenevaDrive::StepDefinition
     @max_reattempts_raw = options[:max_reattempts]
     @max_reattempts_explicitly_set = options.key?(:max_reattempts)
     @terminal_action_raw = options[:terminal_action]
+    @jitter_raw = options[:jitter]
     @before_step = options[:before_step]&.to_s
     @after_step = options[:after_step]&.to_s
 
@@ -153,6 +154,7 @@ class GenevaDrive::StepDefinition
       max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(on_exc) : @max_reattempts_raw
       opts = {max_reattempts: max}
       opts[:terminal_action] = @terminal_action_raw if @terminal_action_raw
+      opts[:jitter] = @jitter_raw if @jitter_raw
       GenevaDrive::ExceptionPolicy.new(on_exc, **opts)
     end
   end

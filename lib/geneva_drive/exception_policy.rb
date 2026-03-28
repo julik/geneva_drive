@@ -48,8 +48,11 @@ class GenevaDrive::ExceptionPolicy
   # @return [Symbol, nil] the action (:pause!, :cancel!, :reattempt!, :skip!) — nil in imperative mode
   attr_reader :action
 
-  # @return [ActiveSupport::Duration, nil] wait time before reattempt
+  # @return [ActiveSupport::Duration, Symbol, Proc, nil] wait time or backoff strategy before reattempt
   attr_reader :wait
+
+  # @return [Float, nil] jitter factor for symbol-based backoff strategies (0.0 to 1.0, nil = use default 0.15)
+  attr_reader :jitter
 
   # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
   attr_reader :max_reattempts
@@ -69,26 +72,30 @@ class GenevaDrive::ExceptionPolicy
   # Valid terminal_action values
   VALID_TERMINAL_ACTIONS = %i[pause! cancel!].freeze
 
-  # @overload initialize(action, wait: nil, max_reattempts: nil, terminal_action: :pause!)
+  # @overload initialize(action, wait: nil, max_reattempts: nil, terminal_action: :pause!, jitter: 0.15)
   #   Declarative mode — specify action and options.
   #   @param action [Symbol] the flow control action (:pause!, :cancel!, :reattempt!, :skip!)
-  #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
+  #   @param wait [ActiveSupport::Duration, Symbol, Proc, nil] wait time or backoff strategy.
+  #     Symbol values (e.g. :polynomially_longer) use a built-in backoff curve.
+  #     Procs receive the attempt count and return a duration.
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
+  #   @param jitter [Float] jitter factor for symbol-based backoff strategies (0.0–1.0, default 0.15)
   #
   # @overload initialize(&block)
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
   #   @yield [error] the exception that was raised
-  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
+  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, jitter: nil, &block)
     if block
-      if action || wait || max_reattempts || terminal_action != :pause!
+      if action || wait || max_reattempts || terminal_action != :pause! || jitter
         raise ArgumentError,
-          "Cannot pass action, wait, max_reattempts, or terminal_action when a block is given"
+          "Cannot pass action, wait, max_reattempts, terminal_action, or jitter when a block is given"
       end
       @handler = block
       @action = nil
       @wait = nil
+      @jitter = nil
       @max_reattempts = nil
       @terminal_action = :pause!
     else
@@ -96,6 +103,7 @@ class GenevaDrive::ExceptionPolicy
       @handler = nil
       @action = action
       @wait = wait
+      @jitter = jitter
       @max_reattempts = max_reattempts
       @terminal_action = terminal_action
       validate!
@@ -148,6 +156,14 @@ class GenevaDrive::ExceptionPolicy
     if @wait && @action != :reattempt!
       raise ArgumentError,
         "wait: only makes sense with action: :reattempt!"
+    end
+
+    if @wait.is_a?(Symbol)
+      unless GenevaDrive::BackoffStrategies::STRATEGIES.key?(@wait)
+        raise ArgumentError,
+          "Unknown backoff strategy: #{@wait.inspect}. " \
+          "Valid strategies: #{GenevaDrive::BackoffStrategies::STRATEGIES.keys.join(", ")}"
+      end
     end
 
     if @max_reattempts

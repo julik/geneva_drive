@@ -605,7 +605,8 @@ class GenevaDrive::Executor
         transition_step!("completed", outcome: "reattempted")
         write_reattempt_metadata(reattempt_reason, error: error)
         transition_workflow!("ready")
-        workflow.reschedule_current_step!(wait: policy.wait)
+        resolved_wait = resolve_backoff_wait(policy, step_def)
+        workflow.reschedule_current_step!(wait: resolved_wait)
       end
 
     when :cancel!
@@ -690,7 +691,8 @@ class GenevaDrive::Executor
       else
         logger.info("Prepare exception policy: reattempt! - rescheduling step")
         transition_workflow!("ready")
-        workflow.reschedule_current_step!(wait: policy.wait)
+        resolved_wait = resolve_backoff_wait(policy, step_def)
+        workflow.reschedule_current_step!(wait: resolved_wait)
       end
 
     when :cancel!
@@ -785,6 +787,21 @@ class GenevaDrive::Executor
 
     count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
     count >= max_reattempts
+  end
+
+  # Resolves the wait value from a policy, applying backoff strategies
+  # when the wait is a Symbol or Proc.
+  #
+  # @param policy [GenevaDrive::ExceptionPolicy]
+  # @param step_def [StepDefinition, nil]
+  # @return [ActiveSupport::Duration, Integer, Float, nil]
+  def resolve_backoff_wait(policy, step_def)
+    # consecutive_reattempt_count already includes the current reattempt
+    # (the step was transitioned to "reattempted" before this call), so
+    # the count IS the 1-based attempt number.
+    attempts = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
+    attempts = 1 if attempts < 1
+    GenevaDrive::BackoffStrategies.resolve(policy.wait, attempts: attempts, jitter: policy.jitter)
   end
 
   # Handles a flow control signal.

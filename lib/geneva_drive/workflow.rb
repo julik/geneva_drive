@@ -51,6 +51,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # Include flow control methods
   include GenevaDrive::FlowControl
 
+  # Validations
+  validate :validate_unique_ongoing_workflow, if: -> { !allow_multiple && ongoing? }
+
   # Additional scopes
   scope :ongoing, -> { where.not(state: %w[finished canceled]) }
   scope :for_hero, ->(hero) { where(hero: hero) }
@@ -329,6 +332,13 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
   end
 
+  # Returns whether this workflow is in an ongoing (non-terminal) state.
+  #
+  # @return [Boolean]
+  def ongoing?
+    !finished? && !canceled?
+  end
+
   # Schedules the next step in the workflow.
   #
   # Uses current_step_name as reference if executing, otherwise next_step_name.
@@ -512,6 +522,20 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   private
+
+  # Validates that no other ongoing workflow exists for the same (type, hero).
+  # Mirrors the database unique index on (type, hero_type, hero_id) for ongoing workflows.
+  #
+  # @return [void]
+  def validate_unique_ongoing_workflow
+    scope = self.class.base_class.where(type: self.class.sti_name, hero_type: hero_type, hero_id: hero_id)
+      .where.not(state: %w[finished canceled])
+      .where(allow_multiple: false)
+    scope = scope.where.not(id: id) if persisted?
+    if scope.exists?
+      errors.add(:base, "An ongoing workflow of this type already exists for this hero")
+    end
+  end
 
   # Logs when a workflow is created.
   #

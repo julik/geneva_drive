@@ -45,6 +45,11 @@ module GenevaDrive
           "add_metadata_to_step_executions.rb",
           "db/migrate/add_metadata_to_geneva_drive_step_executions.rb"
         )
+
+        migration_template(
+          "allow_null_hero_on_workflows.rb",
+          "db/migrate/allow_null_hero_on_geneva_drive_workflows.rb"
+        )
       end
 
       # Creates the initializer file.

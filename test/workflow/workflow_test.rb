@@ -236,6 +236,48 @@ class WorkflowTest < ActiveSupport::TestCase
     assert_equal 2, GenevaDrive::Workflow.for_hero(@user).count
   end
 
+  test "ongoing? returns true for non-terminal states" do
+    workflow = SimpleWorkflow.create!(hero: @user)
+    assert workflow.ongoing?
+
+    workflow.transition_to!("paused")
+    assert workflow.ongoing?
+
+    workflow.transition_to!("canceled")
+    assert_not workflow.ongoing?
+  end
+
+  test "validates uniqueness of ongoing workflow for same type and hero" do
+    SimpleWorkflow.create!(hero: @user)
+
+    duplicate = SimpleWorkflow.new(hero: @user)
+    assert_not duplicate.valid?
+    assert_includes duplicate.errors[:base], "An ongoing workflow of this type already exists for this hero"
+  end
+
+  test "uniqueness validation allows create when existing workflow is finished" do
+    workflow = SimpleWorkflow.create!(hero: @user)
+    workflow.transition_to!("finished")
+
+    new_workflow = SimpleWorkflow.create(hero: @user)
+    assert new_workflow.persisted?
+  end
+
+  test "uniqueness validation allows create when existing workflow is canceled" do
+    workflow = SimpleWorkflow.create!(hero: @user)
+    workflow.transition_to!("canceled")
+
+    new_workflow = SimpleWorkflow.create(hero: @user)
+    assert new_workflow.persisted?
+  end
+
+  test "uniqueness validation is skipped when allow_multiple is true" do
+    SimpleWorkflow.create!(hero: @user)
+
+    new_workflow = SimpleWorkflow.create(hero: @user, allow_multiple: true)
+    assert new_workflow.persisted?
+  end
+
   # Three-step workflow for next_step_name tests
   class ThreeStepWorkflow < GenevaDrive::Workflow
     step :first do

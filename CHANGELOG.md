@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add `ongoing?` predicate and model-level uniqueness validation for ongoing workflows. Mirrors the database unique index on `(type, hero_type, hero_id)` so that `Workflow.create` (without bang) returns validation errors instead of raising a database constraint violation.
 - Allow `hero` to be NULL on workflows. The model declares `belongs_to :hero, optional: true` but the migration enforced `NOT NULL` on `hero_type` and `hero_id`. New installs get nullable columns; existing installs get an upgrade migration (Postgres/MySQL via `change_column_null`, SQLite via atomic table swap).
 - Detect dominant UUID default function from application tables when generating migrations. When the host app uses a custom UUID default (e.g. `uuidv7()` instead of `gen_random_uuid()`), GenevaDrive tables now inherit the same default by quorum from existing tables.
 - Add class-level `on_exception` for declaring exception policies that apply to all steps in a workflow. Supports blanket policies, exception-class-specific policies, and imperative block handlers. Step-level `on_exception:` overrides class-level policies.

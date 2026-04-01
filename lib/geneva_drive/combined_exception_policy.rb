@@ -87,7 +87,7 @@ class GenevaDrive::CombinedExceptionPolicy
     # override with the matched policy's terminal_action.
     cap = max_reattempts
     if cap && result[:action] == :reattempt && reattempt_count >= cap
-      terminal = (child.terminal_action == :cancel!) ? :cancel : :pause
+      terminal = child.terminal_action.to_s.chomp("!").to_sym
       return {action: terminal, error: error}
     end
 

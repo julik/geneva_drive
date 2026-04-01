@@ -78,7 +78,7 @@ class GenevaDrive::ExceptionPolicy
   # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
   attr_reader :max_reattempts
 
-  # @return [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
+  # @return [Symbol] what to do when max_reattempts is exceeded (:pause!, :cancel!, or :skip!)
   attr_reader :terminal_action
 
   # @return [Array<#===>] exception matchers this policy checks (empty = match all).
@@ -91,7 +91,7 @@ class GenevaDrive::ExceptionPolicy
   # Creates a new exception policy.
   #
   # Valid terminal_action values
-  VALID_TERMINAL_ACTIONS = %i[pause! cancel!].freeze
+  VALID_TERMINAL_ACTIONS = %i[pause! cancel! skip!].freeze
 
   # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!)
   #   Declarative mode — specify action and options.
@@ -103,7 +103,7 @@ class GenevaDrive::ExceptionPolicy
   #     class does not need to be loaded at definition time.
   #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
-  #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause! or :cancel!)
+  #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause!, :cancel!, or :skip!)
   #
   # @overload initialize(matching: nil, &block)
   #   Imperative mode — block receives exception, runs in workflow context.
@@ -255,7 +255,7 @@ class GenevaDrive::ExceptionPolicy
   # @return [Hash]
   def apply_declarative(error, reattempt_count)
     if action == :reattempt! && max_reattempts && reattempt_count >= max_reattempts
-      terminal = (terminal_action == :cancel!) ? :cancel : :pause
+      terminal = terminal_action.to_s.chomp("!").to_sym
       {action: terminal, error: error}
     else
       {action: action.to_s.chomp("!").to_sym, wait: wait, error: error}

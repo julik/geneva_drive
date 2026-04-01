@@ -122,6 +122,17 @@ class MaxReattemptsTest < ActiveSupport::TestCase
     end
   end
 
+  # Workflow that reattempts then skips on limit
+  class SkipOnLimitWorkflow < GenevaDrive::Workflow
+    step :failing_step, on_exception: :reattempt!, max_reattempts: 3, terminal_action: :skip! do
+      raise TransientError, "Always failing"
+    end
+
+    step :second_step do
+      # no-op
+    end
+  end
+
   setup do
     clean_database!
     @user = User.create!(email: "test@example.com", name: "Test User")
@@ -286,6 +297,46 @@ class MaxReattemptsTest < ActiveSupport::TestCase
     assert_equal "failed", third_step_execution.state
     assert_equal "failed", third_step_execution.outcome
     assert_match(/Precondition failure/, third_step_execution.error_message)
+  end
+
+  test "skips to next step when max_reattempts exceeded with terminal_action: :skip!" do
+    workflow = SkipOnLimitWorkflow.create!(hero: @user)
+
+    # Execute 3 attempts (max_reattempts: 3)
+    3.times do
+      step_execution = workflow.step_executions.order(:created_at).last
+      assert_raises(TransientError) do
+        GenevaDrive::PerformStepJob.perform_now(step_execution.id)
+      end
+      workflow.reload
+    end
+
+    assert_equal "ready", workflow.state
+    assert_equal 4, workflow.step_executions.count
+
+    # 4th attempt should trigger the limit and skip
+    fourth_step_execution = workflow.step_executions.order(:created_at).last
+    assert_raises(TransientError) do
+      GenevaDrive::PerformStepJob.perform_now(fourth_step_execution.id)
+    end
+
+    workflow.reload
+    fourth_step_execution.reload
+
+    # Step should be skipped, not failed
+    assert_equal "skipped", fourth_step_execution.state
+    assert_equal "skipped", fourth_step_execution.outcome
+
+    # Workflow should be ready with next step scheduled (not paused)
+    assert_equal "ready", workflow.state
+
+    # Execute the second step
+    next_execution = workflow.step_executions.order(:created_at).last
+    assert_equal "second_step", next_execution.step_name
+    GenevaDrive::PerformStepJob.perform_now(next_execution.id)
+
+    workflow.reload
+    assert_equal "finished", workflow.state
   end
 
   test "manual reattempt! flow control is not limited" do

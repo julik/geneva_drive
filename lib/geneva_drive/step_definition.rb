@@ -270,7 +270,7 @@ class GenevaDrive::StepDefinition
 
     unless GenevaDrive::ExceptionPolicy::VALID_TERMINAL_ACTIONS.include?(@terminal_action_raw)
       raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has invalid terminal_action: must be :pause! or :cancel!"
+        "Step '#{@name}' has invalid terminal_action: must be one of #{GenevaDrive::ExceptionPolicy::VALID_TERMINAL_ACTIONS.join(", ")}"
     end
   end
 

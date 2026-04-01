@@ -127,9 +127,14 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     assert_equal :cancel!, policy.terminal_action
   end
 
+  test "terminal_action: :skip! sets terminal_action" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5, terminal_action: :skip!)
+    assert_equal :skip!, policy.terminal_action
+  end
+
   test "terminal_action: rejects invalid values" do
     assert_raises(ArgumentError) do
-      GenevaDrive::ExceptionPolicy.new(:reattempt!, terminal_action: :skip!)
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, terminal_action: :explode!)
     end
   end
 

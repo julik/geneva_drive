@@ -69,11 +69,21 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # @param options [Hash] step options
     # @option options [ActiveSupport::Duration, nil] :wait delay before execution
     # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
-    # @option options [Symbol] :on_exception exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+    # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
+    #   exception handling policy. Accepts:
+    #   - A Symbol (+:pause!+, +:cancel!+, +:reattempt!+, +:skip!+) for simple actions
+    #   - An {ExceptionPolicy} object for reusable, configurable policies
+    #   - A Proc/lambda that receives the exception and calls a flow control method
+    #   - An Array of {ExceptionPolicy} objects for composable per-exception-type handling.
+    #     Specific policies (those with +matching:+) are checked first; the first blanket
+    #     policy acts as a fallback. If nothing matches, class-level policies are consulted.
+    # @option options [Integer, nil] :max_reattempts max consecutive reattempts (only with symbol form)
+    # @option options [Symbol] :terminal_action what to do when max_reattempts is exceeded
+    #   (+:pause!+ or +:cancel!+, only with symbol form)
     # @option options [String, Symbol, nil] :before_step position before this step
     # @option options [String, Symbol, nil] :after_step position after this step
     # @yield the step implementation
-    # @return [void]
+    # @return [GenevaDrive::StepDefinition]
     #
     # @example Named step with block
     #   step :send_email do
@@ -90,9 +100,18 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #     PaymentGateway.charge(hero)
     #   end
     #
-    # @example Step with exception handling
+    # @example Step with simple exception handling
     #   step :external_api, on_exception: :reattempt! do
     #     ExternalApi.call(hero)
+    #   end
+    #
+    # @example Step with composable exception policies
+    #   step :sync_calendar, on_exception: [
+    #     GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Timeout::Error, max_reattempts: 5),
+    #     GenevaDrive::ExceptionPolicy.new(:cancel!, matching: OAuth2::Error),
+    #     GenevaDrive::ExceptionPolicy.new(:skip!)  # blanket fallback
+    #   ] do
+    #     GoogleCalendar.sync(hero)
     #   end
     def step(name = nil, **options, &block)
       # Capture source locations before any other operations

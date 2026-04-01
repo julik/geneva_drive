@@ -607,10 +607,11 @@ end
 
 When a step raises an exception, GenevaDrive resolves the policy in this order:
 
-1. **Step-level** — if the step has an explicit `on_exception:`, use it
-2. **Class-level specific** — walk class-level policies (most recently defined first); use the first one whose exception class filter matches
-3. **Class-level blanket** — use the most recently defined policy with no exception class filter
-4. **Default** — pause the workflow
+1. **Step-level single policy** — if the step has an explicit `on_exception:` with a single policy (symbol, `ExceptionPolicy`, or Proc), use it unconditionally
+2. **Step-level composable array** — if the step has an array of policies, walk them (specific match first, blanket fallback). If no policy in the array matches, continue to step 3
+3. **Class-level specific** — walk class-level policies (most recently defined first); use the first one whose exception class filter matches
+4. **Class-level blanket** — use the most recently defined policy with no exception class filter
+5. **Default** — pause the workflow
 
 ### Limiting Reattempts
 
@@ -668,6 +669,26 @@ class ShippingWorkflow < GenevaDrive::Workflow
 end
 ```
 
+Use the `matching:` keyword to create policies that target specific exception classes. This is especially useful when composing multiple policies into an array (see [Composable Step-Level Policies](#composable-step-level-policies)):
+
+```ruby
+# Targets a specific exception class
+TIMEOUT_RETRY = GenevaDrive::ExceptionPolicy.new(
+  :reattempt!,
+  matching: Net::OpenTimeout,
+  wait: 10.seconds,
+  max_reattempts: 5
+)
+
+# Targets multiple exception classes
+OAUTH_CANCEL = GenevaDrive::ExceptionPolicy.new(
+  :cancel!,
+  matching: [OAuth2::Error, "Faraday::ConnectionFailed"]
+)
+```
+
+`matching:` accepts a class, a string (resolved lazily via `safe_constantize` — the class doesn't need to be loaded at definition time), or an array of either. A policy without `matching:` is a blanket policy that matches any exception.
+
 You can also pass an `ExceptionPolicy` to the class-level `on_exception`. Exception class filters are set on the policy after creation:
 
 ```ruby
@@ -680,6 +701,81 @@ class ApiWorkflow < GenevaDrive::Workflow
   end
 end
 ```
+
+### Composable Step-Level Policies
+
+Sometimes a single action isn't enough — you want transient errors reattempted, fatal errors to cancel, and everything else to skip. Pass an array of `ExceptionPolicy` objects to `on_exception:` to route different exception types to different actions on a single step:
+
+```ruby
+class CalendarSyncWorkflow < GenevaDrive::Workflow
+  step :sync_events, on_exception: [
+    GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, wait: 10.seconds, max_reattempts: 5),
+    GenevaDrive::ExceptionPolicy.new(:cancel!,    matching: OAuth2::Error),
+    GenevaDrive::ExceptionPolicy.new(:skip!)  # blanket fallback for anything else
+  ] do
+    GoogleCalendar.sync(hero)
+  end
+
+  step :send_confirmation do
+    CalendarMailer.synced(hero).deliver_later
+  end
+end
+```
+
+Each policy in the array can use the `matching:` keyword to target specific exception classes. When an exception is raised, GenevaDrive walks the array in two passes:
+
+1. **Specific policies** (those with `matching:`) are checked first, in definition order. The first match wins.
+2. **Blanket policy** (the first policy without `matching:`) acts as a catchall fallback.
+3. **Fall through** — if no policy in the array matches, resolution continues at the class level (and ultimately falls back to `:pause!`).
+
+This means you can combine a step-level array with a class-level policy for layered exception handling:
+
+```ruby
+class RobustApiWorkflow < GenevaDrive::Workflow
+  on_exception :pause!  # class-level fallback
+
+  step :call_api, on_exception: [
+    GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Timeout::Error, max_reattempts: 3)
+    # No blanket fallback — unmatched exceptions fall through to class-level :pause!
+  ] do
+    SlowApi.call(hero)
+  end
+end
+```
+
+#### Global Reattempt Cap
+
+When multiple policies in the array have `max_reattempts:`, GenevaDrive enforces the *minimum* across all of them as a global cap on consecutive reattempts. This prevents runaway retries when different exception types alternate:
+
+```ruby
+step :sync, on_exception: [
+  GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Timeout::Error, max_reattempts: 10),
+  GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: RateLimitError, max_reattempts: 3, terminal_action: :cancel!)
+] do
+  ExternalApi.sync(hero)
+end
+```
+
+Here the global cap is 3. Even if every failure is a `Timeout::Error` (whose individual policy allows 10), the step stops reattempting after 3 consecutive failures. When the cap is hit, the `terminal_action` of the *matched* policy applies — so if the 4th failure is a `Timeout::Error`, the workflow pauses (the default), but if it's a `RateLimitError`, the workflow cancels.
+
+> [!TIP]
+> Store reusable policy arrays as frozen constants so you can share them across workflows:
+>
+> ```ruby
+> module ExceptionPolicies
+>   EXTERNAL_API = [
+>     GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, max_reattempts: 5),
+>     GenevaDrive::ExceptionPolicy.new(:cancel!, matching: OAuth2::Error),
+>     GenevaDrive::ExceptionPolicy.new(:pause!)  # blanket fallback
+>   ].freeze
+> end
+>
+> class SyncWorkflow < GenevaDrive::Workflow
+>   step :sync, on_exception: ExceptionPolicies::EXTERNAL_API do
+>     ExternalApi.sync(hero)
+>   end
+> end
+> ```
 
 ### Imperative Exception Handlers
 

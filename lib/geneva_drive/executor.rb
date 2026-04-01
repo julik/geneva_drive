@@ -457,6 +457,10 @@ class GenevaDrive::Executor
     end
   end
 
+  # Default exception policy: pause the workflow. Used as the ultimate
+  # fallback at the bottom of every resolution stack.
+  DEFAULT_EXCEPTION_POLICY = GenevaDrive::ExceptionPolicy.new(:pause!).freeze
+
   # Captures exception info without performing transitions.
   #
   # @param error [Exception]
@@ -464,35 +468,12 @@ class GenevaDrive::Executor
   # @return [Hash] captured exception context
   def capture_exception(error, step_def)
     Rails.error.report(error)
-    {
-      type: :exception,
-      error: error,
-      step_def: step_def,
-      policy: resolve_exception_policy(error, step_def)
-    }
-  end
-
-  # Resolves the exception policy for a given error and step definition.
-  # Precedence: step-level > class-level (specific match) > class-level (blanket) > :pause!
-  #
-  # @param error [Exception] the exception that was raised
-  # @param step_def [StepDefinition] the step definition
-  # @return [GenevaDrive::ExceptionPolicy] the resolved policy
-  def resolve_exception_policy(error, step_def)
-    # 1. Step-level always wins if explicitly set (already an ExceptionPolicy)
-    return step_def.exception_policy if step_def.has_explicit_exception_policy?
-
-    # 2-3. Walk class-level policies (specific match first, then blanket)
-    class_policy = workflow.class.resolve_exception_policy(error)
-    return class_policy if class_policy
-
-    # 4. Hardcoded default (same as step_def.exception_policy when not explicitly set)
-    step_def.exception_policy
+    {type: :exception, error: error, step_def: step_def}
   end
 
   # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
-  # Uses the resolved exception policy to determine how to handle the exception.
-  # Returns the original exception to be re-raised after the transaction commits.
+  # Builds a resolution policy, applies it, and returns the original exception
+  # to be re-raised after the transaction commits.
   #
   # @param error [Exception] the exception that occurred
   # @param step_def [StepDefinition] the step definition
@@ -501,16 +482,15 @@ class GenevaDrive::Executor
     logger.error("Pre-condition evaluation failed: #{error.class} - #{error.message}")
     Rails.error.report(error)
 
-    policy = resolve_exception_policy(error, step_def)
-    apply_exception_policy(policy, error, step_def, reattempt_reason: "precondition")
+    result = apply_resolution_policy(error, step_def)
+    apply_policy_result(result, reattempt_reason: "precondition")
 
     error
   end
 
   # Handles unexpected exceptions that occur during prepare_execution before
   # the step actually runs (e.g., NameError when hero_type references a
-  # non-existent class). Uses the resolved exception policy if available,
-  # otherwise defaults to :pause!.
+  # non-existent class).
   # Returns the original exception to be re-raised after the transaction commits.
   #
   # @param error [Exception] the exception that occurred
@@ -529,13 +509,10 @@ class GenevaDrive::Executor
     step_execution.update!(error_attributes_for(error))
     transition_step!("failed", outcome: "failed")
 
-    policy = if step_def
-      resolve_exception_policy(error, step_def)
-    else
-      GenevaDrive::ExceptionPolicy.new(:pause!)
-    end
-
-    apply_prepare_exception_policy(policy, error, step_def)
+    combined = build_resolution_policy(step_def)
+    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
+    result = combined.apply(error, reattempt_count: count, workflow: workflow)
+    apply_prepare_policy_result(result || {action: :pause, error: error})
 
     error
   end
@@ -558,156 +535,114 @@ class GenevaDrive::Executor
   def handle_captured_exception(context)
     error = context[:error]
     step_def = context[:step_def]
-    policy = context[:policy]
 
-    apply_exception_policy(policy, error, step_def, reattempt_reason: "exception_policy")
+    result = apply_resolution_policy(error, step_def)
+    apply_policy_result(result, reattempt_reason: "exception_policy")
 
     error
   end
 
-  # Applies an exception policy during step execution (not prepare phase).
-  # Handles both declarative and imperative policies.
+  # Builds a combined exception policy from step-level, class-level, and
+  # default policies, then applies it to the error.
   #
-  # @param policy [GenevaDrive::ExceptionPolicy] the resolved policy
   # @param error [Exception] the exception that was raised
-  # @param step_def [StepDefinition] the step definition
-  # @param reattempt_reason [String] the reason for reattempt metadata
-  # @return [void]
-  def apply_exception_policy(policy, error, step_def, reattempt_reason:)
-    if !policy.declarative?
-      apply_imperative_policy(policy, error, reattempt_reason: reattempt_reason)
-    else
-      apply_declarative_policy(policy, error, step_def, reattempt_reason: reattempt_reason)
-    end
+  # @param step_def [StepDefinition, nil] the step definition
+  # @return [Hash] policy result (see {ExceptionPolicy#apply})
+  def apply_resolution_policy(error, step_def)
+    combined = build_resolution_policy(step_def)
+    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
+    combined.apply(error, reattempt_count: count, workflow: workflow)
   end
 
-  # Applies a declarative exception policy (action symbol).
+  # Builds a combined exception policy that includes step-level, class-level,
+  # and default policies in precedence order.
   #
-  # @param policy [GenevaDrive::ExceptionPolicy]
-  # @param error [Exception]
-  # @param step_def [StepDefinition]
-  # @param reattempt_reason [String]
+  # The resulting {CombinedExceptionPolicy} walks policies in order:
+  # 1. Step-level policies (if explicitly set, in definition order)
+  # 2. Class-level specific policies (most recently defined first)
+  # 3. Class-level blanket policies (most recently defined first)
+  # 4. Default pause policy (always matches — guarantees a result)
+  #
+  # @param step_def [StepDefinition, nil] the step definition
+  # @return [GenevaDrive::CombinedExceptionPolicy]
+  def build_resolution_policy(step_def)
+    policies = []
+
+    policies << step_def.exception_policy if step_def&.exception_policy
+
+    class_reversed = workflow.class._exception_policies.reverse
+    policies.concat(class_reversed.select(&:specific?))
+    policies.concat(class_reversed.select(&:blanket?))
+
+    policies << DEFAULT_EXCEPTION_POLICY
+
+    GenevaDrive::CombinedExceptionPolicy.new(policies)
+  end
+
+  # Applies a policy result to the step execution and workflow.
+  # This is the single place where policy decisions become state transitions.
+  #
+  # @param result [Hash] policy result with :action, :wait, and :error keys
+  # @param reattempt_reason [String] reason for reattempt metadata
   # @return [void]
-  def apply_declarative_policy(policy, error, step_def, reattempt_reason:)
-    action = policy.action
-    logger.info("Exception policy: #{action} (declarative)")
+  def apply_policy_result(result, reattempt_reason:)
+    error = result[:error]
 
-    case action
-    when :reattempt!
-      if reattempt_limit_exceeded_for_policy?(policy, step_def)
-        terminal = policy.terminal_action
-        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded — applying terminal_action: #{terminal}")
-        step_execution.update!(error_attributes_for(error))
-        transition_step!("failed", outcome: (terminal == :cancel!) ? "canceled" : "failed")
-        transition_workflow!((terminal == :cancel!) ? "canceled" : "paused")
-      else
-        logger.info("Exception policy: reattempt! - rescheduling step")
-        transition_step!("completed", outcome: "reattempted")
-        write_reattempt_metadata(reattempt_reason, error: error)
-        transition_workflow!("ready")
-        workflow.reschedule_current_step!(wait: policy.wait)
-      end
-
-    when :cancel!
-      logger.info("Exception policy: cancel! - canceling workflow")
+    case result[:action]
+    when :reattempt
+      logger.info("Exception policy: reattempt!")
+      transition_step!("completed", outcome: "reattempted")
+      write_reattempt_metadata(reattempt_reason, error: error)
+      transition_workflow!("ready")
+      workflow.reschedule_current_step!(wait: result[:wait])
+    when :cancel
+      logger.info("Exception policy: cancel!")
       step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "canceled")
       transition_workflow!("canceled")
-
-    when :skip!
-      logger.info("Exception policy: skip! - skipping to next step")
+    when :skip
+      logger.info("Exception policy: skip!")
       transition_step!("skipped", outcome: "skipped")
       transition_workflow!("ready")
       workflow.schedule_next_step!
-
-    when :pause!
-      logger.info("Exception policy: pause! - pausing workflow")
+    when :pause
+      logger.info("Exception policy: pause!")
       step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
-
+    when :finished
+      logger.info("Exception policy: finished!")
+      transition_step!("completed", outcome: "success")
+      transition_workflow!("finished")
     else
-      logger.info("Exception policy: default (pause!) - pausing workflow")
+      logger.info("Exception policy: default (pause!)")
       step_execution.update!(error_attributes_for(error))
       transition_step!("failed", outcome: "failed")
       transition_workflow!("paused")
     end
   end
 
-  # Applies an imperative exception policy (block/proc).
-  # The handler is executed in the workflow context and must call a flow control method.
-  # If it doesn't, falls through to :pause!.
-  #
-  # @param policy [GenevaDrive::ExceptionPolicy]
-  # @param error [Exception]
-  # @param reattempt_reason [String]
-  # @return [void]
-  def apply_imperative_policy(policy, error, reattempt_reason:)
-    logger.info("Exception policy: imperative (block handler)")
-
-    signal = catch(:flow_control) do
-      workflow.instance_exec(error, &policy.handler)
-      nil # Handler returned without calling flow control — fall through
-    end
-
-    if signal.is_a?(GenevaDrive::FlowControlSignal)
-      handle_flow_control_signal(signal)
-      write_reattempt_metadata(reattempt_reason, error: error) if signal.action == :reattempt
-    else
-      # Handler didn't call a flow control method — default to pause
-      logger.info("Imperative handler did not call flow control — defaulting to pause!")
-      step_execution.update!(error_attributes_for(error))
-      transition_step!("failed", outcome: "failed")
-      transition_workflow!("paused")
-    end
-  end
-
-  # Applies an exception policy during the prepare phase.
+  # Applies a policy result during the prepare phase.
   # In prepare phase, the step has already been transitioned to "failed",
-  # so we only need to handle the workflow state transition.
+  # so only the workflow state transition is needed.
   #
-  # @param policy [GenevaDrive::ExceptionPolicy]
-  # @param error [Exception]
-  # @param step_def [StepDefinition, nil]
+  # @param result [Hash] policy result with :action and :wait keys
   # @return [void]
-  def apply_prepare_exception_policy(policy, error, step_def)
-    if !policy.declarative?
-      # For imperative policies in prepare phase, just pause (can't safely execute handler)
-      logger.info("Prepare exception: imperative policy not supported, defaulting to pause!")
-      transition_workflow!("paused")
-      return
-    end
-
-    action = policy.action
-    logger.info("Prepare exception handling with policy: #{action}")
-
-    case action
-    when :reattempt!
-      if step_def && reattempt_limit_exceeded_for_policy?(policy, step_def)
-        terminal = policy.terminal_action
-        logger.warn("Max reattempts (#{policy.max_reattempts}) exceeded — applying terminal_action: #{terminal}")
-        transition_workflow!((terminal == :cancel!) ? "canceled" : "paused")
-      else
-        logger.info("Prepare exception policy: reattempt! - rescheduling step")
-        transition_workflow!("ready")
-        workflow.reschedule_current_step!(wait: policy.wait)
-      end
-
-    when :cancel!
-      logger.info("Prepare exception policy: cancel! - canceling workflow")
+  def apply_prepare_policy_result(result)
+    case result[:action]
+    when :reattempt
+      logger.info("Prepare exception policy: reattempt!")
+      transition_workflow!("ready")
+      workflow.reschedule_current_step!(wait: result[:wait])
+    when :cancel
+      logger.info("Prepare exception policy: cancel!")
       transition_workflow!("canceled")
-
-    when :skip!
-      logger.info("Prepare exception policy: skip! - skipping to next step")
+    when :skip
+      logger.info("Prepare exception policy: skip!")
       transition_workflow!("ready")
       workflow.schedule_next_step!
-
-    when :pause!
-      logger.info("Prepare exception policy: pause! - pausing workflow")
-      transition_workflow!("paused")
-
     else
-      logger.info("Prepare exception policy: default (pause!) - pausing workflow")
+      logger.info("Prepare exception policy: pause!")
       transition_workflow!("paused")
     end
   end
@@ -776,17 +711,6 @@ class GenevaDrive::Executor
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.
   #
-  # @param policy [GenevaDrive::ExceptionPolicy] the resolved policy
-  # @param step_def [StepDefinition, nil] the step definition (for step name fallback)
-  # @return [Boolean] true if limit exceeded, false otherwise
-  def reattempt_limit_exceeded_for_policy?(policy, step_def)
-    max_reattempts = policy.max_reattempts
-    return false if max_reattempts.nil?
-
-    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    count >= max_reattempts
-  end
-
   # Handles a flow control signal.
   #
   # @param signal [FlowControlSignal]

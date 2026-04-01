@@ -160,13 +160,13 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_equal [:pause!, :cancel!, :reattempt!, :skip!], handlers
   end
 
-  test "defaults to pause! for on_exception" do
+  test "defaults to nil exception_policy when on_exception not specified" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
       step :default_handler do
       end
     end
 
-    assert_equal :pause!, workflow_class.step_definitions.first.on_exception
+    assert_nil workflow_class.step_definitions.first.exception_policy
   end
 
   test "rejects invalid on_exception values" do
@@ -179,6 +179,60 @@ class StepDefinitionTest < ActiveSupport::TestCase
 
     assert_match(/invalid on_exception/, error.message)
     assert_match(/pause!, cancel!, reattempt!, skip!/, error.message)
+  end
+
+  # Tests for array form of on_exception:
+  test "accepts an array of ExceptionPolicy objects and wraps in CombinedExceptionPolicy" do
+    policies = [
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5),
+      GenevaDrive::ExceptionPolicy.new(:cancel!, matching: TypeError)
+    ]
+
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step :array_step, on_exception: policies do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_kind_of GenevaDrive::CombinedExceptionPolicy, step_def.exception_policy
+    assert_equal 2, step_def.exception_policy.policies.length
+  end
+
+  test "rejects array with non-ExceptionPolicy elements" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :bad_array, on_exception: [:reattempt!, :cancel!] do
+        end
+      end
+    end
+
+    assert_match(/every element must be a GenevaDrive::ExceptionPolicy/, error.message)
+  end
+
+  test "rejects max_reattempts shortcut when on_exception is an array" do
+    policies = [GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)]
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :bad_shortcut, on_exception: policies, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+  end
+
+  test "rejects terminal_action shortcut when on_exception is an array" do
+    policies = [GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)]
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step :bad_shortcut, on_exception: policies, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/terminal_action:/, error.message)
   end
 
   # Tests for skip_if validation

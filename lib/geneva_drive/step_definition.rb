@@ -27,7 +27,7 @@ class GenevaDrive::StepDefinition
   # @return [Proc, Symbol, Boolean, nil] condition for skipping this step
   attr_reader :skip_condition
 
-  # @return [GenevaDrive::ExceptionPolicy] exception handling policy
+  # @return [GenevaDrive::ExceptionPolicy, GenevaDrive::CombinedExceptionPolicy] exception handling policy
   attr_reader :exception_policy
 
   # @return [String, nil] name of step this should be placed before
@@ -50,7 +50,9 @@ class GenevaDrive::StepDefinition
   # @option options [ActiveSupport::Duration, nil] :wait delay before execution
   # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
   # @option options [Proc, Symbol, Boolean, nil] :if condition for running (inverse of skip_if)
-  # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc] :on_exception how to handle exceptions
+  # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
+  #   how to handle exceptions. An Array of {ExceptionPolicy} objects is wrapped in a
+  #   {CombinedExceptionPolicy} that resolves specific policies first, then blanket fallback.
   # @option options [Integer, nil] :max_reattempts max consecutive reattempts (symbol form only)
   # @option options [String, Symbol, nil] :before_step position before this step
   # @option options [String, Symbol, nil] :after_step position after this step
@@ -77,19 +79,13 @@ class GenevaDrive::StepDefinition
     @exception_policy = build_exception_policy
   end
 
-  # Returns true if `on_exception:` was explicitly provided (not defaulted).
-  # Used by the executor to determine whether step-level should override class-level.
-  #
-  # @return [Boolean]
-  def has_explicit_exception_policy?
-    @on_exception_raw != NOT_SET
-  end
-
   # Returns the action symbol from the exception policy.
   # Provided for backward compatibility with code that reads step_def.on_exception.
   #
-  # @return [Symbol, nil] the action symbol, or nil for imperative policies
+  # @return [Symbol, nil] the action symbol, or nil for imperative/combined policies
   def on_exception
+    return nil unless @exception_policy
+    return nil if @exception_policy.is_a?(GenevaDrive::CombinedExceptionPolicy)
     @exception_policy.action
   end
 
@@ -98,7 +94,7 @@ class GenevaDrive::StepDefinition
   #
   # @return [Integer, nil]
   def max_reattempts
-    @exception_policy.max_reattempts
+    @exception_policy&.max_reattempts
   end
 
   # Evaluates whether this step should be skipped for the given workflow.
@@ -138,22 +134,24 @@ class GenevaDrive::StepDefinition
   end
 
   # Builds the ExceptionPolicy from validated raw inputs.
-  # This is the single place where symbols, procs, and policies are normalized.
+  # This is the single place where symbols, procs, arrays, and policies are normalized.
   #
-  # @return [GenevaDrive::ExceptionPolicy]
+  # @return [GenevaDrive::ExceptionPolicy, GenevaDrive::CombinedExceptionPolicy]
   def build_exception_policy
-    on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
+    return nil if @on_exception_raw == NOT_SET
 
-    case on_exc
+    case @on_exception_raw
+    when Array
+      GenevaDrive::CombinedExceptionPolicy.new(@on_exception_raw)
     when GenevaDrive::ExceptionPolicy
-      on_exc
+      @on_exception_raw
     when Proc
-      GenevaDrive::ExceptionPolicy.new(&on_exc)
+      GenevaDrive::ExceptionPolicy.new(&@on_exception_raw)
     when Symbol
-      max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(on_exc) : @max_reattempts_raw
+      max = (@max_reattempts_raw.nil? && !explicitly_set_max_reattempts?) ? default_max_reattempts(@on_exception_raw) : @max_reattempts_raw
       opts = {max_reattempts: max}
       opts[:terminal_action] = @terminal_action_raw if @terminal_action_raw
-      GenevaDrive::ExceptionPolicy.new(on_exc, **opts)
+      GenevaDrive::ExceptionPolicy.new(@on_exception_raw, **opts)
     end
   end
 
@@ -207,9 +205,17 @@ class GenevaDrive::StepDefinition
         "Step '#{@name}' has invalid on_exception: must be one of #{EXCEPTION_HANDLERS.join(", ")}"
     when GenevaDrive::ExceptionPolicy, Proc
       nil
+    when Array
+      @on_exception_raw.each do |element|
+        unless element.is_a?(GenevaDrive::ExceptionPolicy)
+          raise GenevaDrive::StepConfigurationError,
+            "Step '#{@name}' has invalid on_exception array element: " \
+            "every element must be a GenevaDrive::ExceptionPolicy, got #{element.class}"
+        end
+      end
     else
       raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has invalid on_exception: must be a Symbol, ExceptionPolicy, or Proc"
+        "Step '#{@name}' has invalid on_exception: must be a Symbol, ExceptionPolicy, Proc, or Array of ExceptionPolicy"
     end
   end
 
@@ -221,10 +227,10 @@ class GenevaDrive::StepDefinition
 
     on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
 
-    # Can't pass max_reattempts when on_exception is already a policy or proc
-    if on_exc.is_a?(GenevaDrive::ExceptionPolicy) || on_exc.is_a?(Proc)
+    # Can't pass max_reattempts when on_exception is already a policy, proc, or array
+    if on_exc.is_a?(GenevaDrive::ExceptionPolicy) || on_exc.is_a?(Proc) || on_exc.is_a?(Array)
       raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has max_reattempts: but on_exception: is an ExceptionPolicy or Proc " \
+        "Step '#{@name}' has max_reattempts: but on_exception: is an ExceptionPolicy, Proc, or Array " \
         "(set max_reattempts on the policy instead)"
     end
 
@@ -249,10 +255,10 @@ class GenevaDrive::StepDefinition
 
     on_exc = (@on_exception_raw == NOT_SET) ? :pause! : @on_exception_raw
 
-    # Can't pass terminal_action when on_exception is already a policy or proc
-    if on_exc.is_a?(GenevaDrive::ExceptionPolicy) || on_exc.is_a?(Proc)
+    # Can't pass terminal_action when on_exception is already a policy, proc, or array
+    if on_exc.is_a?(GenevaDrive::ExceptionPolicy) || on_exc.is_a?(Proc) || on_exc.is_a?(Array)
       raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has terminal_action: but on_exception: is an ExceptionPolicy or Proc " \
+        "Step '#{@name}' has terminal_action: but on_exception: is an ExceptionPolicy, Proc, or Array " \
         "(set terminal_action on the policy instead)"
     end
 

@@ -2,12 +2,14 @@
 
 ## [Unreleased]
 
+## [0.5.0]
+
 - Add `ongoing?` predicate and model-level uniqueness validation for ongoing workflows. Mirrors the database unique index on `(type, hero_type, hero_id)` so that `Workflow.create` (without bang) returns validation errors instead of raising a database constraint violation.
 - Allow `hero` to be NULL on workflows. The model declares `belongs_to :hero, optional: true` but the migration enforced `NOT NULL` on `hero_type` and `hero_id`. New installs get nullable columns; existing installs get an upgrade migration (Postgres/MySQL via `change_column_null`, SQLite via atomic table swap).
 - Detect dominant UUID default function from application tables when generating migrations. When the host app uses a custom UUID default (e.g. `uuidv7()` instead of `gen_random_uuid()`), GenevaDrive tables now inherit the same default by quorum from existing tables.
 - Add class-level `on_exception` for declaring exception policies that apply to all steps in a workflow. Supports blanket policies, exception-class-specific policies, and imperative block handlers. Step-level `on_exception:` overrides class-level policies.
 - Add `GenevaDrive::ExceptionPolicy` value object for reusable exception handling configuration. Can be passed directly to `on_exception:` at step level or class level.
-- Add `terminal_action:` option to `on_exception: :reattempt!` to control what happens when `max_reattempts` is exceeded. Accepts `:pause!` (default) or `:cancel!`.
+- Add `terminal_action:` option to `on_exception: :reattempt!` to control what happens when `max_reattempts` is exceeded. Accepts `:pause!` (default), `:cancel!`, or `:skip!` (to skip the failed step and continue the workflow).
 - Add optional `metadata` JSON column to step executions for structured data (reattempt reasons, exception info). The column is optional — writing is a silent no-op if the migration has not been applied yet.
 - Double-write exception info (class, message, backtrace) into step execution metadata alongside the dedicated error columns, preparing for future column removal.
 - Add injectable logger support to `Executor.execute!`. Callers (background jobs, controllers) can pass a `logger:` parameter to inject a pre-tagged logger as the base for all workflow logging during step execution. The injected logger will have workflow and step-specific tags added on top. `PerformStepJob` now passes its own logger to the executor.
@@ -20,6 +22,11 @@
 - Change `pause!` to preserve scheduled step executions instead of canceling them. Previously, calling `pause!` would cancel the scheduled execution with outcome "workflow_paused". Now, the scheduled execution remains in "scheduled" state, making it visible in the timeline as "overdue" if time passes while paused. On `resume!`, the same execution is re-enqueued (or a new one created only if the executor canceled it while paused).
 - Improve `HousekeepingJob` to process all eligible records by looping through batches instead of stopping after the first batch. Also uses efficient SQL DELETEs with INNER JOIN for step executions cleanup and fixes cutoff times at the start of each operation for deterministic behavior.
 - Add `GenevaDrive.with_inline_enqueue` block method for bulk workflow creation. Temporarily disables deferred job enqueueing so that bulk enqueueing libraries (e.g., BulkEnqueue) can capture and batch job inserts. Only recommended for use with co-committing, database-backed ActiveJob adapters (SolidQueue, GoodJob, Gouda) on the same database.
+- Extract `CombinedExceptionPolicy` to encapsulate composable exception policy resolution. Multiple policies can be combined in an array — resolution walks them in order and enforces a global reattempt cap (minimum `max_reattempts` across all constituents). Both declarative and imperative (block) policies support `matching:` for targeting specific exception classes.
+- Add workflow state gauges via Measurometer. The housekeeping job now reports workflow count gauges (`geneva_drive.<state>`) grouped by state and workflow class.
+- Fix metadata accessor persisting Hashes via text-type `#to_s` instead of JSON serialization. Instances loaded before the lazy attribute type registration would silently corrupt metadata on save.
+- Fix step code logger to include step execution tags. Previously, calling `logger` inside step code returned the workflow-tagged logger without execution_id and step_name tags.
+- Clarify executor log messages — replace opaque "dropping through" phrasing with specific, actionable messages.
 - Allow `GenevaDrive::Workflow.cancel!` to be called outside steps as well - previously it could only be called from within a step.
 
 ## [0.4.0]

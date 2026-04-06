@@ -68,7 +68,7 @@ bin/rails generate geneva_drive:install
 bin/rails db:migrate
 ```
 
-The generator creates two migrations: one for workflows and one for step executions.
+The generator creates the migration required for geneva_drive to operate - you need to run all of them. When updating the gem, rerun the generator to add any migrations you may need to run as migrations get added as the gem evolves.
 
 ### Database Tables
 
@@ -83,7 +83,10 @@ This separation keeps the workflows table clean while maintaining a complete aud
 
 If your application uses UUID primary keys, the migrations will detect this and also use UUIDs for the foreign keys and the primary keys of the geneva_drive resources.
 
-Note that you don't want to mix integer IDs and UUIDs in the same application.
+Note that you don't want to mix integer IDs and UUIDs in the same application. geneva_drive uses a polymorphic relation for the `hero` of the workflow, which has a typed `hero_id` column. You will thus want either all of your models to be used as heroes to have UUID primary keys or bigint primary keys, but not mix the two.
+
+> [!WARNING]
+> If you are using UUIDs, we also strongly recommend adopting a lexicographically ordered UUID flavour, at least for the geneva_drive tables. Such flavours include [UUIDv7](https://github.com/seouri/rails-uuid-pk) and [tou](https://github.com/cheddar-me/tou) - you will want your primary keys to be pre-sorted for using the admin effectively, as well as for efficient `find_each` usage with the geneva_drive tables.
 
 ## Core Concepts
 

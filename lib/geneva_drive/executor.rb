@@ -467,8 +467,24 @@ class GenevaDrive::Executor
   # @param step_def [StepDefinition]
   # @return [Hash] captured exception context
   def capture_exception(error, step_def)
-    Rails.error.report(error)
     {type: :exception, error: error, step_def: step_def}
+  end
+
+  # Reports an exception via Rails.error.report based on the resolved policy's
+  # report setting. Called after policy resolution so that expected exceptions
+  # (e.g. rate limiting) can suppress error reporting.
+  #
+  # @param error [Exception]
+  # @param result [Hash] the policy result with :report and optional :terminal keys
+  # @return [void]
+  def report_exception(error, result)
+    case result[:report]
+    when :never
+      return
+    when :terminal_only
+      return unless result[:terminal]
+    end
+    Rails.error.report(error)
   end
 
   # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
@@ -480,9 +496,9 @@ class GenevaDrive::Executor
   # @return [Exception] the original exception to be re-raised
   def handle_precondition_exception(error, step_def)
     logger.error("Pre-condition evaluation failed: #{error.class} - #{error.message}")
-    Rails.error.report(error)
 
     result = apply_resolution_policy(error, step_def)
+    report_exception(error, result)
     apply_policy_result(result, reattempt_reason: "precondition")
 
     error
@@ -497,7 +513,6 @@ class GenevaDrive::Executor
   # @return [Exception] the original exception to be re-raised
   def handle_prepare_exception(error)
     logger.error("Unexpected exception during prepare_execution: #{error.class} - #{error.message}")
-    Rails.error.report(error)
 
     # Try to get step_def for policy resolution, but it may not be available yet
     step_def = begin
@@ -512,7 +527,9 @@ class GenevaDrive::Executor
     combined = build_resolution_policy(step_def)
     count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
     result = combined.apply(error, reattempt_count: count, workflow: workflow)
-    apply_prepare_policy_result(result || {action: :pause, error: error})
+    result ||= {action: :pause, error: error}
+    report_exception(error, result)
+    apply_prepare_policy_result(result)
 
     error
   end
@@ -537,6 +554,7 @@ class GenevaDrive::Executor
     step_def = context[:step_def]
 
     result = apply_resolution_policy(error, step_def)
+    report_exception(error, result)
     apply_policy_result(result, reattempt_reason: "exception_policy")
 
     error

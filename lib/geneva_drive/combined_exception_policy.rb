@@ -88,7 +88,7 @@ class GenevaDrive::CombinedExceptionPolicy
     cap = max_reattempts
     if cap && result[:action] == :reattempt && reattempt_count >= cap
       terminal = child.terminal_action.to_s.chomp("!").to_sym
-      return {action: terminal, error: error}
+      return {action: terminal, error: error, report: result[:report], terminal: true}
     end
 
     result

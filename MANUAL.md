@@ -644,7 +644,7 @@ step :flaky_api, on_exception: :reattempt!, max_reattempts: 10, terminal_action:
 end
 ```
 
-`terminal_action:` accepts `:pause!` (default) or `:cancel!`.
+`terminal_action:` accepts `:pause!` (default), `:cancel!`, or `:skip!`.
 
 ### Reusable Exception Policies
 
@@ -807,6 +807,63 @@ end
 If the block returns without calling a flow control method, the workflow pauses.
 
 Imperative handlers cannot be combined with `max_reattempts:`, `wait:`, or `terminal_action:` — manage that logic inside the block.
+
+### Controlling Error Reporting
+
+When a step raises an exception, GenevaDrive reports it to your error tracker via `Rails.error.report`. This is the right default — you want visibility into failures. But some exceptions are expected and handled: rate limits, transient timeouts, throttling responses. Reporting these on every reattempt floods your error tracker with noise and obscures the errors that actually need attention.
+
+The `report:` option controls when `Rails.error.report` is called. It accepts three values:
+
+- `:always` — (default) Report every exception, regardless of what the policy does with it. This is the safest choice and preserves the behavior you're used to.
+- `:never` — Never report the exception. Use this for errors that are fully expected and handled — rate limits, throttles, circuit breaker trips. The exception still triggers the policy action (reattempt, skip, etc.), but your error tracker stays clean.
+- `:terminal_only` — Suppress reports while the step is being reattempted, but report when reattempts are exhausted and the `terminal_action` fires. This is the sweet spot for transient errors: you don't care about individual retries, but you want to know when the retries give up.
+
+Use `report:` on both class-level `on_exception` and on `ExceptionPolicy` objects:
+
+```ruby
+class CalendarSyncWorkflow < GenevaDrive::Workflow
+  # Rate limits are expected — never report them
+  on_exception Pecorino::Throttle::Throttled, report: :never do |error|
+    reattempt!(wait: error.retry_after.clamp(10, 600).seconds)
+  end
+
+  # Transient timeouts: only report when we give up
+  on_exception Net::OpenTimeout,
+    action: :reattempt!,
+    wait: 10.seconds,
+    max_reattempts: 5,
+    terminal_action: :cancel!,
+    report: :terminal_only
+
+  step :sync_events do
+    GoogleCalendar.sync(hero)
+  end
+end
+```
+
+The same option works on `ExceptionPolicy` objects for reusable policies and composable arrays:
+
+```ruby
+RATE_LIMIT_POLICY = GenevaDrive::ExceptionPolicy.new(
+  :reattempt!,
+  matching: RateLimitError,
+  wait: 30.seconds,
+  max_reattempts: 10,
+  terminal_action: :pause!,
+  report: :terminal_only
+)
+
+step :call_api, on_exception: [
+  RATE_LIMIT_POLICY,
+  GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: Timeout::Error, report: :never, max_reattempts: 3),
+  GenevaDrive::ExceptionPolicy.new(:pause!)  # blanket fallback, reports by default
+] do
+  ExternalApi.call(hero)
+end
+```
+
+> [!IMPORTANT]
+> The `report:` option only controls `Rails.error.report`. The exception is still re-raised after the executor commits its state transitions — your background job framework (Sidekiq, SolidQueue, etc.) will see it. If your error tracker also hooks into the job framework's error handler, you may need to configure that separately.
 
 ### Manual Exception Handling
 

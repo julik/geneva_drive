@@ -205,21 +205,25 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # Policies are checked when a step raises an exception and the step itself
     # does not have an explicit `on_exception:` override.
     #
-    # @overload on_exception(action, *exception_matchers, wait: nil, max_reattempts: nil)
+    # @overload on_exception(action, *exception_matchers, wait: nil, max_reattempts: nil, report: :always)
     #   Declarative mode — specify an action symbol.
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
     #   @param exception_matchers [Array<Class>] optional exception classes to match
     #   @param wait [ActiveSupport::Duration, nil] wait before reattempt
     #   @param max_reattempts [Integer, nil] max consecutive reattempts
+    #   @param report [Symbol] when to report the exception to +Rails.error.report+
+    #     (+:always+, +:never+, or +:terminal_only+). See {ExceptionPolicy} for details.
     #
-    # @overload on_exception(*exception_matchers, action:, wait: nil, max_reattempts: nil)
+    # @overload on_exception(*exception_matchers, action:, wait: nil, max_reattempts: nil, report: :always)
     #   Declarative mode with exception classes as leading args and action as keyword.
     #   @param exception_matchers [Array<Class>] exception classes to match
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
+    #   @param report [Symbol] when to report the exception (+:always+, +:never+, or +:terminal_only+)
     #
-    # @overload on_exception(*exception_matchers, &block)
+    # @overload on_exception(*exception_matchers, report: :always, &block)
     #   Imperative mode — block receives exception, runs in workflow context.
     #   @param exception_matchers [Array<Class>] optional exception classes to match
+    #   @param report [Symbol] when to report the exception (+:always+, +:never+, or +:terminal_only+)
     #   @yield [error] the exception that was raised
     #
     # @example Blanket default for all exceptions
@@ -233,7 +237,15 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   on_exception RateLimitError do |error|
     #     reattempt! wait: error.retry_after.seconds
     #   end
-    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, &block)
+    #
+    # @example Suppress reporting for expected rate limits
+    #   on_exception RateLimitError, report: :never do |error|
+    #     reattempt! wait: error.retry_after.seconds
+    #   end
+    #
+    # @example Report only when reattempts are exhausted
+    #   on_exception Timeout::Error, action: :reattempt!, max_reattempts: 5, report: :terminal_only
+    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always, &block)
       # Separate exception classes from a leading action symbol
       if args.first.is_a?(Symbol)
         raise ArgumentError, "Cannot pass both a positional action and action: keyword" if action
@@ -258,10 +270,10 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       end
 
       policy = if block
-        GenevaDrive::ExceptionPolicy.new(&block)
+        GenevaDrive::ExceptionPolicy.new(report: report, &block)
       else
         raise ArgumentError, "Either an action or a block is required" unless action
-        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action)
+        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action, report: report)
       end
 
       policy.exception_matchers.concat(exception_matchers)

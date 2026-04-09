@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Add `report:` option to exception policies and class-level `on_exception` for controlling when exceptions are reported to `Rails.error.report`. Accepts `:always` (default — preserves existing behavior), `:never` (suppress reporting for expected exceptions like rate limits), or `:terminal_only` (suppress during reattempts, report only when `terminal_action` fires). The executor now defers error reporting until after policy resolution.
+
 ## [0.5.0]
 
 - Add `ongoing?` predicate and model-level uniqueness validation for ongoing workflows. Mirrors the database unique index on `(type, hero_type, hero_id)` so that `Workflow.create` (without bang) returns validation errors instead of raising a database constraint violation.

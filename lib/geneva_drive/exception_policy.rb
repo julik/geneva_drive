@@ -85,6 +85,9 @@ class GenevaDrive::ExceptionPolicy
   #   Each entry can be an Exception subclass or any object responding to #===.
   attr_reader :exception_matchers
 
+  # @return [Symbol] when to report the exception via Rails.error.report (:always, :never, or :terminal_only)
+  attr_reader :report
+
   # @return [Proc, nil] the handler block (imperative mode)
   attr_reader :handler
 
@@ -93,7 +96,10 @@ class GenevaDrive::ExceptionPolicy
   # Valid terminal_action values
   VALID_TERMINAL_ACTIONS = %i[pause! cancel! skip!].freeze
 
-  # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!)
+  # Valid report values
+  VALID_REPORT_OPTIONS = %i[always never terminal_only].freeze
+
+  # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always)
   #   Declarative mode — specify action and options.
   #   @param action [Symbol] the flow control action (:pause!, :cancel!, :reattempt!, :skip!)
   #   @param matching [Class, String, #===, Array<Class, String, #===>, nil] exception classes
@@ -104,12 +110,19 @@ class GenevaDrive::ExceptionPolicy
   #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause!, :cancel!, or :skip!)
+  #   @param report [Symbol] when to report the exception to +Rails.error.report+.
+  #     - +:always+ (default) — report every exception regardless of what action is taken
+  #     - +:never+ — never report; the exception is expected and handled by the policy
+  #     - +:terminal_only+ — suppress reports while the step is being reattempted, but
+  #       report when reattempts are exhausted and the +terminal_action+ fires
   #
-  # @overload initialize(matching: nil, &block)
+  # @overload initialize(matching: nil, report: :always, &block)
   #   Imperative mode — block receives exception, runs in workflow context.
   #   Must call a flow control method (reattempt!, cancel!, pause!, skip!).
-  #   Can be combined with +matching:+ to target specific exception classes.
+  #   Can be combined with +matching:+ and +report:+ to target specific exception classes
+  #   and control error reporting.
   #   @param matching [Class, String, #===, Array<Class, String, #===>, nil] exception classes
+  #   @param report [Symbol] when to report the exception (+:always+, +:never+, or +:terminal_only+)
   #   @yield [error] the exception that was raised
   #
   # @example Blanket reattempt policy
@@ -126,7 +139,18 @@ class GenevaDrive::ExceptionPolicy
   #
   # @example Imperative policy with exception matching
   #   ExceptionPolicy.new(matching: Timeout::Error) { |error| reattempt!(wait: error.retry_after) }
-  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, &block)
+  #
+  # @example Suppress error reporting for expected exceptions
+  #   ExceptionPolicy.new(:reattempt!, matching: RateLimitError, report: :never)
+  #
+  # @example Only report when reattempts are exhausted
+  #   ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, max_reattempts: 5, report: :terminal_only)
+  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, report: :always, &block)
+    @report = report
+    unless VALID_REPORT_OPTIONS.include?(@report)
+      raise ArgumentError,
+        "report: must be one of #{VALID_REPORT_OPTIONS.join(", ")}, got #{@report.inspect}"
+    end
     if block
       if action || wait || max_reattempts || terminal_action != :pause!
         raise ArgumentError,
@@ -191,8 +215,10 @@ class GenevaDrive::ExceptionPolicy
   # in the workflow context and translates the resulting flow control signal
   # into a result.
   #
-  # The returned Hash always contains +:action+ (Symbol without +!+) and
-  # +:error+ (the original exception). Reattempt results also include +:wait+.
+  # The returned Hash always contains +:action+ (Symbol without +!+),
+  # +:error+ (the original exception), and +:report+ (the reporting mode).
+  # Reattempt results also include +:wait+. When the terminal action fires
+  # (reattempt limit exceeded), +:terminal+ is set to +true+.
   #
   # @param error [Exception] the exception that was raised
   # @param reattempt_count [Integer] consecutive reattempts so far for this step
@@ -241,9 +267,9 @@ class GenevaDrive::ExceptionPolicy
     end
 
     if signal.is_a?(GenevaDrive::FlowControlSignal)
-      {action: signal.action, wait: signal.options[:wait], error: error}
+      {action: signal.action, wait: signal.options[:wait], error: error, report: @report}
     else
-      {action: :pause, error: error}
+      {action: :pause, error: error, report: @report}
     end
   end
 
@@ -256,9 +282,9 @@ class GenevaDrive::ExceptionPolicy
   def apply_declarative(error, reattempt_count)
     if action == :reattempt! && max_reattempts && reattempt_count >= max_reattempts
       terminal = terminal_action.to_s.chomp("!").to_sym
-      {action: terminal, error: error}
+      {action: terminal, error: error, report: @report, terminal: true}
     else
-      {action: action.to_s.chomp("!").to_sym, wait: wait, error: error}
+      {action: action.to_s.chomp("!").to_sym, wait: wait, error: error, report: @report}
     end
   end
 

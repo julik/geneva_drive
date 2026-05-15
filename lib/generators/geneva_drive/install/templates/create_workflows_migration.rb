@@ -22,6 +22,15 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
       # Multiple workflows of same type for same hero
       t.boolean :allow_multiple, default: false, null: false
 
+      # Per-workflow ActiveJob options for step execution jobs
+      if connection.adapter_name.downcase.include?("postgresql")
+        t.jsonb :step_job_options
+      elsif connection.adapter_name.downcase.include?("mysql")
+        t.text :step_job_options, limit: 4_294_967_295
+      else
+        t.text :step_job_options
+      end
+
       # Timestamps
       t.datetime :started_at
       t.datetime :transitioned_at

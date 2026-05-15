@@ -50,6 +50,11 @@ module GenevaDrive
           "allow_null_hero_on_workflows.rb",
           "db/migrate/allow_null_hero_on_geneva_drive_workflows.rb"
         )
+
+        migration_template(
+          "add_step_job_options_to_workflows.rb",
+          "db/migrate/add_step_job_options_to_geneva_drive_workflows.rb"
+        )
       end
 
       # Creates the initializer file.

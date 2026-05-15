@@ -22,6 +22,8 @@
 class GenevaDrive::Workflow < ActiveRecord::Base
   self.table_name = "geneva_drive_workflows"
 
+  VALID_STEP_JOB_OPTION_KEYS = %i[queue priority wait wait_until].freeze
+
   # Workflow states as enum with string values
   # Provides: ready?, performing?, etc. predicates
   # Provides: ready, performing, etc. scopes
@@ -53,6 +55,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
   # Validations
   validate :validate_unique_ongoing_workflow, if: -> { !allow_multiple && ongoing? }
+  validate :validate_step_job_options
 
   # Additional scopes
   scope :ongoing, -> { where.not(state: %w[finished canceled]) }
@@ -182,6 +185,14 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     def set_step_job_options(**options)
       # Merge with parent's options
       self._step_job_options = _step_job_options.merge(options)
+    end
+
+    # Whether this installation has migrated the per-workflow job options column.
+    # Kept lazy so apps can boot safely during upgrade windows.
+    #
+    # @return [Boolean]
+    def step_job_options_column?
+      table_exists? && column_names.include?("step_job_options")
     end
 
     # Allows the workflow to continue even if the hero is deleted.
@@ -552,7 +563,151 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
   end
 
+  # Returns per-workflow ActiveJob options that were supplied at creation time.
+  #
+  # @return [Hash]
+  def step_job_options
+    normalized_step_job_options
+  end
+
+  # Stores per-workflow ActiveJob options for future step enqueues.
+  #
+  # @param options [Hash, nil] ActiveJob set options
+  # @return [void]
+  def step_job_options=(options)
+    @step_job_options_input = options
+    remove_instance_variable(:@step_job_options_serialization_error) if defined?(@step_job_options_serialization_error)
+
+    if options.blank?
+      @step_job_options_override = {}
+      write_step_job_options_attribute(nil)
+      return
+    end
+
+    unless options.respond_to?(:to_h)
+      @step_job_options_override = options
+      return
+    end
+
+    @step_job_options_override = normalize_step_job_options_hash(options.to_h)
+    write_step_job_options_attribute(serialize_step_job_options(@step_job_options_override))
+  rescue ActiveJob::SerializationError => error
+    @step_job_options_serialization_error = error
+  end
+
+  # Clears cached per-workflow job options when ActiveRecord reloads attributes.
+  #
+  # @return [GenevaDrive::Workflow]
+  def reload(...)
+    remove_instance_variable(:@step_job_options_input) if defined?(@step_job_options_input)
+    remove_instance_variable(:@step_job_options_override) if defined?(@step_job_options_override)
+    remove_instance_variable(:@step_job_options_serialization_error) if defined?(@step_job_options_serialization_error)
+
+    super
+  end
+
   private
+
+  # Returns the raw user input when present, otherwise the stored value.
+  #
+  # @return [Object]
+  def raw_step_job_options
+    if defined?(@step_job_options_input)
+      @step_job_options_input
+    elsif defined?(@step_job_options_override)
+      @step_job_options_override
+    else
+      deserialize_step_job_options(read_step_job_options_attribute)
+    end
+  end
+
+  # Returns normalized per-workflow options with symbol keys.
+  #
+  # @return [Hash]
+  def normalized_step_job_options
+    raw = if defined?(@step_job_options_override)
+      @step_job_options_override
+    else
+      deserialize_step_job_options(read_step_job_options_attribute)
+    end
+
+    return {} unless raw.respond_to?(:to_h)
+
+    normalize_step_job_options_hash(raw.to_h)
+  end
+
+  # Returns class-level options merged with persisted instance overrides.
+  #
+  # @return [Hash]
+  def merged_step_job_options
+    self.class._step_job_options.merge(normalized_step_job_options)
+  end
+
+  # Normalizes job option hash keys for ActiveJob#set keyword splatting.
+  #
+  # @param options [Hash]
+  # @return [Hash]
+  def normalize_step_job_options_hash(options)
+    options.each_with_object({}) do |(key, value), normalized|
+      normalized[key.to_s.to_sym] = value
+    end
+  end
+
+  # Serializes options through ActiveJob so JSON/text storage preserves
+  # supported Ruby values such as symbols and times.
+  #
+  # @param options [Hash]
+  # @return [Hash]
+  def serialize_step_job_options(options)
+    ActiveJob::Arguments.serialize([options]).first
+  end
+
+  # Deserializes options previously serialized through ActiveJob.
+  #
+  # @param raw [Object]
+  # @return [Hash]
+  def deserialize_step_job_options(raw)
+    parsed = case raw
+    when Hash then raw
+    when String then JSON.parse(raw)
+    when NilClass then {}
+    else {}
+    end
+
+    deserialized = ActiveJob::Arguments.deserialize([parsed]).first
+    return {} unless deserialized.respond_to?(:to_h)
+
+    deserialized.to_h
+  rescue JSON::ParserError, ActiveJob::DeserializationError
+    {}
+  end
+
+  # Reads the storage attribute only when the migration has been installed.
+  #
+  # @return [Object, nil]
+  def read_step_job_options_attribute
+    return nil unless self.class.step_job_options_column? && has_attribute?(:step_job_options)
+
+    read_attribute(:step_job_options)
+  end
+
+  # Writes the storage attribute only when the migration has been installed.
+  #
+  # @param serialized_options [Hash, nil]
+  # @return [void]
+  def write_step_job_options_attribute(serialized_options)
+    return unless self.class.step_job_options_column? && has_attribute?(:step_job_options)
+
+    value = if serialized_options.nil?
+      nil
+    elsif self.class.columns_hash["step_job_options"].type.in?([:json, :jsonb])
+      serialized_options
+    else
+      serialized_options.to_json
+    end
+
+    write_attribute(:step_job_options, value)
+  end
 
   # Validates that no other ongoing workflow exists for the same (type, hero).
   # Mirrors the database unique index on (type, hero_type, hero_id) for ongoing workflows.
@@ -566,6 +721,29 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     if scope.exists?
       errors.add(:base, "An ongoing workflow of this type already exists for this hero")
     end
+  end
+
+  # Validates per-workflow ActiveJob options before they are persisted.
+  #
+  # @return [void]
+  def validate_step_job_options
+    return if raw_step_job_options.blank?
+
+    unless raw_step_job_options.respond_to?(:to_h)
+      errors.add(:step_job_options, "must be a hash")
+      return
+    end
+
+    invalid_keys = raw_step_job_options.to_h.keys.map { |key| key.to_s.to_sym } - VALID_STEP_JOB_OPTION_KEYS
+    if invalid_keys.any?
+      errors.add(:step_job_options, "contains unsupported option(s): #{invalid_keys.join(", ")}")
+    end
+
+    raise @step_job_options_serialization_error if defined?(@step_job_options_serialization_error)
+
+    ActiveJob::Arguments.serialize([normalized_step_job_options])
+  rescue ActiveJob::SerializationError, ActiveJob::DeserializationError => error
+    errors.add(:step_job_options, "contains unserializable value: #{error.message}")
   end
 
   # Logs when a workflow is created.
@@ -605,7 +783,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     logger.info("Enqueuing job for step #{step_execution.step_name} to run #{wait_msg}")
 
     # Capture values for the callback
-    job_options = self.class._step_job_options.dup
+    job_options = merged_step_job_options
     job_options[:wait_until] = wait_until if wait_until
     execution_id = step_execution.id
     workflow_logger = logger
@@ -661,7 +839,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       update!(next_step_name: step_definition.name)
 
       # Capture values for the after_commit callback
-      job_options = self.class._step_job_options.dup
+      job_options = merged_step_job_options
       job_options[:wait_until] = scheduled_for if wait
       execution_id = step_execution.id
       workflow_logger = logger

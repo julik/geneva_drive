@@ -3,6 +3,8 @@
 require "test_helper"
 
 class WorkflowTest < ActiveSupport::TestCase
+  include ActiveJob::TestHelper
+
   # Basic workflow for testing
   class SimpleWorkflow < GenevaDrive::Workflow
     step :step_one do
@@ -125,8 +127,21 @@ class WorkflowTest < ActiveSupport::TestCase
     end
   end
 
+  class PerCallJobOptionsWorkflow < GenevaDrive::Workflow
+    set_step_job_options queue: :default_queue, priority: 10
+
+    step :first_step do
+      # First step
+    end
+
+    step :delayed_step, wait: 1.hour do
+      # Delayed step
+    end
+  end
+
   setup do
     @user = create_user
+    clear_enqueued_jobs
   end
 
   test "creates workflow with hero and schedules first step" do
@@ -155,6 +170,92 @@ class WorkflowTest < ActiveSupport::TestCase
     options = ChildWorkflow._step_job_options
     assert_equal :base_queue, options[:queue]
     assert_equal 10, options[:priority]
+  end
+
+  test "per-call step job options override class queue for initial enqueue" do
+    clear_enqueued_jobs
+
+    workflow = PerCallJobOptionsWorkflow.create!(
+      hero: @user,
+      step_job_options: {queue: :high_priority}
+    )
+
+    assert_equal({queue: :high_priority}, workflow.step_job_options)
+    assert_enqueued_with(
+      job: GenevaDrive::PerformStepJob,
+      args: [workflow.step_executions.first.id],
+      queue: "high_priority"
+    )
+  end
+
+  test "per-call step job options merge with class-level options" do
+    clear_enqueued_jobs
+
+    PerCallJobOptionsWorkflow.create!(
+      hero: @user,
+      step_job_options: {queue: :high_priority}
+    )
+
+    job = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    assert_equal "high_priority", job[:queue]
+    assert_equal 10, job[:priority]
+  end
+
+  test "per-call step job options are persisted and restored after reload" do
+    workflow = PerCallJobOptionsWorkflow.create!(
+      hero: @user,
+      step_job_options: {queue: :high_priority, priority: 5}
+    )
+
+    persisted = PerCallJobOptionsWorkflow.find(workflow.id)
+    assert_equal({queue: :high_priority, priority: 5}, persisted.step_job_options)
+  end
+
+  test "scheduled later steps use persisted per-call step job options" do
+    clear_enqueued_jobs
+
+    workflow = PerCallJobOptionsWorkflow.create!(
+      hero: @user,
+      step_job_options: {queue: :high_priority}
+    )
+
+    execution_id = workflow.step_executions.first.id
+
+    clear_enqueued_jobs
+    GenevaDrive::StepExecution.find(execution_id).execute!
+
+    delayed_execution = workflow.step_executions.find_by!(step_name: "delayed_step")
+    assert_enqueued_with(
+      job: GenevaDrive::PerformStepJob,
+      args: [delayed_execution.id],
+      queue: "high_priority",
+      at: delayed_execution.scheduled_for
+    )
+  end
+
+  test "invalid per-call step job option keys are rejected" do
+    workflow = PerCallJobOptionsWorkflow.new(
+      hero: @user,
+      step_job_options: {unknown: true}
+    )
+
+    assert_not workflow.valid?
+    assert_includes workflow.errors[:step_job_options].join, "unsupported option"
+  end
+
+  test "per-call step job options do not affect unique ongoing workflow scope" do
+    PerCallJobOptionsWorkflow.create!(
+      hero: @user,
+      step_job_options: {queue: :high_priority}
+    )
+
+    duplicate = PerCallJobOptionsWorkflow.new(
+      hero: @user,
+      step_job_options: {queue: :low_priority}
+    )
+
+    assert_not duplicate.valid?
+    assert_includes duplicate.errors[:base], "An ongoing workflow of this type already exists for this hero"
   end
 
   test "may_proceed_without_hero! is inherited" do

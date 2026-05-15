@@ -30,6 +30,15 @@ bin/rails generate geneva_drive:install
 bin/rails db:migrate
 ```
 
+When updating GenevaDrive in an existing application, run the generator again:
+
+```bash
+bin/rails generate geneva_drive:install
+bin/rails db:migrate
+```
+
+The generator is safe to rerun. It adds any GenevaDrive migrations that are missing for your installed version. For example, versions with per-workflow job options add a nullable `step_job_options` column to `geneva_drive_workflows`.
+
 You should also add the housekeeping job to your background job cron table
 (below example is for `recurring.yml` in solid_queue):
 
@@ -66,6 +75,17 @@ end
 ```ruby
 SignupWorkflow.create!(hero: current_user)
 ```
+
+You can override the ActiveJob options for a single workflow instance:
+
+```ruby
+SignupWorkflow.create!(
+  hero: current_user,
+  step_job_options: {queue: :high, priority: 5}
+)
+```
+
+`step_job_options:` is persisted with the workflow and merged over the class defaults from `set_step_job_options`. Later steps, reattempts, and resumed scheduled executions keep using the same override. This lets a user-triggered workflow run on a high-priority queue without creating a subclass, so ongoing-workflow dedupe still uses the same workflow class.
 
 ### Flow Control
 

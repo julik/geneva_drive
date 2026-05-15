@@ -1227,7 +1227,7 @@ The method is thread-safe and won't affect other concurrent requests.
 
 ### Custom Job Options
 
-Override the queue or priority for all steps in a workflow:
+Override the queue or priority for all steps in a workflow class:
 
 ```ruby
 class HighPriorityWorkflow < GenevaDrive::Workflow
@@ -1239,7 +1239,27 @@ class HighPriorityWorkflow < GenevaDrive::Workflow
 end
 ```
 
-The options are passed directly to ActiveJob's `set` method.
+You can also override those options for a single workflow instance:
+
+```ruby
+SyncGmailWorkflow.create!(
+  hero: connected_account,
+  step_job_options: {queue: :high, priority: 5}
+)
+```
+
+The per-call options are persisted on the workflow row and merged over the class-level options. That means later steps, reattempts, and resumed scheduled executions keep the same queue or priority. This is useful when the same workflow can be started by both low-priority background polling and high-priority user actions: keep one workflow class for dedupe, but give the user-triggered run priority treatment.
+
+Supported keys are the ActiveJob `set` options GenevaDrive passes through: `queue`, `priority`, `wait`, and `wait_until`. Step scheduling remains authoritative for actual step delays, so a step's own `wait:` still sets the runtime `wait_until`.
+
+Existing applications need the `step_job_options` column before per-call options can be persisted:
+
+```bash
+bin/rails generate geneva_drive:install
+bin/rails db:migrate
+```
+
+The generator adds a nullable `geneva_drive_workflows.step_job_options` column if it is missing. This is an additive migration on PostgreSQL, MySQL, and SQLite.
 
 ## Housekeeping
 

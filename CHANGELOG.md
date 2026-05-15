@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add per-call `step_job_options:` to `Workflow.create` / `create!`. Options are persisted on the workflow row, merged over class-level `set_step_job_options`, and reused for later steps, reattempts, and resumed scheduled executions. Existing installs get an additive migration for nullable `geneva_drive_workflows.step_job_options` by rerunning `bin/rails generate geneva_drive:install`.
 - Add `report:` option to exception policies and class-level `on_exception` for controlling when exceptions are reported to `Rails.error.report`. Accepts `:always` (default — preserves existing behavior), `:never` (suppress reporting for expected exceptions like rate limits), or `:terminal_only` (suppress during reattempts, report only when `terminal_action` fires). The executor now defers error reporting until after policy resolution.
 
 ## [0.5.0]

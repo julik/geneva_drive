@@ -1250,7 +1250,7 @@ SyncGmailWorkflow.create!(
 
 The per-call options are persisted on the workflow row and merged over the class-level options. That means later steps, reattempts, and resumed scheduled executions keep the same queue or priority. This is useful when the same workflow can be started by both low-priority background polling and high-priority user actions: keep one workflow class for dedupe, but give the user-triggered run priority treatment.
 
-Supported keys are the ActiveJob `set` options GenevaDrive passes through: `queue`, `priority`, `wait`, and `wait_until`. Step scheduling remains authoritative for actual step delays, so a step's own `wait:` still sets the runtime `wait_until`.
+Supported keys are `queue` and `priority`. Step timing still belongs in GenevaDrive's step DSL (`step :name, wait: 5.minutes`) or in flow control (`reattempt!(wait: 1.minute)`), so per-call job options do not accept `wait` or `wait_until`.
 
 Existing applications need the `step_job_options` column before per-call options can be persisted:
 

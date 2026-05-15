@@ -243,6 +243,18 @@ class WorkflowTest < ActiveSupport::TestCase
     assert_includes workflow.errors[:step_job_options].join, "unsupported option"
   end
 
+  test "per-call step job options reject scheduling keys" do
+    %i[wait wait_until].each do |key|
+      workflow = PerCallJobOptionsWorkflow.new(
+        hero: @user,
+        step_job_options: {key => 1.hour.from_now}
+      )
+
+      assert_not workflow.valid?
+      assert_includes workflow.errors[:step_job_options].join, "unsupported option"
+    end
+  end
+
   test "per-call step job options do not affect unique ongoing workflow scope" do
     PerCallJobOptionsWorkflow.create!(
       hero: @user,

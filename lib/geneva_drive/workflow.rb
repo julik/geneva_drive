@@ -22,7 +22,7 @@
 class GenevaDrive::Workflow < ActiveRecord::Base
   self.table_name = "geneva_drive_workflows"
 
-  VALID_STEP_JOB_OPTION_KEYS = %i[queue priority wait wait_until].freeze
+  VALID_STEP_JOB_OPTION_KEYS = %i[queue priority].freeze
 
   # Workflow states as enum with string values
   # Provides: ready?, performing?, etc. predicates
@@ -654,7 +654,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Serializes options through ActiveJob so JSON/text storage preserves
-  # supported Ruby values such as symbols and times.
+  # queue names passed as symbols.
   #
   # @param options [Hash]
   # @return [Hash]

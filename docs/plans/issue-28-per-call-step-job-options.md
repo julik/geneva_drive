@@ -21,7 +21,7 @@ The shorthand `queue:` / `priority:` create API is out of scope for this pass. T
 - Issue #28 requires overrides to merge into, not replace, class-level options.
 - Issue #28 requires workflow class identity and `validate_unique_ongoing_workflow` behavior to stay unchanged.
 - Issue #28 prefers persistence so reattempts and resumed/scheduled steps keep the override.
-- Issue #28 calls out ActiveJob `set` compatibility for `queue`, `priority`, `wait`, and `wait_until`.
+- Issue #28 calls out ActiveJob `set` compatibility. This implementation supports per-call `queue` and `priority` only, leaving `wait` and `wait_until` to GenevaDrive's step scheduling APIs to avoid conflicting timing semantics.
 
 ## Implementation Units
 
@@ -43,7 +43,7 @@ Files:
 - `lib/geneva_drive/workflow.rb`
 - `test/workflow/workflow_test.rb`
 
-Teach workflow instances to accept the `step_job_options:` attribute through normal ActiveRecord creation. Validate option keys against the ActiveJob `set` options supported by the requested behavior: `queue`, `priority`, `wait`, and `wait_until`. Invalid keys should fail validation rather than being silently ignored.
+Teach workflow instances to accept the `step_job_options:` attribute through normal ActiveRecord creation. Validate option keys against the ActiveJob `set` options supported by the requested behavior: `queue` and `priority`. Invalid keys should fail validation rather than being silently ignored.
 
 The stored override should not participate in uniqueness lookup. The existing `validate_unique_ongoing_workflow` query should continue to scope only by workflow type, hero, state, and `allow_multiple`.
 
@@ -53,7 +53,7 @@ Files:
 - `lib/geneva_drive/workflow.rb`
 - `test/workflow/workflow_test.rb`
 
-Replace direct uses of `self.class._step_job_options.dup` in `create_step_execution` and `enqueue_scheduled_execution` with a helper that merges class-level options and instance-level overrides. Runtime scheduling should still set `wait_until` after that merge so the step's actual schedule cannot be accidentally overridden by persisted creation options.
+Replace direct uses of `self.class._step_job_options.dup` in `create_step_execution` and `enqueue_scheduled_execution` with a helper that merges class-level options and instance-level queue/priority overrides. Runtime scheduling remains owned by step definitions and flow-control APIs.
 
 ## Existing Patterns
 
@@ -67,7 +67,7 @@ Replace direct uses of `self.class._step_job_options.dup` in `create_step_execut
 - Creating a workflow with `step_job_options: { queue: :high }` persists the override and enqueues the initial step job on `high`.
 - Class-level options and per-call options merge, for example class priority plus instance queue.
 - Per-call options override conflicting class-level values.
-- A delayed or scheduled later step keeps the per-workflow queue/priority while using the step's runtime `wait_until`.
+- A delayed or scheduled later step keeps the per-workflow queue/priority while using the step's own schedule.
 - An invalid `step_job_options` key makes workflow creation invalid.
 - A duplicate workflow for the same class and hero is still rejected even when `step_job_options` differ.
 - Serialization round-trips through reload so persisted overrides are available after the workflow object is reloaded.
@@ -76,4 +76,4 @@ Replace direct uses of `self.class._step_job_options.dup` in `create_step_execut
 
 - ActiveJob adapters may serialize queue names as strings even when the caller passes symbols, so tests should assert observable queue names in adapter-compatible form.
 - The upgrade window before the new column exists should not break existing apps that create workflows without overrides.
-- Persisting `wait` or `wait_until` as a default option could conflict with step scheduling. Runtime scheduling must remain authoritative for actual step timing.
+- Per-call `wait` and `wait_until` would conflict with step scheduling, so those keys are rejected.

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add GenevaDrive workflow and step metadata to `Rails.error` execution context when steps execute, so Rails error reports include workflow id/class, step execution id/name, and hero identifiers.
 - Add `report:` option to exception policies and class-level `on_exception` for controlling when exceptions are reported to `Rails.error.report`. Accepts `:always` (default — preserves existing behavior), `:never` (suppress reporting for expected exceptions like rate limits), or `:terminal_only` (suppress during reattempts, report only when `terminal_action` fires). The executor now defers error reporting until after policy resolution.
 
 ## [0.5.0]

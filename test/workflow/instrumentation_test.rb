@@ -60,6 +60,14 @@ class InstrumentationTest < ActiveSupport::TestCase
     end
   end
 
+  class UnreportedExceptionWorkflow < GenevaDrive::Workflow
+    on_exception :pause!, report: :never
+
+    step :failing_step do
+      raise StandardError, "test error"
+    end
+  end
+
   setup do
     @user = create_user
     @events = []
@@ -179,6 +187,26 @@ class InstrumentationTest < ActiveSupport::TestCase
     assert_equal :exception, event[:payload][:outcome]
     assert_kind_of StandardError, event[:payload][:exception]
     assert_equal "test error", event[:payload][:exception].message
+  end
+
+  test "adds GenevaDrive context to Rails error reports during step execution" do
+    workflow = ExceptionWorkflow.create!(hero: @user)
+    step_execution = workflow.step_executions.first
+
+    report = assert_error_reported(StandardError) do
+      assert_raises(StandardError) do
+        GenevaDrive::Executor.execute!(step_execution)
+      end
+    end
+
+    assert_equal({
+      workflow_id: workflow.id,
+      workflow_class: "InstrumentationTest::ExceptionWorkflow",
+      step_execution_id: step_execution.id,
+      step_name: "failing_step",
+      hero_type: "User",
+      hero_id: @user.id
+    }, report.context[:geneva_drive])
   end
 
   test "emits finalize.geneva_drive event after step completion" do

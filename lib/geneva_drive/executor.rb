@@ -55,6 +55,8 @@ class GenevaDrive::Executor
     # it so step code calling `logger` gets the fully-tagged step execution
     # logger. Falls back to Rails.logger if no logger is provided.
     step_logger = build_step_logger(logger || Rails.logger, step_execution)
+    Rails.error.set_context(geneva_drive: error_context)
+
     @workflow.with_logger(step_logger) do
       step_execution.with_logger(step_logger) do
         execute_with_logger(step_execution)
@@ -93,6 +95,20 @@ class GenevaDrive::Executor
   end
 
   attr_reader :step_execution, :workflow, :logger
+
+  # Builds execution context to attach to Error Monitoring reports.
+  #
+  # @return [Hash]
+  def error_context
+    {
+      workflow_id: workflow.id,
+      workflow_class: workflow.class.name,
+      step_execution_id: step_execution.id,
+      step_name: step_execution.step_name,
+      hero_type: workflow.hero_type,
+      hero_id: workflow.hero_id
+    }.compact
+  end
 
   # Builds a fully-tagged logger for the step execution.
   # Adds workflow tags and step execution tags to the base logger.

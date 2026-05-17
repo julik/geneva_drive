@@ -47,6 +47,11 @@ module GenevaDrive
         )
 
         migration_template(
+          "add_metadata_to_workflows.rb",
+          "db/migrate/add_metadata_to_geneva_drive_workflows.rb"
+        )
+
+        migration_template(
           "allow_null_hero_on_workflows.rb",
           "db/migrate/allow_null_hero_on_geneva_drive_workflows.rb"
         )

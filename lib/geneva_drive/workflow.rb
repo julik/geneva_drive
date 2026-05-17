@@ -22,6 +22,9 @@
 class GenevaDrive::Workflow < ActiveRecord::Base
   self.table_name = "geneva_drive_workflows"
 
+  require_relative "workflow/metadata_accessor"
+  include MetadataAccessor
+
   # Workflow states as enum with string values
   # Provides: ready?, performing?, etc. predicates
   # Provides: ready, performing, etc. scopes
@@ -537,6 +540,25 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     yield
   end
 
+  # Returns per-instance step job options stored in metadata.
+  # These are merged with the class-level options when enqueuing step jobs,
+  # with instance options taking precedence.
+  #
+  # @return [Hash] symbolized job options (e.g. `{ queue: :high, priority: 5 }`)
+  def step_job_options
+    (read_metadata("step_job_options") || {}).symbolize_keys
+  end
+
+  # Sets per-instance step job options in metadata.
+  # Stored as part of the workflow's metadata column so they persist and
+  # survive across step boundaries.
+  #
+  # @param options [Hash, nil] job options to store
+  # @return [void]
+  def step_job_options=(options)
+    write_metadata("step_job_options", options.presence&.stringify_keys)
+  end
+
   # Transitions the workflow to a new state.
   #
   # @param new_state [String] the target state
@@ -553,6 +575,14 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   private
+
+  # Returns class-level step job options merged with per-instance overrides.
+  # Instance options (from metadata) take precedence over class-level ones.
+  #
+  # @return [Hash] merged job options
+  def merged_step_job_options
+    self.class._step_job_options.merge(step_job_options)
+  end
 
   # Validates that no other ongoing workflow exists for the same (type, hero).
   # Mirrors the database unique index on (type, hero_type, hero_id) for ongoing workflows.
@@ -605,7 +635,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     logger.info("Enqueuing job for step #{step_execution.step_name} to run #{wait_msg}")
 
     # Capture values for the callback
-    job_options = self.class._step_job_options.dup
+    job_options = merged_step_job_options
     job_options[:wait_until] = wait_until if wait_until
     execution_id = step_execution.id
     workflow_logger = logger
@@ -661,7 +691,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       update!(next_step_name: step_definition.name)
 
       # Capture values for the after_commit callback
-      job_options = self.class._step_job_options.dup
+      job_options = merged_step_job_options
       job_options[:wait_until] = scheduled_for if wait
       execution_id = step_execution.id
       workflow_logger = logger

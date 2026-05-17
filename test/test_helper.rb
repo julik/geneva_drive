@@ -54,6 +54,7 @@ class ActiveSupport::TestCase
   # same parallel process.
   setup do
     GenevaDrive::StepExecution.reset_metadata_column_cache!
+    GenevaDrive::Workflow.reset_metadata_column_cache!
   end
 
   # Helper to create a test user

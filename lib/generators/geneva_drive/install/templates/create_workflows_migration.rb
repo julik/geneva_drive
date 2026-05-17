@@ -4,6 +4,8 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
   include GenevaDrive::MigrationHelpers
 
   def change
+    adapter = connection.adapter_name.downcase
+
     create_table :geneva_drive_workflows, **geneva_drive_table_options do |t|
       # Core identification (STI)
       t.string :type, null: false, index: true
@@ -21,6 +23,15 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
 
       # Multiple workflows of same type for same hero
       t.boolean :allow_multiple, default: false, null: false
+
+      # Freeform JSON metadata
+      if adapter.include?("postgresql")
+        t.jsonb :metadata
+      elsif adapter.include?("mysql")
+        t.text :metadata, limit: 4_294_967_295
+      else
+        t.text :metadata
+      end
 
       # Timestamps
       t.datetime :started_at

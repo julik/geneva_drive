@@ -395,4 +395,75 @@ class WorkflowTest < ActiveSupport::TestCase
     assert_equal "finished", workflow.state
     assert_nil workflow.previous_step_name
   end
+
+  # Workflow with class-level job options for per-instance override testing
+  class ClassQueueWorkflow < GenevaDrive::Workflow
+    set_step_job_options queue: :default_queue, priority: 5
+
+    step :step_one do
+      # step one
+    end
+
+    step :step_two do
+      # step two
+    end
+  end
+
+  test "step_job_options= persists via metadata and survives reload" do
+    workflow = ClassQueueWorkflow.new(hero: @user)
+    workflow.step_job_options = {queue: :high}
+    workflow.save!
+
+    workflow.reload
+    # Values round-trip through JSON as strings; keys are symbolized
+    assert_equal({queue: "high"}, workflow.step_job_options)
+  end
+
+  test "step_job_options merges with class-level options, instance wins" do
+    workflow = ClassQueueWorkflow.new(hero: @user)
+    workflow.step_job_options = {queue: :critical}
+    workflow.save!
+
+    merged = workflow.send(:merged_step_job_options)
+    assert_equal "critical", merged[:queue]
+    assert_equal 5, merged[:priority]
+  end
+
+  test "per-instance step_job_options are used when enqueuing first step" do
+    workflow = ClassQueueWorkflow.new(hero: @user)
+    workflow.step_job_options = {queue: :high}
+    workflow.save!
+
+    enqueued = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    assert_equal "high", enqueued[:queue]
+  end
+
+  test "per-instance step_job_options are used for subsequent steps" do
+    workflow = ClassQueueWorkflow.new(hero: @user)
+    workflow.step_job_options = {queue: :high}
+    workflow.save!
+
+    # Clear the first step's enqueued job and simulate scheduling the next step
+    ActiveJob::Base.queue_adapter.enqueued_jobs.clear
+    workflow.schedule_next_step!
+
+    enqueued = ActiveJob::Base.queue_adapter.enqueued_jobs.last
+    assert_equal "high", enqueued[:queue]
+  end
+
+  test "dedupe is unaffected by differing step_job_options" do
+    workflow1 = ClassQueueWorkflow.new(hero: @user)
+    workflow1.step_job_options = {queue: :high}
+    workflow1.save!
+
+    workflow2 = ClassQueueWorkflow.new(hero: @user)
+    workflow2.step_job_options = {queue: :low}
+
+    assert_not workflow2.valid?, "should be invalid due to ongoing uniqueness"
+  end
+
+  test "step_job_options defaults to empty hash when unset" do
+    workflow = ClassQueueWorkflow.create!(hero: @user)
+    assert_equal({}, workflow.step_job_options)
+  end
 end

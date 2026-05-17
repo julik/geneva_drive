@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add optional `metadata` JSON column to workflows (mirrors the existing step executions pattern). Exposes `step_job_options` / `step_job_options=` for per-instance job option overrides (queue, priority, etc.) that merge with class-level `set_step_job_options` and persist across step boundaries. Dedupe is unaffected since metadata is not part of the uniqueness constraint.
 - Add GenevaDrive workflow and step metadata to `Rails.error` execution context when steps execute, so Rails error reports include workflow id/class, step execution id/name, and hero identifiers.
 - Add `report:` option to exception policies and class-level `on_exception` for controlling when exceptions are reported to `Rails.error.report`. Accepts `:always` (default — preserves existing behavior), `:never` (suppress reporting for expected exceptions like rate limits), or `:terminal_only` (suppress during reattempts, report only when `terminal_action` fires). The executor now defers error reporting until after policy resolution.
 

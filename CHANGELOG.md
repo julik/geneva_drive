@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add a normalized `geneva_drive.paused_ratio` gauge emitted by `HousekeepingJob`. For each workflow class (STI `type`) it reports a float in `0.0..1.0`, tagged `workflow: <ClassName>`, equal to that class's `paused` count divided by its total population (all states). Unlike absolute paused counts, this is bounded and easy to alert on (50 paused of 50 is a fire; 50 of 500,000 is noise). Derived from the existing single grouped query — no extra database load.
 - Add optional `metadata` JSON column to workflows (mirrors the existing step executions pattern). Exposes `step_job_options` / `step_job_options=` for per-instance job option overrides (queue, priority, etc.) that merge with class-level `set_step_job_options` and persist across step boundaries. Dedupe is unaffected since metadata is not part of the uniqueness constraint.
 - Add GenevaDrive workflow and step metadata to `Rails.error` execution context when steps execute, so Rails error reports include workflow id/class, step execution id/name, and hero identifiers.
 - Add `report:` option to exception policies and class-level `on_exception` for controlling when exceptions are reported to `Rails.error.report`. Accepts `:always` (default — preserves existing behavior), `:never` (suppress reporting for expected exceptions like rate limits), or `:terminal_only` (suppress during reattempts, report only when `terminal_action` fires). The executor now defers error reporting until after policy resolution.

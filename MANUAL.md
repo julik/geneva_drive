@@ -1408,6 +1408,18 @@ ActiveSupport::Notifications.subscribe("step.geneva_drive") do |event|
 end
 ```
 
+### Metric gauges
+
+`GenevaDrive::HousekeepingJob` reports gauges via [Measurometer](https://rubygems.org/gems/measurometer) on every run:
+
+| Gauge | Tags | Value |
+|-------|------|-------|
+| `geneva_drive.<state>` | _(none)_ | Absolute count of workflows in `<state>` (e.g. `ready`, `paused`, `finished`), summed across all classes |
+| `geneva_drive.<state>` | `workflow: <ClassName>` | Absolute count of workflows in `<state>` for a single workflow class |
+| `geneva_drive.paused_ratio` | `workflow: <ClassName>` | Float `0.0..1.0` — that class's `paused` count divided by its total population (all states) |
+
+`paused_ratio` is normalized on purpose: absolute paused counts are hard to alert on (50 paused of 50 is a fire; 50 of 500,000 is noise), whereas the ratio is bounded and comparable across classes. The denominator is the whole population (paused ÷ total), so it stays within `0..1` even when nothing is ongoing.
+
 ---
 
 # Part VI — Appendix

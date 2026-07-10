@@ -5,6 +5,16 @@ require "test_helper"
 class HousekeepingJobTest < ActiveSupport::TestCase
   include ActiveJob::TestHelper
 
+  # Captures Measurometer gauge/metric calls for assertions.
+  class GaugeRecorder
+    attr_reader :gauges
+    def initialize = @gauges = []
+    def set_gauge(name, value, tags = {}) = @gauges << {name: name.to_s, value: value, tags: tags}
+    def instrument(*, &blk) = blk&.call
+    def add_distribution_value(*) = nil
+    def increment_counter(*) = nil
+  end
+
   class SimpleWorkflow < GenevaDrive::Workflow
     step :step_one do
       # Step body
@@ -41,6 +51,8 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     @original_stuck_scheduled = GenevaDrive.stuck_scheduled_threshold
     @original_recovery_action = GenevaDrive.stuck_recovery_action
     @original_batch_size = GenevaDrive.housekeeping_batch_size
+    @recorder = GaugeRecorder.new
+    Measurometer.drivers << @recorder
   end
 
   teardown do
@@ -49,6 +61,15 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     GenevaDrive.stuck_scheduled_threshold = @original_stuck_scheduled
     GenevaDrive.stuck_recovery_action = @original_recovery_action
     GenevaDrive.housekeeping_batch_size = @original_batch_size
+    Measurometer.drivers.delete(@recorder)
+  end
+
+  # Returns the paused_ratio gauge value recorded for a given workflow class.
+  def paused_ratio_for(workflow_class)
+    gauge = @recorder.gauges.find do |g|
+      g[:name] == "geneva_drive.paused_ratio" && g[:tags][:workflow] == workflow_class.name
+    end
+    gauge&.fetch(:value)
   end
 
   # Cleanup tests
@@ -371,6 +392,51 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     assert result.key?(:step_executions_cleaned_up)
     assert result.key?(:stuck_in_progress_recovered)
     assert result.key?(:stuck_scheduled_recovered)
+  end
+
+  # Paused ratio gauge tests
+
+  test "emits per-class paused_ratio gauges for mixed states" do
+    # SimpleWorkflow: 1 paused of 4 total => 0.25
+    4.times do |i|
+      workflow = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+      workflow.transition_to!("paused") if i.zero?
+    end
+
+    # ThreeStepWorkflow: 2 paused of 2 total => 1.0
+    2.times do
+      workflow = ThreeStepWorkflow.create!(hero: @user, allow_multiple: true)
+      workflow.transition_to!("paused")
+    end
+
+    GenevaDrive::HousekeepingJob.perform_now
+
+    assert_in_delta 0.25, paused_ratio_for(SimpleWorkflow), 1e-9
+    assert_in_delta 1.0, paused_ratio_for(ThreeStepWorkflow), 1e-9
+  end
+
+  test "reports 0.0 paused_ratio for a class with no paused workflows" do
+    3.times do
+      SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+    end
+
+    GenevaDrive::HousekeepingJob.perform_now
+
+    assert_equal 0.0, paused_ratio_for(SimpleWorkflow)
+  end
+
+  test "denominator is total population, not ongoing-only" do
+    # Only finished/canceled workflows exist for this class - no paused, no ongoing.
+    # The ratio must still be reported as 0.0 (paused ÷ total), not skipped.
+    finished = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+    finished.transition_to!("finished")
+
+    canceled = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+    canceled.transition_to!("canceled")
+
+    GenevaDrive::HousekeepingJob.perform_now
+
+    assert_equal 0.0, paused_ratio_for(SimpleWorkflow)
   end
 
   test "processes all stuck in_progress executions in multiple batches" do

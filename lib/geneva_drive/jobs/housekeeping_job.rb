@@ -48,9 +48,16 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   private
 
   # Reports workflow count gauges to Measurometer.
-  # For each state (ready, paused, finished), sets:
-  # - A total gauge without tags
-  # - Per-workflow-class gauges tagged with `workflow: ClassName`
+  # For each state present in the workflows table (e.g. ready, paused,
+  # performing, finished, canceled), sets:
+  # - A total gauge `geneva_drive.<state>` without tags (summed across all classes)
+  # - Per-workflow-class gauges `geneva_drive.<state>` tagged with `workflow: ClassName`
+  #
+  # Additionally emits a normalized `geneva_drive.paused_ratio` gauge per
+  # workflow class — a float in `0.0..1.0` equal to that class's `paused` count
+  # divided by that class's total population (all states). This is easier to
+  # alert on than absolute paused counts (50 paused of 50 is a fire; 50 of
+  # 500,000 is noise). All gauges are derived from a single grouped query.
   #
   # @return [void]
   def report_workflow_gauges!
@@ -63,6 +70,22 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
 
     counts.each do |(state, type), count|
       Measurometer.set_gauge("geneva_drive.#{state}", count, workflow: type)
+    end
+
+    # Per-class paused ratio (paused ÷ total population), deliberately bounded 0..1.
+    # Both accumulators default to 0 so a class with no paused workflows yields a clean 0.0.
+    totals_by_type = Hash.new(0)
+    paused_by_type = Hash.new(0)
+    counts.each do |(state, type), count|
+      totals_by_type[type] += count
+      paused_by_type[type] += count if state == "paused"
+    end
+
+    totals_by_type.each do |type, total|
+      # A type only appears here when it has >= 1 row, so total is always >= 1.
+      # Guard against division by zero anyway as belt-and-suspenders.
+      next if total.zero?
+      Measurometer.set_gauge("geneva_drive.paused_ratio", paused_by_type[type].to_f / total, workflow: type)
     end
   end
 

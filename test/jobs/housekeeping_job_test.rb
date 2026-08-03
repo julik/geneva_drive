@@ -335,6 +335,59 @@ class HousekeepingJobTest < ActiveSupport::TestCase
     assert_equal "scheduled", step_execution.state
   end
 
+  test "recover_stuck_in_progress! orders by started_at ascending and terminates" do
+    GenevaDrive.stuck_in_progress_threshold = 1.hour
+    GenevaDrive.stuck_recovery_action = :cancel
+    GenevaDrive.housekeeping_batch_size = 2
+
+    # 3 stuck (old) + 2 fresh (within threshold, must not be touched)
+    stuck = 3.times.map do |i|
+      wf = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+      wf.update!(state: "performing")
+      se = wf.step_executions.first
+      se.update!(state: "in_progress", started_at: (3 + i).hours.ago)
+      se
+    end
+
+    fresh = 2.times.map do
+      wf = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+      wf.update!(state: "performing")
+      se = wf.step_executions.first
+      se.update!(state: "in_progress", started_at: 10.minutes.ago)
+      se
+    end
+
+    result = GenevaDrive::HousekeepingJob.perform_now
+
+    assert_equal 3, result[:stuck_in_progress_recovered]
+    stuck.each { |se| assert_equal "canceled", se.reload.state }
+    fresh.each { |se| assert_equal "in_progress", se.reload.state }
+  end
+
+  test "recover_stuck_scheduled! orders by scheduled_for ascending and terminates" do
+    GenevaDrive.stuck_scheduled_threshold = 1.hour
+    GenevaDrive.stuck_recovery_action = :cancel
+    GenevaDrive.housekeeping_batch_size = 2
+
+    stuck = 3.times.map do |i|
+      wf = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+      se = wf.step_executions.first
+      se.update!(scheduled_for: (2 + i).hours.ago)
+      se
+    end
+
+    fresh = 2.times.map do
+      wf = SimpleWorkflow.create!(hero: @user, allow_multiple: true)
+      wf.step_executions.first
+    end
+
+    result = GenevaDrive::HousekeepingJob.perform_now
+
+    assert_equal 3, result[:stuck_scheduled_recovered]
+    stuck.each { |se| assert_equal "canceled", se.reload.state }
+    fresh.each { |se| assert_equal "scheduled", se.reload.state }
+  end
+
   # Combined tests
 
   test "performs both cleanup and recovery in one run" do

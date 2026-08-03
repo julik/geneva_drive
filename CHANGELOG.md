@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Add partial index on `geneva_drive_step_executions(started_at) WHERE state = 'in_progress'` and order `HousekeepingJob` recovery batches by the filter column (`started_at` for stuck-in-progress, `scheduled_for` for stuck-scheduled). Fixes `HousekeepingJob` timing out on large in-progress sets where most rows are fresh — the planner previously walked the whole `state = 'in_progress'` set looking for old rows and tripped the caller's `statement_timeout`. Fixes AppSignal incident b9a7d1d1.
 - Add a normalized `geneva_drive.paused_ratio` gauge emitted by `HousekeepingJob`. For each workflow class (STI `type`) it reports a float in `0.0..1.0`, tagged `workflow: <ClassName>`, equal to that class's `paused` count divided by its total population (all states). Unlike absolute paused counts, this is bounded and easy to alert on (50 paused of 50 is a fire; 50 of 500,000 is noise). Derived from the existing single grouped query — no extra database load.
 - Add optional `metadata` JSON column to workflows (mirrors the existing step executions pattern). Exposes `step_job_options` / `step_job_options=` for per-instance job option overrides (queue, priority, etc.) that merge with class-level `set_step_job_options` and persist across step boundaries. Dedupe is unaffected since metadata is not part of the uniqueness constraint.
 - Add GenevaDrive workflow and step metadata to `Rails.error` execution context when steps execute, so Rails error reports include workflow id/class, step execution id/name, and hero identifiers.

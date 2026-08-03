@@ -213,6 +213,7 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
       stuck_executions = GenevaDrive::StepExecution
         .in_progress
         .where("started_at < ?", cutoff_time)
+        .order(started_at: :asc)
         .limit(batch_size)
         .to_a
 
@@ -242,6 +243,7 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
       stuck_executions = GenevaDrive::StepExecution
         .scheduled
         .where("scheduled_for < ?", cutoff_time)
+        .order(scheduled_for: :asc)
         .limit(batch_size)
         .to_a
 

@@ -13,7 +13,7 @@ class PerformStepJobTest < ActiveSupport::TestCase
 
   class PriorityWorkflow < GenevaDrive::Workflow
     set_step_job_options priority: 10
-    step(:test_step, priority: -1) {}
+    step(:test_step, priority: -1) { reattempt! }
   end
 
   setup do
@@ -132,7 +132,7 @@ class PerformStepJobTest < ActiveSupport::TestCase
     end
   end
 
-  test "step priority overrides workflow priority when scheduled and resumed" do
+  test "step priority overrides workflow priority when scheduled, resumed, and reattempted" do
     clear_enqueued_jobs
     workflow = PriorityWorkflow.new(hero: @user)
     workflow.step_job_options = {priority: 5}
@@ -145,5 +145,15 @@ class PerformStepJobTest < ActiveSupport::TestCase
     workflow.resume!
 
     assert_equal(-1, enqueued_jobs.last[:priority])
+
+    clear_enqueued_jobs
+    GenevaDrive::PerformStepJob.perform_now(workflow.step_executions.first.id)
+    replacement = workflow.step_executions.order(:created_at).last
+
+    assert_enqueued_with(
+      job: GenevaDrive::PerformStepJob,
+      args: [replacement.id],
+      priority: -1
+    )
   end
 end

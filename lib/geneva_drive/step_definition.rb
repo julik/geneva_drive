@@ -131,6 +131,7 @@ class GenevaDrive::StepDefinition
   def validate!
     validate_callable!
     validate_wait!
+    validate_priority!
     validate_on_exception_raw!
     validate_max_reattempts_raw!
     validate_terminal_action_raw!
@@ -195,6 +196,16 @@ class GenevaDrive::StepDefinition
 
     raise GenevaDrive::StepConfigurationError,
       "Step '#{@name}' has invalid wait value: must be non-negative"
+  end
+
+  # Validates the Active Job priority override.
+  #
+  # @raise [StepConfigurationError] if priority is not an integer or nil
+  def validate_priority!
+    return if @priority.nil? || @priority.is_a?(Integer)
+
+    raise GenevaDrive::StepConfigurationError,
+      "Step '#{@name}' has invalid priority: must be an Integer or nil"
   end
 
   # Validates the raw on_exception value before unfolding.

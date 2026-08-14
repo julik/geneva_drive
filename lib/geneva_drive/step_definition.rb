@@ -2,7 +2,7 @@
 
 # Metadata about a step definition in a workflow.
 # Holds the step name, callable (block or method name), wait time,
-# skip conditions, and exception handling configuration.
+# priority, skip conditions, and exception handling configuration.
 #
 # @api private
 class GenevaDrive::StepDefinition
@@ -23,6 +23,9 @@ class GenevaDrive::StepDefinition
 
   # @return [ActiveSupport::Duration, nil] wait time before executing this step
   attr_reader :wait
+
+  # @return [Integer, nil] Active Job priority override for this step
+  attr_reader :priority
 
   # @return [Proc, Symbol, Boolean, nil] condition for skipping this step
   attr_reader :skip_condition
@@ -48,6 +51,7 @@ class GenevaDrive::StepDefinition
   # @param callable [Proc, Symbol, nil] the code to execute (block or method name)
   # @param options [Hash] additional options
   # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+  # @option options [Integer, nil] :priority Active Job priority override
   # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
   # @option options [Proc, Symbol, Boolean, nil] :if condition for running (inverse of skip_if)
   # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
@@ -65,6 +69,7 @@ class GenevaDrive::StepDefinition
     @call_location = call_location
     @block_location = block_location
     @wait = options[:wait]
+    @priority = options[:priority]
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]
     @skip_condition = @skip_if_option || @if_option

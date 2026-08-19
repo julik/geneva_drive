@@ -5,6 +5,17 @@
 
 **Do not commit changes automatically.** Wait for the user to review changes and explicitly ask for a commit. Only create commits when the user requests it.
 
+## Pull Request Descriptions
+
+**Write PR descriptions as prose, not as a template.** The description must be usable as-is as a squash commit message.
+
+- No sections, no subheadings (no `## Summary`, no `## Test plan`, etc.).
+- No checklists.
+- No "what I did" bullet dumps.
+- Just flowing prose explaining what changed and *why*, with code examples where they clarify the change.
+- Include a rationale — the reader should understand the motivation, not just the diff.
+- Keep it tight; if the change is one paragraph long, it is one paragraph long.
+
 ## Ruby Style
 
 **Use flat module syntax.** Define classes and modules with the full namespace on the first line to minimize indentation:

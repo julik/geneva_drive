@@ -81,7 +81,7 @@ class GenevaDrive::StepDefinition
     @after_step = options[:after_step]&.to_s
 
     validate!
-    @job_options = @job_options.symbolize_keys.freeze
+    @job_options = GenevaDrive::JobOptions.validate!(@job_options, context: "Step '#{@name}'").freeze
     @exception_policy = build_exception_policy
   end
 
@@ -132,7 +132,6 @@ class GenevaDrive::StepDefinition
   def validate!
     validate_callable!
     validate_wait!
-    validate_job_options!
     validate_on_exception_raw!
     validate_max_reattempts_raw!
     validate_terminal_action_raw!
@@ -197,16 +196,6 @@ class GenevaDrive::StepDefinition
 
     raise GenevaDrive::StepConfigurationError,
       "Step '#{@name}' has invalid wait value: must be non-negative"
-  end
-
-  # Validates the Active Job options.
-  #
-  # @raise [StepConfigurationError] if job_options is not a hash
-  def validate_job_options!
-    return if @job_options.is_a?(Hash)
-
-    raise GenevaDrive::StepConfigurationError,
-      "Step '#{@name}' has invalid job_options: must be a Hash"
   end
 
   # Validates the raw on_exception value before unfolding.

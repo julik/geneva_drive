@@ -2,7 +2,7 @@
 
 # Metadata about a step definition in a workflow.
 # Holds the step name, callable (block or method name), wait time,
-# priority, skip conditions, and exception handling configuration.
+# job options, skip conditions, and exception handling configuration.
 #
 # @api private
 class GenevaDrive::StepDefinition
@@ -24,8 +24,8 @@ class GenevaDrive::StepDefinition
   # @return [ActiveSupport::Duration, nil] wait time before executing this step
   attr_reader :wait
 
-  # @return [Integer, nil] Active Job priority override for this step
-  attr_reader :priority
+  # @return [Hash] Active Job options for this step
+  attr_reader :job_options
 
   # @return [Proc, Symbol, Boolean, nil] condition for skipping this step
   attr_reader :skip_condition
@@ -51,7 +51,7 @@ class GenevaDrive::StepDefinition
   # @param callable [Proc, Symbol, nil] the code to execute (block or method name)
   # @param options [Hash] additional options
   # @option options [ActiveSupport::Duration, nil] :wait delay before execution
-  # @option options [Integer, nil] :priority Active Job priority override
+  # @option options [Hash] :job_options options passed to Active Job's set method
   # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
   # @option options [Proc, Symbol, Boolean, nil] :if condition for running (inverse of skip_if)
   # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
@@ -69,7 +69,7 @@ class GenevaDrive::StepDefinition
     @call_location = call_location
     @block_location = block_location
     @wait = options[:wait]
-    @priority = options[:priority]
+    @job_options = options.fetch(:job_options, {})
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]
     @skip_condition = @skip_if_option || @if_option
@@ -131,7 +131,7 @@ class GenevaDrive::StepDefinition
   def validate!
     validate_callable!
     validate_wait!
-    validate_priority!
+    validate_job_options!
     validate_on_exception_raw!
     validate_max_reattempts_raw!
     validate_terminal_action_raw!
@@ -198,14 +198,14 @@ class GenevaDrive::StepDefinition
       "Step '#{@name}' has invalid wait value: must be non-negative"
   end
 
-  # Validates the Active Job priority override.
+  # Validates the Active Job options.
   #
-  # @raise [StepConfigurationError] if priority is not an integer or nil
-  def validate_priority!
-    return if @priority.nil? || @priority.is_a?(Integer)
+  # @raise [StepConfigurationError] if job_options is not a hash
+  def validate_job_options!
+    return if @job_options.is_a?(Hash)
 
     raise GenevaDrive::StepConfigurationError,
-      "Step '#{@name}' has invalid priority: must be an Integer or nil"
+      "Step '#{@name}' has invalid job_options: must be a Hash"
   end
 
   # Validates the raw on_exception value before unfolding.

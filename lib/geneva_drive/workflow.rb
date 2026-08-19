@@ -71,7 +71,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # @param name [String, Symbol, nil] the step name (auto-generated if nil)
     # @param options [Hash] step options
     # @option options [ActiveSupport::Duration, nil] :wait delay before execution
-    # @option options [Integer, nil] :priority Active Job priority override
+    # @option options [Hash] :job_options options passed to Active Job's set method
     # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
     # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
     #   exception handling policy. Accepts:
@@ -578,14 +578,14 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   private
 
   # Returns class-level step job options merged with per-instance and step overrides.
-  # Instance options take precedence over class options; step priority takes final precedence.
+  # Instance options take precedence over class options; step options take final precedence.
   #
-  # @param step_definition [StepDefinition, nil] step whose priority should override defaults
+  # @param step_definition [StepDefinition, nil] step whose job options should override defaults
   # @return [Hash] merged job options
   def merged_step_job_options(step_definition = nil)
     self.class._step_job_options
       .merge(step_job_options)
-      .merge({priority: step_definition&.priority}.compact)
+      .merge(step_definition&.job_options || {})
   end
 
   # Validates that no other ongoing workflow exists for the same (type, hero).

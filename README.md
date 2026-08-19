@@ -164,13 +164,13 @@ class PremiumWorkflow < BaseWorkflow
   cancel_if { hero.subscription_expired? }
   set_step_job_options queue: :premium, priority: 10
 
-  step :premium_feature, priority: -1 do
+  step :premium_feature, job_options: {priority: -1} do
     # Inherits cancel_if from parent
   end
 end
 ```
 
-A step priority overrides the workflow default when the step is initially enqueued, reattempted, or resumed. Priority ordering depends on the queue adapter; Solid Queue treats lower numbers as higher priority.
+Step job options override workflow defaults when the step is initially enqueued, reattempted, or resumed. Options are passed directly to Active Job's `set` method.
 
 ### Hero Deletion Handling
 

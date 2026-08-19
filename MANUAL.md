@@ -1233,13 +1233,13 @@ Override the queue or priority for all steps in a workflow:
 class HighPriorityWorkflow < GenevaDrive::Workflow
   set_step_job_options queue: :critical, priority: 0
 
-  step :urgent_action, priority: -1 do
+  step :urgent_action, job_options: {queue: :urgent, priority: -1} do
     UrgentService.process!(hero)
   end
 end
 ```
 
-Workflow options are passed directly to ActiveJob's `set` method. A step priority overrides the workflow default whenever that step is enqueued, including reattempts and resume re-enqueueing. Priority ordering depends on the queue adapter; Solid Queue treats lower numbers as higher priority.
+Workflow and step options are passed directly to Active Job's `set` method. Step options override workflow defaults whenever that step is enqueued, including reattempts and resume re-enqueueing.
 
 ## Housekeeping
 
@@ -1803,7 +1803,7 @@ end
 | Option | Type | Description |
 |--------|------|-------------|
 | `wait:` | Duration | Delay before step executes |
-| `priority:` | Integer | Active Job priority override for this step |
+| `job_options:` | Hash | Options passed to Active Job's `set` method for this step |
 | `skip_if:` | Proc, Symbol, Boolean | Condition to skip step |
 | `on_exception:` | Symbol | Exception handler (`:pause!`, `:cancel!`, `:reattempt!`, `:skip!`) |
 | `max_reattempts:` | Integer, nil | Max consecutive reattempts before pausing (default: 100, `nil` = unlimited) |

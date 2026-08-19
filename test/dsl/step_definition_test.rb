@@ -140,25 +140,14 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_match(/non-negative/, error.message)
   end
 
-  test "accepts integer and nil priorities" do
-    workflow_class = Class.new(GenevaDrive::Workflow) do
-      step(:urgent, priority: -1) {}
-      step(:default, priority: nil) {}
-    end
-
-    assert_equal [-1, nil], workflow_class.step_definitions.map(&:priority)
-  end
-
-  test "rejects non-integer priorities" do
-    ["urgent", 1.5].each do |priority|
-      error = assert_raises(GenevaDrive::StepConfigurationError) do
-        Class.new(GenevaDrive::Workflow) do
-          step(:invalid, priority: priority) {}
-        end
+  test "rejects non-hash job options" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step(:invalid, job_options: :critical) {}
       end
-
-      assert_match(/invalid priority: must be an Integer or nil/, error.message)
     end
+
+    assert_match(/invalid job_options: must be a Hash/, error.message)
   end
 
   # Tests for on_exception validation

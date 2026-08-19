@@ -424,7 +424,7 @@ class WorkflowTest < ActiveSupport::TestCase
     workflow.step_job_options = {queue: :critical}
     workflow.save!
 
-    merged = workflow.send(:merged_step_job_options)
+    merged = workflow.send(:merged_step_job_options, nil)
     assert_equal "critical", merged[:queue]
     assert_equal 5, merged[:priority]
   end

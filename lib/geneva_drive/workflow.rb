@@ -582,7 +582,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #
   # @param step_definition [StepDefinition, nil] step whose job options should override defaults
   # @return [Hash] merged job options
-  def merged_step_job_options(step_definition = nil)
+  def merged_step_job_options(step_definition)
     self.class._step_job_options
       .merge(step_job_options)
       .merge(step_definition&.job_options || {})

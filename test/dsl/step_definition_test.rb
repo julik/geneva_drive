@@ -140,14 +140,62 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_match(/non-negative/, error.message)
   end
 
-  test "rejects non-hash job options" do
+  test "rejects job_options that can't be coerced to a Hash" do
     error = assert_raises(GenevaDrive::StepConfigurationError) do
       Class.new(GenevaDrive::Workflow) do
         step(:invalid, job_options: :critical) {}
       end
     end
 
-    assert_match(/invalid job_options: must be a Hash/, error.message)
+    assert_match(/cannot coerce Symbol to a Hash/, error.message)
+  end
+
+  test "accepts anything responding to to_h as job_options" do
+    struct = Struct.new(:queue, :priority).new(:critical, 5)
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step(:from_struct, job_options: struct) {}
+    end
+
+    assert_equal({queue: :critical, priority: 5}, workflow_class.step_definitions.first.job_options)
+  end
+
+  test "rejects unknown job_options keys" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step(:typo, job_options: {piority: 10}) {}
+      end
+    end
+
+    assert_match(/unknown job_options key/, error.message)
+    assert_match(/piority/, error.message)
+  end
+
+  test "rejects non-integer priority" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step(:bad_pri, job_options: {priority: "high"}) {}
+      end
+    end
+
+    assert_match(/job_options\[:priority\]/, error.message)
+  end
+
+  test "rejects non-symbol/string queue" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::Workflow) do
+        step(:bad_queue, job_options: {queue: 42}) {}
+      end
+    end
+
+    assert_match(/job_options\[:queue\]/, error.message)
+  end
+
+  test "accepts valid queue and priority" do
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step(:ok, job_options: {queue: :critical, priority: -1, wait: 5}) {}
+    end
+
+    assert_equal({queue: :critical, priority: -1, wait: 5}, workflow_class.step_definitions.first.job_options)
   end
 
   test "copies, symbolizes, and freezes job options" do

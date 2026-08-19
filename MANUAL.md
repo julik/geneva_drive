@@ -1227,7 +1227,7 @@ The method is thread-safe and won't affect other concurrent requests.
 
 ### Custom Job Options
 
-Override the queue or priority for all steps in a workflow:
+You can override the Active Job settings used to enqueue a workflow's step jobs at three levels: for the entire workflow class, for an individual step, or for a specific workflow instance. All three accept the same keys that Active Job's `set` method understands: `:queue`, `:priority`, `:wait`, and `:wait_until`. Unknown keys are rejected at configuration time so that typos surface immediately instead of silently falling back to defaults.
 
 ```ruby
 class HighPriorityWorkflow < GenevaDrive::Workflow
@@ -1239,7 +1239,53 @@ class HighPriorityWorkflow < GenevaDrive::Workflow
 end
 ```
 
-Workflow and step options are passed directly to Active Job's `set` method. Step options override workflow defaults whenever that step is enqueued, including reattempts and resume re-enqueueing.
+Options merge from lowest to highest precedence: **class defaults** (`set_step_job_options`) are overridden by **per-instance options** (`workflow.step_job_options = {...}`), which are in turn overridden by **per-step options** (`step ..., job_options: {...}`). The merged hash is passed straight to `PerformStepJob.set(...)` for every enqueue of that step, including reattempts and resume re-enqueueing.
+
+Per-instance options are stored in the workflow's `metadata` column, so they survive across step boundaries and are excluded from the dedupe uniqueness check — two workflows for the same hero cannot coexist just because their job options differ.
+
+#### When per-step job options matter: protecting in-flight work from a fresh backlog
+
+Consider a workflow that downloads, processes, and cleans up a large artifact per hero:
+
+```ruby
+class RubygemsWorkflow < GenevaDrive::Workflow
+  step :extract do
+    # Download a large tarball to local disk
+  end
+
+  step :process do
+    # Do work on the extracted data
+  end
+
+  step :cleanup do
+    # Delete the on-disk artifact
+  end
+end
+```
+
+If you enqueue 50,000 of these at once, all 50,000 `:extract` jobs land on the queue at the default priority — ahead of the `:process` and `:cleanup` steps of workflows that have already downloaded something. On queue adapters where lower numbers run first, the workers happily drain `:extract` jobs first, filling the disk with unprocessed artifacts until the volume runs out and everything starts failing.
+
+Bumping the later steps to a higher priority (lower number) fixes this:
+
+```ruby
+class RubygemsWorkflow < GenevaDrive::Workflow
+  step :extract, job_options: {priority: 10} do
+    # Download a large tarball to local disk
+  end
+
+  step :process do  # runs at default priority — ahead of :extract
+    # Do work on the extracted data
+  end
+
+  step :cleanup do  # also runs ahead of :extract
+    # Delete the on-disk artifact
+  end
+end
+```
+
+Workflows that have already extracted their artifact can now drain through `:process` and `:cleanup` — releasing disk — while new `:extract` jobs wait their turn. The fleet reaches steady state instead of collapsing under its own backlog.
+
+The same pattern is useful whenever a later step releases a scarce resource (disk, external quota, a database lock) that earlier steps consume: give the release-work a higher priority than the acquire-work.
 
 ## Housekeeping
 

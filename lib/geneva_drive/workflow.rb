@@ -184,8 +184,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # @example Set queue for workflow steps
     #   set_step_job_options queue: :workflows, priority: 10
     def set_step_job_options(**options)
+      validated = GenevaDrive::JobOptions.validate!(options, context: "#{name || "Workflow"}.set_step_job_options")
       # Merge with parent's options
-      self._step_job_options = _step_job_options.merge(options)
+      self._step_job_options = _step_job_options.merge(validated)
     end
 
     # Allows the workflow to continue even if the hero is deleted.
@@ -557,7 +558,12 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # @param options [Hash, nil] job options to store
   # @return [void]
   def step_job_options=(options)
-    write_metadata("step_job_options", options.presence&.stringify_keys)
+    if options.present?
+      validated = GenevaDrive::JobOptions.validate!(options, context: "#{self.class.name}#step_job_options=")
+      write_metadata("step_job_options", validated.stringify_keys)
+    else
+      write_metadata("step_job_options", nil)
+    end
   end
 
   # Transitions the workflow to a new state.

@@ -11,6 +11,11 @@ class PerformStepJobTest < ActiveSupport::TestCase
     end
   end
 
+  class JobOptionsWorkflow < GenevaDrive::Workflow
+    set_step_job_options queue: :default, priority: 10
+    step(:test_step, job_options: {queue: :critical, priority: -1}) {}
+  end
+
   setup do
     @user = create_user
     Thread.current[:step_executed] = nil
@@ -102,7 +107,7 @@ class PerformStepJobTest < ActiveSupport::TestCase
 
   test "job passes job options from workflow" do
     workflow_class = Class.new(GenevaDrive::Workflow) do
-      set_step_job_options queue: :high_priority
+      set_step_job_options queue: :high_priority, priority: 10
 
       step :test_step do
         # Step body
@@ -119,10 +124,28 @@ class PerformStepJobTest < ActiveSupport::TestCase
 
       assert_enqueued_with(
         job: GenevaDrive::PerformStepJob,
-        queue: "high_priority"
+        queue: "high_priority",
+        priority: 10
       )
     ensure
       Object.send(:remove_const, :TestJobOptionsWorkflow)
     end
+  end
+
+  test "step job options override workflow options when scheduled and resumed" do
+    clear_enqueued_jobs
+    workflow = JobOptionsWorkflow.new(hero: @user)
+    workflow.step_job_options = {queue: :instance, priority: 5}
+    workflow.save!
+
+    assert_equal("critical", enqueued_jobs.last[:queue])
+    assert_equal(-1, enqueued_jobs.last[:priority])
+
+    clear_enqueued_jobs
+    workflow.pause!
+    workflow.resume!
+
+    assert_equal("critical", enqueued_jobs.last[:queue])
+    assert_equal(-1, enqueued_jobs.last[:priority])
   end
 end

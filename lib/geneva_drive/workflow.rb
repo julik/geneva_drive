@@ -71,6 +71,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # @param name [String, Symbol, nil] the step name (auto-generated if nil)
     # @param options [Hash] step options
     # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+    # @option options [Hash] :job_options options passed to Active Job's set method
     # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
     # @option options [Symbol, GenevaDrive::ExceptionPolicy, Proc, Array<GenevaDrive::ExceptionPolicy>] :on_exception
     #   exception handling policy. Accepts:
@@ -576,12 +577,15 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
   private
 
-  # Returns class-level step job options merged with per-instance overrides.
-  # Instance options (from metadata) take precedence over class-level ones.
+  # Returns class-level step job options merged with per-instance and step overrides.
+  # Instance options take precedence over class options; step options take final precedence.
   #
+  # @param step_definition [StepDefinition, nil] step whose job options should override defaults
   # @return [Hash] merged job options
-  def merged_step_job_options
-    self.class._step_job_options.merge(step_job_options)
+  def merged_step_job_options(step_definition)
+    self.class._step_job_options
+      .merge(step_job_options)
+      .merge(step_definition&.job_options || {})
   end
 
   # Validates that no other ongoing workflow exists for the same (type, hero).
@@ -635,7 +639,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     logger.info("Enqueuing job for step #{step_execution.step_name} to run #{wait_msg}")
 
     # Capture values for the callback
-    job_options = merged_step_job_options
+    job_options = merged_step_job_options(step_execution.step_definition)
     job_options[:wait_until] = wait_until if wait_until
     execution_id = step_execution.id
     workflow_logger = logger
@@ -691,7 +695,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       update!(next_step_name: step_definition.name)
 
       # Capture values for the after_commit callback
-      job_options = merged_step_job_options
+      job_options = merged_step_job_options(step_definition)
       job_options[:wait_until] = scheduled_for if wait
       execution_id = step_execution.id
       workflow_logger = logger

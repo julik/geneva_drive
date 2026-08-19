@@ -24,7 +24,7 @@ class GenevaDrive::StepDefinition
   # @return [ActiveSupport::Duration, nil] wait time before executing this step
   attr_reader :wait
 
-  # @return [Hash] Active Job options for this step
+  # @return [Hash] frozen, symbol-keyed Active Job options for this step
   attr_reader :job_options
 
   # @return [Proc, Symbol, Boolean, nil] condition for skipping this step
@@ -81,6 +81,7 @@ class GenevaDrive::StepDefinition
     @after_step = options[:after_step]&.to_s
 
     validate!
+    @job_options = @job_options.symbolize_keys.freeze
     @exception_policy = build_exception_policy
   end
 

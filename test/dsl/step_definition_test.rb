@@ -150,6 +150,18 @@ class StepDefinitionTest < ActiveSupport::TestCase
     assert_match(/invalid job_options: must be a Hash/, error.message)
   end
 
+  test "copies, symbolizes, and freezes job options" do
+    job_options = {"queue" => :critical}
+    workflow_class = Class.new(GenevaDrive::Workflow) do
+      step(:urgent, job_options: job_options) {}
+    end
+    job_options["queue"] = :default
+
+    options = workflow_class.step_definitions.first.job_options
+    assert_equal({queue: :critical}, options)
+    assert_predicate options, :frozen?
+  end
+
   # Tests for on_exception validation
   test "accepts valid exception handlers" do
     workflow_class = Class.new(GenevaDrive::Workflow) do

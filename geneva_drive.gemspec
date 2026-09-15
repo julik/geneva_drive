@@ -19,7 +19,20 @@ Gem::Specification.new do |spec|
   spec.required_ruby_version = ">= 3.0.0"
 
   spec.files = Dir.chdir(File.expand_path(__dir__)) do
-    Dir["{app,config,db,lib,test,config,bin}/**/*", "LICENSE-LGPL.txt", "LICENSE-COMMERCIAL.txt", "Rakefile", "README.md", "MANUAL.md", "CHANGELOG.md"]
+    included = Dir["{app,config,db,lib,test,bin}/**/*", "LICENSE-LGPL.txt", "LICENSE-COMMERCIAL.txt", "Rakefile", "README.md", "MANUAL.md", "CHANGELOG.md"]
+    # Everything the dummy app generates at runtime is gitignored, but the glob above
+    # does not know about .gitignore - without this a leftover test.log blew the
+    # packaged gem up to 4MB.
+    generated = Dir[
+      "test/dummy/log/**/*",
+      "test/dummy/tmp/**/*",
+      "test/dummy/storage/**/*",
+      "test/dummy/db/*.sqlite3*",
+      "test/dummy/db/schema.rb",
+      "test/dummy/db/migrate/*geneva_drive*.rb",
+      "**/.DS_Store"
+    ]
+    (included - generated).select { |path| File.file?(path) }
   end
 
   # We only need these specific Rails components - not the full rails gem

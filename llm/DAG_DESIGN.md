@@ -607,14 +607,16 @@ The DAG definition (structure) and execution state are stored separately:
 # step_executions table
 {
   workflow_id: 123,
-  node_id: "n_8f3a2b",          # References the DAG node
+  node_id: "n_8f3a2b",          # References the DAG node (real column: indexed, scheduler-queried)
   state: "completed",            # scheduled, in_progress, completed, failed, canceled, skipped
   continues_from_id: nil,        # Links to the predecessor execution in this node's chain
-  ancestry_hash: "d4e5f6...",   # Hash of node + completed ancestor executions
   started_at: "2024-01-15T10:30:00Z",
   completed_at: "2024-01-15T10:30:05Z",
   outcome: "success",            # Execution metadata (not data passing)
-  error: nil
+  metadata: {                    # Freeform JSON bag for diagnostic properties
+    "ancestry_hash" => "d4e5f6...",
+    "exception" => nil
+  }
 }
 ```
 
@@ -625,9 +627,31 @@ cursor-based continuations both append a new row that points back at its
 predecessor. There is no separate attempt counter; a row's attempt number,
 when needed for display, is its position in the chain.
 
-### The `ancestry_hash` Field
+### Columns vs the Metadata Bag
 
-Inspired by Nuke's CacheHash concept, the `ancestry_hash` provides a cryptographic proof of execution order:
+The table already has a freeform JSON `metadata` column (exception info and
+reattempt reasons live there today). The rule for where a per-execution
+property goes:
+
+- **Real column**: anything the engine reads or writes in the hot path, or
+  that participates in an index or uniqueness constraint. `state`,
+  `node_id`, `continues_from_id`, and the resumable `cursor` (checkpointed
+  with an unlocked single-column `update_all` every iteration — inside a
+  bag that would be a racy read-modify-write or three dialects of
+  `jsonb_set`).
+- **Metadata entry**: anything only humans, audits, or one-shot
+  verification read. `ancestry_hash` and error details are this kind —
+  written once, read off already-fetched rows, never filtered on by the
+  scheduler.
+
+This also avoids repeating the optional-column detection machinery
+(`metadata_column?`, `resumable_columns?`) for every new diagnostic field:
+the DAG feature adds only `node_id` to the executions table.
+
+### The `ancestry_hash` Property
+
+Inspired by Nuke's CacheHash concept, the `ancestry_hash` (stored as a
+metadata entry) provides a cryptographic proof of execution order:
 
 ```ruby
 def compute_ancestry_hash(workflow, node_id)
@@ -635,7 +659,7 @@ def compute_ancestry_hash(workflow, node_id)
 
   # Get completed ancestor execution hashes (sorted for determinism)
   ancestor_hashes = node["depends_on"].map do |dep_id|
-    workflow.step_executions.find_by!(node_id: dep_id).ancestry_hash
+    workflow.step_executions.find_by!(node_id: dep_id).read_metadata("ancestry_hash")
   end.sort
 
   # This node's hash includes its ID + all ancestor hashes
@@ -983,13 +1007,11 @@ class GenevaDrive::NodeExecutor
 
     execution = step_execution
 
-    # Compute ancestry hash before starting
-    ancestry_hash = compute_ancestry_hash(workflow, step_execution.node_id)
-
+    # Compute ancestry hash before starting; it goes into the metadata bag
+    execution.write_metadata("ancestry_hash", compute_ancestry_hash(workflow, step_execution.node_id))
     execution.update!(
       state: "in_progress",
-      started_at: Time.current,
-      ancestry_hash: ancestry_hash
+      started_at: Time.current
     )
 
     begin
@@ -1009,11 +1031,10 @@ class GenevaDrive::NodeExecutor
       schedule_unblocked_nodes(workflow, execution.node_id)
 
     rescue => e
-      execution.update!(
-        state: "failed",
-        completed_at: Time.current,
-        error: { class: e.class.name, message: e.message }
-      )
+      # Error details go where they already live today: the dedicated error
+      # columns plus the metadata "exception" entry (see error_attributes_for
+      # in the current Executor) - no new error column
+      execution.update!(state: "failed", completed_at: Time.current, **error_attributes_for(e))
 
       handle_failure(workflow, execution, e)
     end
@@ -1147,8 +1168,7 @@ create_table :step_executions do |t|
   t.references :continues_from, null: true    # predecessor in this node's chain
   t.string :state, null: false, default: "scheduled"
   t.string :outcome                            # "success", "continued", "reattempted", ...
-  t.string :ancestry_hash
-  t.jsonb :error
+  t.json :metadata                             # diagnostic bag: ancestry_hash, exception, ...
   t.datetime :started_at
   t.datetime :completed_at
   t.timestamps
@@ -1186,8 +1206,8 @@ Initial state: no step_execution rows
 ┌─────────────────────────────────────────────────────────────────────┐
 │ A fails                                                             │
 ├─────────────────────────────────────────────────────────────────────┤
-│ UPDATE step_executions SET state="failed", error={...}              │
-│   WHERE id=101                                                      │
+│ UPDATE step_executions SET state="failed",                          │
+│   error_message=..., metadata.exception={...} WHERE id=101          │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -1205,7 +1225,7 @@ Initial state: no step_execution rows
 │ A succeeds                                                          │
 ├─────────────────────────────────────────────────────────────────────┤
 │ UPDATE step_executions SET state="completed", outcome="success",    │
-│   ancestry_hash="..." WHERE id=102                                  │
+│   metadata.ancestry_hash="..." WHERE id=102                         │
 │                                                                     │
 │ Final state - the chain:                                            │
 │   id=101: failed                                                    │
@@ -1297,7 +1317,7 @@ def compute_ancestry_hash(workflow, node_id)
       .order(id: :desc)
       .first!
 
-    parent_execution.ancestry_hash
+    parent_execution.read_metadata("ancestry_hash")
   end
 
   # Hash this node's ID with all parent hashes
@@ -1403,9 +1423,10 @@ The chained rows provide a complete execution history:
 ```ruby
 workflow.step_executions.where(node_id: "check_fraud").order(:id)
 # => [
-#   #<StepExecution id=101 continues_from_id=nil state="failed" error={class: "TimeoutError", ...}>,
-#   #<StepExecution id=102 continues_from_id=101 state="failed" error={class: "RateLimitError", ...}>,
-#   #<StepExecution id=103 continues_from_id=102 state="completed" outcome="success" ancestry_hash="abc123...">
+#   #<StepExecution id=101 continues_from_id=nil state="failed" error_class_name="TimeoutError" ...>,
+#   #<StepExecution id=102 continues_from_id=101 state="failed" error_class_name="RateLimitError" ...>,
+#   #<StepExecution id=103 continues_from_id=102 state="completed" outcome="success"
+#      metadata={"ancestry_hash" => "abc123..."}>
 # ]
 ```
 
@@ -1611,9 +1632,11 @@ workflow.import_dag!(json)      # Surgical repair (last resort)
 
 ### Database Migrations
 
-The `continues_from_id` column (with its index) already exists from the
-resumable steps work — the DAG migration builds on it rather than adding an
-attempt counter:
+The `continues_from_id` column (with its index) and the `metadata` JSON bag
+already exist from earlier work — the DAG migration builds on them. The only
+new executions column is `node_id`, because the scheduler queries and
+constrains it; `ancestry_hash` and error details are metadata entries (see
+"Columns vs the Metadata Bag"):
 
 ```ruby
 class AddDagSupport < ActiveRecord::Migration[7.2]
@@ -1621,8 +1644,6 @@ class AddDagSupport < ActiveRecord::Migration[7.2]
     add_column :geneva_drive_workflows, :dag_definition, :jsonb
 
     add_column :geneva_drive_step_executions, :node_id, :string
-    add_column :geneva_drive_step_executions, :ancestry_hash, :string
-    add_column :geneva_drive_step_executions, :error, :jsonb
 
     # Replace the one-active-per-WORKFLOW unique index (which serializes
     # the whole workflow) with one-active-per-NODE, enabling concurrency.
@@ -1639,13 +1660,11 @@ class AddDagSupport < ActiveRecord::Migration[7.2]
     add_index :geneva_drive_step_executions,
               [:workflow_id, :node_id, :state],
               name: "idx_step_executions_by_state"
-
-    add_index :geneva_drive_step_executions, :ancestry_hash
   end
 end
 ```
 
-Note: We don't add a `result` column - nodes communicate through side effects, not through stored return values. The existing `outcome` column (if present) is for execution metadata, not data passing.
+Note: We don't add a `result` column - nodes communicate through side effects, not through stored return values. The existing `outcome` column (if present) is for execution metadata, not data passing. We also don't add an `error` column - exception details already live in the dedicated error columns and the metadata `exception` entry.
 
 ---
 
@@ -1675,7 +1694,7 @@ This design extends GenevaDrive from linear step sequences to full DAG execution
 6. **Node defines its execution**: If node has `"job"` key, use job class; otherwise call workflow method. This is orthogonal to where the DAG comes from.
 7. **Side effects, not data passing**: Nodes produce side effects (database writes, file uploads, etc.) and downstream nodes know by convention where to find them. No shared mutable state, no context passing.
 8. **Natural concurrency**: Because there's no shared in-memory state, independent nodes can run concurrently without additional locking or serialization constraints.
-9. **Ancestry tracking**: The `ancestry_hash` (inspired by Nuke's CacheHash) provides a cryptographic chain proving execution order.
+9. **Ancestry tracking**: The `ancestry_hash` (inspired by Nuke's CacheHash, stored in the metadata bag) provides a cryptographic chain proving execution order.
 10. **One execution-history mechanism**: Reattempts and resumable-step continuations are both chained execution rows linked via `continues_from_id` — no separate attempt counter. A node is complete only when its latest execution completed without spawning a successor.
 
 The tradeoffs are intentional: we accept the complexity of two declaration styles (`step` and `task`) to keep the simple case simple. We accept the fragility of dynamic workflows to gain runtime flexibility. We accept the PREVIOUS token's implicit behavior to support chain insertion. We accept that nodes must "know" where to find upstream side effects by convention in exchange for simple, natural concurrency.

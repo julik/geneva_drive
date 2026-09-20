@@ -222,10 +222,11 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Executes this step using the Executor.
   #
-  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
+  # @param interruptible [Boolean] whether resumable steps respect interruption conditions
+  # @param max_iterations [Integer, nil] per-execution override of the step's max_iterations
   # @return [void]
-  def execute!(interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
-    GenevaDrive::Executor.execute!(self, interrupt_configuration: interrupt_configuration)
+  def execute!(interruptible: true, max_iterations: nil)
+    GenevaDrive::Executor.execute!(self, interruptible: interruptible, max_iterations: max_iterations)
   end
 
   # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow

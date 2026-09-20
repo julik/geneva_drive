@@ -721,9 +721,11 @@ The resumable-specific behavior is contained in a few hook points inside
    interrupt is normalized into an `Executor::Interruption` result carrying
    the optional `wait`.
 2. **`should_interrupt?(iterations:)`** — called from `IterableStep#checkpoint!`.
-   Checks `max_iterations` (via `InterruptConfiguration`, which tests use to
-   disable interruptions or override the limit), `max_runtime`, queue
-   shutdown, and external pause/cancel.
+   Checks `max_iterations`, `max_runtime`, queue shutdown, and external
+   pause/cancel. Two keyword arguments on `execute!` exist purely for test
+   helpers: `interruptible: false` disables all checks (speedrun helpers),
+   `max_iterations:` overrides the step's limit for one execution
+   (`run_iterations`).
 3. **`finalize_with_lock`** — an `Interruption` result completes the
    execution with outcome `"continued"` and calls
    `Workflow#create_successor_execution!`, which cancels stray scheduled
@@ -876,13 +878,12 @@ module GenevaDrive::TestHelpers
     return nil unless step_execution
 
     executions = 0
-    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
 
     loop do
       step_execution.reload
       break if step_execution.completed? || step_execution.failed? || step_execution.canceled?
 
-      step_execution.execute!(interrupt_configuration: config)
+      step_execution.execute!(interruptible: false)
       executions += 1
 
       raise "speedrun_current_step exceeded max_executions" if executions >= max_executions

@@ -40,27 +40,32 @@ class GenevaDrive::Executor
   #   with workflow and step-specific tags added on top. This allows callers
   #   (background jobs, controllers, etc.) to pass in a logger that already
   #   has appropriate context tags (e.g., job_id, request_id).
-  # @param interrupt_configuration [InterruptConfiguration] controls interruption
-  #   behavior of resumable steps (used by test helpers to run them to completion)
+  # @param interruptible [Boolean] whether resumable steps respect interruption
+  #   conditions (max_iterations, max_runtime, shutdown, external pause/cancel).
+  #   Test helpers pass false to run a resumable step to completion in one call.
+  # @param max_iterations [Integer, nil] overrides the step definition's
+  #   max_iterations for this execution (used by the run_iterations test helper)
   # @return [void]
   #
   # @example Execute with a pre-tagged logger from a background job
   #   logger = Rails.logger.tagged("job_id=#{job_id}")
   #   GenevaDrive::Executor.execute!(step_execution, logger: logger)
-  def self.execute!(step_execution, logger: nil, interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
-    new.call(step_execution, logger: logger, interrupt_configuration: interrupt_configuration)
+  def self.execute!(step_execution, logger: nil, interruptible: true, max_iterations: nil)
+    new.call(step_execution, logger: logger, interruptible: interruptible, max_iterations: max_iterations)
   end
 
   # Performs the step execution.
   #
   # @param step_execution [GenevaDrive::StepExecution] the step to execute
   # @param logger [Logger, nil] optional base logger to inject into the workflow
-  # @param interrupt_configuration [InterruptConfiguration] controls interruption behavior
+  # @param interruptible [Boolean] whether resumable steps respect interruption conditions
+  # @param max_iterations [Integer, nil] per-execution override of the step's max_iterations
   # @return [void]
-  def call(step_execution, logger: nil, interrupt_configuration: GenevaDrive::InterruptConfiguration.default)
+  def call(step_execution, logger: nil, interruptible: true, max_iterations: nil)
     @step_execution = step_execution
     @workflow = step_execution.workflow
-    @interrupt_configuration = interrupt_configuration
+    @interruptible = interruptible
+    @max_iterations_override = max_iterations
 
     # Build the full logger chain (base -> workflow -> step tags) and inject
     # it so step code calling `logger` gets the fully-tagged step execution
@@ -82,9 +87,9 @@ class GenevaDrive::Executor
   # @return [Boolean]
   def should_interrupt?(iterations: nil)
     # If interruption is disabled (e.g., in tests), never interrupt
-    return false unless @interrupt_configuration.respects_interruptions?
+    return false unless @interruptible
 
-    max_iterations = @interrupt_configuration.max_iterations_for(@step_definition)
+    max_iterations = @max_iterations_override || (@step_definition.respond_to?(:max_iterations) ? @step_definition.max_iterations : nil)
     return true if max_iterations && iterations && iterations >= max_iterations
     return true if max_runtime_exceeded?
     return true if job_should_exit?

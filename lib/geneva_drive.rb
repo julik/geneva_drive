@@ -40,7 +40,6 @@ module GenevaDrive
   autoload :Workflow, "geneva_drive/workflow"
   autoload :StepExecution, "geneva_drive/step_execution"
   autoload :IterableStep, "geneva_drive/iterable_step"
-  autoload :InterruptConfiguration, "geneva_drive/interrupt_configuration"
   autoload :Executor, "geneva_drive/executor"
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
   autoload :JobOptions, "geneva_drive/job_options"

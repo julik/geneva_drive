@@ -38,8 +38,6 @@ module GenevaDrive::TestHelpers
   #
   def speedrun_workflow(workflow, max_iterations: 100)
     iterations = 0
-    # Disable interruption checks so resumable steps run to completion
-    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
 
     loop do
       workflow.reload
@@ -48,7 +46,8 @@ module GenevaDrive::TestHelpers
       step_execution = workflow.current_execution
       break unless step_execution
 
-      step_execution.execute!(interrupt_configuration: config)
+      # interruptible: false so resumable steps run to completion
+      step_execution.execute!(interruptible: false)
       iterations += 1
 
       if iterations >= max_iterations
@@ -197,8 +196,6 @@ module GenevaDrive::TestHelpers
 
     executions = 0
     original_step_name = step_execution.step_name
-    # Disable interruption checks so the step runs to completion
-    config = GenevaDrive::InterruptConfiguration.new(respect_interruptions: false)
 
     loop do
       step_execution.reload
@@ -214,7 +211,8 @@ module GenevaDrive::TestHelpers
 
       break if step_execution.completed? || step_execution.failed? || step_execution.canceled? || step_execution.skipped?
 
-      step_execution.execute!(interrupt_configuration: config)
+      # interruptible: false so the step runs to completion
+      step_execution.execute!(interruptible: false)
       executions += 1
 
       if executions >= max_executions
@@ -246,8 +244,7 @@ module GenevaDrive::TestHelpers
     step_execution = workflow.current_execution
     raise "No current step execution to run" unless step_execution
 
-    config = GenevaDrive::InterruptConfiguration.new(max_iterations_override: count)
-    step_execution.execute!(interrupt_configuration: config)
+    step_execution.execute!(max_iterations: count)
 
     workflow.reload
     step_execution.reload

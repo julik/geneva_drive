@@ -608,14 +608,22 @@ The DAG definition (structure) and execution state are stored separately:
 {
   workflow_id: 123,
   node_id: "n_8f3a2b",          # References the DAG node
-  state: "completed",            # pending, running, completed, failed
+  state: "completed",            # scheduled, in_progress, completed, failed, canceled, skipped
+  continues_from_id: nil,        # Links to the predecessor execution in this node's chain
   ancestry_hash: "d4e5f6...",   # Hash of node + completed ancestor executions
   started_at: "2024-01-15T10:30:00Z",
   completed_at: "2024-01-15T10:30:05Z",
-  outcome: { ... },              # Execution metadata (not data passing)
+  outcome: "success",            # Execution metadata (not data passing)
   error: nil
 }
 ```
+
+A node can have **multiple execution rows** forming a chain linked via
+`continues_from_id` — this is the same mechanism resumable steps already
+use (see `RESUMABLE_STEPS_DESIGN.md`): reattempts after failure and
+cursor-based continuations both append a new row that points back at its
+predecessor. There is no separate attempt counter; a row's attempt number,
+when needed for display, is its position in the chain.
 
 ### The `ancestry_hash` Field
 
@@ -656,20 +664,41 @@ This is explicitly NOT a data-passing mechanism. Nodes do not read each other's 
 workflow.nodes_with_state
 # => [
 #   { id: "n_8f3a2b", name: "validate", state: "completed", completed_at: ... },
-#   { id: "n_c4d5e6", name: "check_inventory", state: "running", started_at: ... },
-#   { id: "n_f7g8h9", name: "check_fraud", state: "pending" },
+#   { id: "n_c4d5e6", name: "check_inventory", state: "in_progress", started_at: ... },
+#   { id: "n_f7g8h9", name: "check_fraud", state: "scheduled" },
 #   ...
 # ]
 ```
 
-### Idempotency
+### Idempotency and Node Completeness
 
-The `step_executions` uniqueness constraint `(workflow_id, node_id)` ensures each node executes exactly once:
+Because a node may have a chain of execution rows, uniqueness cannot be a
+plain `(workflow_id, node_id)` constraint. Instead, a **partial unique
+index** ensures at most one *active* execution per node:
 
 ```ruby
-execution = workflow.step_executions.create_or_find_by!(node_id: node_id)
-return if execution.completed? || execution.running?
+# At most one scheduled/in_progress execution per (workflow, node)
+add_index :step_executions, [:workflow_id, :node_id],
+          unique: true,
+          where: "state IN ('scheduled', 'in_progress')",
+          name: "idx_step_executions_one_active_per_node"
 ```
+
+This is the per-node generalization of the current one-active-per-workflow
+index (which must be dropped when concurrent nodes arrive — it is exactly
+the constraint that serializes execution today).
+
+**Node completeness** has a precise definition that accounts for chains:
+
+> A node is complete when its **latest** execution is `completed` and has
+> **no successor** (no row points at it via `continues_from_id`).
+
+The outcome field distinguishes the two kinds of completed rows: `"success"`
+means the node finished its work; `"continued"` (from resumable-step
+interruptions) and `"reattempted"` mean the row handed off to a successor.
+Any logic that unblocks downstream nodes MUST use this definition — a naive
+"some execution of this node is completed" check would fire mid-iteration
+of a resumable node or after a failed attempt that was reattempted.
 
 **Tradeoff: Separate state vs embedded state**
 
@@ -743,19 +772,22 @@ Two independent nodes can run concurrently because:
 ```ruby
 def schedule_ready_nodes(workflow)
   dag = workflow.dag
-  completed = workflow.step_executions.completed.pluck(:node_id).to_set
-  running = workflow.step_executions.running.pluck(:node_id).to_set
+  # "completed" is chain-aware: latest execution completed with no
+  # successor (see Execution State Management for the full definition)
+  completed = completed_node_ids(workflow)
+  active = workflow.step_executions.where(state: %w[scheduled in_progress]).pluck(:node_id).to_set
 
   dag["nodes"].each do |node_id, node|
     next if completed.include?(node_id)
-    next if running.include?(node_id)
+    next if active.include?(node_id)
 
     # Can run if all dependencies completed
     dependencies_met = node["depends_on"].all? { |dep| completed.include?(dep) }
 
     if dependencies_met
-      # Schedule it - multiple nodes can be scheduled concurrently
-      WorkflowNodeJob.perform_later(workflow_id: workflow.id, node_id: node_id)
+      # Schedule it - multiple nodes can be scheduled concurrently:
+      # create a scheduled execution row and enqueue a job for its id
+      schedule_node_execution(workflow, node_id)
     end
   end
 end
@@ -932,37 +964,30 @@ The executor looks at the node definition to determine how to run it:
 - If node has a `"job"` key → instantiate that job class
 - Otherwise → call the method on the workflow instance
 
-For first execution, a new step_execution is created with `attempt_number: 1`. Reattempts use the dedicated `reattempt!` method (see Reattempt Semantics section).
+Executions are addressed **by row id**, exactly like today's
+`PerformStepJob.perform_later(step_execution.id)`: the scheduler creates a
+`scheduled` execution row for a node and enqueues a job carrying that row's
+id. Reattempts and resumable continuations create a successor row (linked
+via `continues_from_id`) and enqueue a job for the successor — there is no
+attempt-number addressing (see Reattempt Semantics section).
 
 ```ruby
 class GenevaDrive::NodeExecutor
-  def execute(workflow, node_id, attempt_number: nil)
-    node = workflow.dag["nodes"][node_id]
+  def execute(step_execution)
+    workflow = step_execution.workflow
+    node = workflow.dag["nodes"][step_execution.node_id]
 
-    # Determine which attempt we're executing
-    if attempt_number
-      # Specific attempt requested (e.g., from job queue)
-      execution = workflow.step_executions.find_by!(
-        node_id: node_id,
-        attempt_number: attempt_number
-      )
-      return if execution.completed? || execution.running?
-    else
-      # First execution - create attempt 1
-      execution = workflow.step_executions.create_with(
-        attempt_number: 1,
-        state: "pending"
-      ).find_or_create_by!(node_id: node_id, attempt_number: 1)
+    # Idempotency guard, same as the current Executor: only a scheduled
+    # execution may start (checked again under lock in the real code)
+    return unless step_execution.scheduled?
 
-      # If already completed or running, nothing to do
-      return if execution.completed? || execution.running?
-    end
+    execution = step_execution
 
     # Compute ancestry hash before starting
-    ancestry_hash = compute_ancestry_hash(workflow, node_id)
+    ancestry_hash = compute_ancestry_hash(workflow, step_execution.node_id)
 
     execution.update!(
-      state: "running",
+      state: "in_progress",
       started_at: Time.current,
       ancestry_hash: ancestry_hash
     )
@@ -977,10 +1002,11 @@ class GenevaDrive::NodeExecutor
 
       execution.update!(
         state: "completed",
+        outcome: "success",
         completed_at: Time.current
       )
 
-      schedule_unblocked_nodes(workflow, node_id)
+      schedule_unblocked_nodes(workflow, execution.node_id)
 
     rescue => e
       execution.update!(
@@ -989,7 +1015,7 @@ class GenevaDrive::NodeExecutor
         error: { class: e.class.name, message: e.message }
       )
 
-      handle_failure(workflow, node_id, e)
+      handle_failure(workflow, execution, e)
     end
   end
 
@@ -1017,22 +1043,32 @@ This means a class-based workflow could theoretically mix methods and job classe
 
 ### Scheduling Unblocked Nodes
 
-When a node completes, the engine checks which dependent nodes are now unblocked:
+When a node completes, the engine checks which dependent nodes are now unblocked.
+
+A node counts as complete only per the chain-aware definition from the
+Execution State Management section: its latest execution is `completed` AND
+has no successor. A `completed` row with outcome `"continued"` (a resumable
+node mid-iteration) or `"reattempted"` (an attempt that handed off to a
+retry) must NOT unblock dependents — the successor row it spawned is the
+node still being worked on.
 
 ```ruby
 def schedule_unblocked_nodes(workflow, completed_node_id)
   dag = workflow.dag
 
-  # A node is "completed" if ANY attempt succeeded (regardless of prior failures)
+  # A node is complete when its latest execution completed without
+  # spawning a successor (chain-aware; excludes "continued"/"reattempted"
+  # handoff rows, which always have a successor)
+  successor_ids = workflow.step_executions.where.not(continues_from_id: nil).pluck(:continues_from_id).to_set
   completed_nodes = workflow.step_executions
     .where(state: "completed")
-    .distinct
-    .pluck(:node_id)
+    .reject { |execution| successor_ids.include?(execution.id) }
+    .map(&:node_id)
     .to_set
 
   dag["nodes"].each do |node_id, node|
     next if completed_nodes.include?(node_id)
-    next if workflow.step_executions.exists?(node_id: node_id, state: "running")
+    next if workflow.step_executions.exists?(node_id: node_id, state: %w[scheduled in_progress])
 
     # Check if all dependencies are satisfied
     dependencies_satisfied = node["depends_on"].all? do |dep_id|
@@ -1040,7 +1076,7 @@ def schedule_unblocked_nodes(workflow, completed_node_id)
     end
 
     if dependencies_satisfied
-      WorkflowNodeJob.perform_later(workflow_id: workflow.id, node_id: node_id)
+      schedule_node_execution(workflow, node_id)
     end
   end
 end
@@ -1079,17 +1115,38 @@ end
 
 When a node fails, it may need to be reattempted. This section describes the database rows created, locking semantics, and how downstream nodes behave during reattempts.
 
+### One Mechanism: Chained Executions
+
+**Design decision**: reattempts reuse the chained-executions mechanism that
+resumable steps introduced (`continues_from_id`, see
+`RESUMABLE_STEPS_DESIGN.md`) instead of a separate `attempt_number`
+counter. Both express the same thing — "this node has more than one
+execution row, and the newest one carries the work forward":
+
+- A **reattempt** after a failure is a successor row (`outcome:
+  "reattempted"` on the predecessor).
+- A **resumable continuation** mid-iteration is a successor row (`outcome:
+  "continued"` on the predecessor, cursor copied over).
+
+An earlier draft of this document used `attempt_number` with a unique
+`(workflow_id, node_id, attempt_number)` index. Running both mechanisms
+side by side would have left a node with two unreconciled histories
+(reattempt rows counted one way, continuation rows linked another way).
+With the chain there is a single, ordered history per node; a display
+attempt number, when wanted, is the row's position in its chain.
+
 ### Database Schema for Attempts
 
-Each node execution creates a `step_execution` row. Reattempts create additional rows with an incrementing `attempt_number`:
+Each node execution creates a `step_execution` row. Reattempts create additional rows linked to their predecessor:
 
 ```ruby
-# step_executions table schema
+# step_executions table schema (columns relevant to attempts)
 create_table :step_executions do |t|
   t.references :workflow, null: false
   t.string :node_id, null: false
-  t.integer :attempt_number, null: false, default: 1
-  t.string :state, null: false, default: "pending"
+  t.references :continues_from, null: true    # predecessor in this node's chain
+  t.string :state, null: false, default: "scheduled"
+  t.string :outcome                            # "success", "continued", "reattempted", ...
   t.string :ancestry_hash
   t.jsonb :error
   t.datetime :started_at
@@ -1097,16 +1154,19 @@ create_table :step_executions do |t|
   t.timestamps
 end
 
-# Uniqueness is per attempt, not per node
+# At most one active execution per node (replaces today's
+# one-active-per-workflow index, which serialized the whole workflow)
 add_index :step_executions,
-          [:workflow_id, :node_id, :attempt_number],
+          [:workflow_id, :node_id],
           unique: true,
-          name: "idx_step_executions_unique_attempt"
+          where: "state IN ('scheduled', 'in_progress')",
+          name: "idx_step_executions_one_active_per_node"
 
-# Fast lookup of completed executions
+# Fast lookup of completed executions and chain traversal
 add_index :step_executions,
           [:workflow_id, :node_id, :state],
           name: "idx_step_executions_by_state"
+add_index :step_executions, :continues_from_id
 ```
 
 ### Reattempt Lifecycle: Database Rows
@@ -1117,91 +1177,91 @@ Consider a node A that fails on first attempt:
 Initial state: no step_execution rows
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ A starts (attempt 1)                                                │
+│ A starts                                                            │
 ├─────────────────────────────────────────────────────────────────────┤
 │ INSERT step_executions:                                             │
-│   workflow_id=1, node_id="A", attempt_number=1, state="running"     │
+│   id=101, node_id="A", continues_from_id=NULL, state="in_progress"  │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ A fails (attempt 1)                                                 │
+│ A fails                                                             │
 ├─────────────────────────────────────────────────────────────────────┤
 │ UPDATE step_executions SET state="failed", error={...}              │
-│   WHERE workflow_id=1 AND node_id="A" AND attempt_number=1          │
+│   WHERE id=101                                                      │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ A reattempted (attempt 2)                                           │
+│ A reattempted                                                       │
 ├─────────────────────────────────────────────────────────────────────┤
 │ INSERT step_executions:                                             │
-│   workflow_id=1, node_id="A", attempt_number=2, state="running"     │
+│   id=102, node_id="A", continues_from_id=101, state="scheduled"     │
 │                                                                     │
-│ Now we have TWO rows for node A:                                    │
-│   attempt=1: failed                                                 │
-│   attempt=2: running                                                │
+│ Now we have a chain of TWO rows for node A:                         │
+│   id=101: failed                                                    │
+│   id=102: scheduled ──continues_from──▶ 101                         │
 └─────────────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────────────┐
-│ A succeeds (attempt 2)                                              │
+│ A succeeds                                                          │
 ├─────────────────────────────────────────────────────────────────────┤
-│ UPDATE step_executions SET state="completed", ancestry_hash="..."   │
-│   WHERE workflow_id=1 AND node_id="A" AND attempt_number=2          │
+│ UPDATE step_executions SET state="completed", outcome="success",    │
+│   ancestry_hash="..." WHERE id=102                                  │
 │                                                                     │
-│ Final state - TWO rows:                                             │
-│   attempt=1: failed                                                 │
-│   attempt=2: completed                                              │
+│ Final state - the chain:                                            │
+│   id=101: failed                                                    │
+│   id=102: completed/success (no successor → node A is complete)     │
 └─────────────────────────────────────────────────────────────────────┘
 ```
 
 ### Locking Semantics
 
-Three scenarios require locking:
+Three scenarios require protection:
 
-**1. Preventing duplicate execution of the same attempt:**
+**1. Preventing duplicate execution of the same row:**
+
+Executions are addressed by row id, and (as in the current Executor) the
+row is locked and its state re-checked before starting — only a
+`scheduled` row may transition to `in_progress`:
 
 ```ruby
-def execute_node(workflow, node_id, attempt_number)
-  # Advisory lock on specific attempt
-  lock_key = "geneva:#{workflow.id}:#{node_id}:#{attempt_number}"
+def execute_node(step_execution)
+  step_execution.workflow.with_lock do
+    step_execution.with_lock do
+      # Double-check state inside lock - a duplicate job sees "in_progress"
+      # or a terminal state and drops through
+      return unless step_execution.scheduled?
 
-  workflow.with_advisory_lock(lock_key) do
-    execution = workflow.step_executions.find_by!(
-      node_id: node_id,
-      attempt_number: attempt_number
-    )
-
-    # Double-check state inside lock
-    return if execution.completed? || execution.running?
-
-    # Proceed with execution...
+      # Proceed with execution...
+    end
   end
 end
 ```
 
 **2. Preventing concurrent reattempts:**
 
-Only one reattempt can be created at a time. We use SELECT FOR UPDATE on the latest attempt:
+Only one successor can be created per predecessor. The workflow lock
+serializes creators, and the partial unique index (one active execution
+per node) makes a second concurrent successor INSERT fail outright:
 
 ```ruby
 def create_reattempt(workflow, node_id)
   workflow.with_lock do  # Workflow-level lock for simplicity
     latest = workflow.step_executions
       .where(node_id: node_id)
-      .order(attempt_number: :desc)
-      .lock("FOR UPDATE")
+      .order(id: :desc)
       .first
 
-    # Can only reattempt if latest attempt is in a retryable state
-    unless latest&.retryable?
-      raise "Cannot reattempt: latest attempt is #{latest&.state || 'missing'}"
+    # Can only reattempt if the latest execution is in a retryable state
+    # and has not already been continued
+    unless latest&.retryable? && latest.successor.nil?
+      raise "Cannot reattempt: latest execution is #{latest&.state || 'missing'}"
     end
 
-    # Create new attempt
     workflow.step_executions.create!(
       node_id: node_id,
-      attempt_number: latest.attempt_number + 1,
-      state: "running",
-      started_at: Time.current
+      continues_from_id: latest.id,
+      state: "scheduled",
+      scheduled_for: Time.current
     )
   end
 end
@@ -1209,29 +1269,32 @@ end
 
 **3. Preventing reattempt while still running:**
 
-The lock in scenario 2 combined with state checking prevents this. A running attempt is not `retryable?`:
+The state check in scenario 2 prevents this (an `in_progress` execution is
+not `retryable?`), and the partial unique index backstops it: a successor
+cannot be inserted while any `scheduled`/`in_progress` row exists for the
+node.
 
 ```ruby
 class StepExecution < ApplicationRecord
   def retryable?
-    state.in?(%w[failed timed_out cancelled])
+    state.in?(%w[failed canceled])
   end
 end
 ```
 
 ### Downstream Nodes: Which Execution Do They Use?
 
-When a downstream node starts, it must determine which parent executions to use for its ancestry hash. The rule is simple: **use the latest completed execution of each parent**.
+When a downstream node starts, it must determine which parent executions to use for its ancestry hash. The rule is simple: **use the latest completed execution of each parent** (which, per the completeness rule, is the end of the parent's chain):
 
 ```ruby
 def compute_ancestry_hash(workflow, node_id)
   node = workflow.dag["nodes"][node_id]
 
   parent_hashes = node["depends_on"].map do |parent_id|
-    # Get the LATEST COMPLETED execution for each parent
+    # The end of the parent's chain: latest completed execution
     parent_execution = workflow.step_executions
       .where(node_id: parent_id, state: "completed")
-      .order(attempt_number: :desc)
+      .order(id: :desc)
       .first!
 
     parent_execution.ancestry_hash
@@ -1265,18 +1328,19 @@ Scenario:
 **What ancestry hash does D get?**
 
 D computes its hash using:
-- B's completed execution (which references A attempt 1)
-- C's latest completed execution (attempt 2, which also references A attempt 1)
+- B's completed execution (which references A's completed execution)
+- C's latest completed execution (the end of C's chain — the successor row
+  of the failed first execution — which also references A's completed execution)
 
 ```
 D.ancestry_hash = SHA256(
   "D" :
-  B.ancestry_hash :    # = SHA256("B" : A.attempt_1.ancestry_hash)
-  C.ancestry_hash      # = SHA256("C" : A.attempt_1.ancestry_hash)  ← attempt 2!
+  B.ancestry_hash :    # = SHA256("B" : A.completed.ancestry_hash)
+  C.ancestry_hash      # = SHA256("C" : A.completed.ancestry_hash)  ← C's second execution!
 )
 ```
 
-The ancestry hash chain proves: D ran after B completed and after C's **second** attempt completed.
+The ancestry hash chain proves: D ran after B completed and after C's **second** execution (the reattempt successor) completed.
 
 ### What If A Is Reattempted After B Completed?
 
@@ -1334,18 +1398,28 @@ end
 
 ### Execution History
 
-The multiple attempt rows provide a complete execution history:
+The chained rows provide a complete execution history:
 
 ```ruby
-workflow.step_executions.where(node_id: "check_fraud").order(:attempt_number)
+workflow.step_executions.where(node_id: "check_fraud").order(:id)
 # => [
-#   #<StepExecution attempt=1 state="failed" error={class: "TimeoutError", ...}>,
-#   #<StepExecution attempt=2 state="failed" error={class: "RateLimitError", ...}>,
-#   #<StepExecution attempt=3 state="completed" ancestry_hash="abc123...">
+#   #<StepExecution id=101 continues_from_id=nil state="failed" error={class: "TimeoutError", ...}>,
+#   #<StepExecution id=102 continues_from_id=101 state="failed" error={class: "RateLimitError", ...}>,
+#   #<StepExecution id=103 continues_from_id=102 state="completed" outcome="success" ancestry_hash="abc123...">
 # ]
 ```
 
-This history is valuable for debugging, audit trails, and understanding failure patterns.
+This history is valuable for debugging, audit trails, and understanding failure patterns. It is the same shape a resumable step's continuation chain has — one query and one mental model cover both.
+
+### Resumable Nodes in a DAG
+
+A `resumable_step` slots into the DAG as an ordinary node whose chain grows
+via `outcome: "continued"` rows while it iterates. Nothing special is
+needed in the scheduler beyond the chain-aware completeness rule: the
+node's dependents unblock only when its latest execution completes without
+spawning a successor. The cursor column, interruption conditions, and
+flow-control semantics are all per-node concerns handled by the (single)
+Executor, orthogonal to graph structure.
 
 ---
 
@@ -1537,28 +1611,36 @@ workflow.import_dag!(json)      # Surgical repair (last resort)
 
 ### Database Migrations
 
+The `continues_from_id` column (with its index) already exists from the
+resumable steps work — the DAG migration builds on it rather than adding an
+attempt counter:
+
 ```ruby
-class AddDagSupport < ActiveRecord::Migration[7.0]
+class AddDagSupport < ActiveRecord::Migration[7.2]
   def change
-    add_column :workflows, :dag_definition, :jsonb
+    add_column :geneva_drive_workflows, :dag_definition, :jsonb
 
-    add_column :step_executions, :node_id, :string
-    add_column :step_executions, :attempt_number, :integer, null: false, default: 1
-    add_column :step_executions, :ancestry_hash, :string
-    add_column :step_executions, :error, :jsonb
+    add_column :geneva_drive_step_executions, :node_id, :string
+    add_column :geneva_drive_step_executions, :ancestry_hash, :string
+    add_column :geneva_drive_step_executions, :error, :jsonb
 
-    # Uniqueness is per attempt, not per node (enables reattempts)
-    add_index :step_executions,
-              [:workflow_id, :node_id, :attempt_number],
+    # Replace the one-active-per-WORKFLOW unique index (which serializes
+    # the whole workflow) with one-active-per-NODE, enabling concurrency.
+    # NOTE: must be done per-adapter like the existing index migrations,
+    # and without table rewrites on SQLite.
+    remove_index :geneva_drive_step_executions, name: "index_geneva_drive_step_executions_one_active"
+    add_index :geneva_drive_step_executions,
+              [:workflow_id, :node_id],
               unique: true,
-              name: "idx_step_executions_unique_attempt"
+              where: "state IN ('scheduled', 'in_progress')",
+              name: "idx_step_executions_one_active_per_node"
 
     # Fast lookup for scheduling and state queries
-    add_index :step_executions,
+    add_index :geneva_drive_step_executions,
               [:workflow_id, :node_id, :state],
               name: "idx_step_executions_by_state"
 
-    add_index :step_executions, :ancestry_hash
+    add_index :geneva_drive_step_executions, :ancestry_hash
   end
 end
 ```
@@ -1594,5 +1676,6 @@ This design extends GenevaDrive from linear step sequences to full DAG execution
 7. **Side effects, not data passing**: Nodes produce side effects (database writes, file uploads, etc.) and downstream nodes know by convention where to find them. No shared mutable state, no context passing.
 8. **Natural concurrency**: Because there's no shared in-memory state, independent nodes can run concurrently without additional locking or serialization constraints.
 9. **Ancestry tracking**: The `ancestry_hash` (inspired by Nuke's CacheHash) provides a cryptographic chain proving execution order.
+10. **One execution-history mechanism**: Reattempts and resumable-step continuations are both chained execution rows linked via `continues_from_id` — no separate attempt counter. A node is complete only when its latest execution completed without spawning a successor.
 
 The tradeoffs are intentional: we accept the complexity of two declaration styles (`step` and `task`) to keep the simple case simple. We accept the fragility of dynamic workflows to gain runtime flexibility. We accept the PREVIOUS token's implicit behavior to support chain insertion. We accept that nodes must "know" where to find upstream side effects by convention in exchange for simple, natural concurrency.

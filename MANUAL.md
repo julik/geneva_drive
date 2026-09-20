@@ -546,6 +546,137 @@ class OrderFulfillmentWorkflow < GenevaDrive::Workflow
 end
 ```
 
+## Resumable Steps
+
+A regular step must finish within a single job execution. When a step has to churn through a large collection — sending a campaign to 200 000 subscribers, syncing a paginated API, backfilling a table — that single execution becomes a liability: a deploy, a worker restart, or a queue timeout loses all progress. Resumable steps solve this with **cursor-based iteration**: the step periodically checkpoints its position into the database, and can be interrupted and continued in a later job execution from exactly where it left off.
+
+Resumable steps store their state in two extra columns on `geneva_drive_step_executions` (`cursor` and `continues_from_id`), added by the installer migrations — re-run `bin/rails generate geneva_drive:install` on an existing installation to pick them up. Until the migration runs, everything else keeps working: regular steps, pause/resume and housekeeping are unaffected, and executing an actual `resumable_step` fails with a configuration error pointing at the missing migration.
+
+Define one with `resumable_step`. The block receives an `IterableStep` object (API-compatible with Rails 8.1's `ActiveJob::Continuation::Step`):
+
+```ruby
+class CampaignWorkflow < GenevaDrive::Workflow
+  step :prepare do
+    hero.update!(status: "sending")
+  end
+
+  resumable_step :send_notifications do |iter|
+    iter.iterate_over_records(hero.subscribers) do |subscriber|
+      CampaignMailer.notify(hero, subscriber).deliver_later
+    end
+  end
+
+  step :finalize do
+    hero.update!(status: "sent")
+  end
+end
+```
+
+### The Cursor
+
+The cursor is a value persisted on the step execution after every checkpoint. It is whatever your iteration needs to pick up where it stopped: a record ID, a page number, an opaque API token, a date. Cursors are serialized with ActiveJob serializers, so anything ActiveJob can serialize works — including `Date` and `Time` — without manual conversion.
+
+```ruby
+resumable_step :process_records do |iter|
+  hero.records.where("id > ?", iter.cursor || 0).find_each do |record|
+    process(record)
+    iter.set!(record.id)   # persist cursor, check for interruption
+  end
+end
+```
+
+The `IterableStep` API:
+
+| Method | Effect |
+|--------|--------|
+| `iter.cursor` | Current cursor value (`nil` on first run) |
+| `iter.set!(value)` | Set the cursor, persist it, check for interruption |
+| `iter.advance!` | Increment an integer cursor by 1 (integers only) |
+| `iter.checkpoint!` | Persist cursor and check for interruption |
+| `iter.resumed?` | `true` when continuing from a previous execution |
+| `iter.skip_to!(value, wait: nil)` | Set the cursor and suspend immediately; `wait:` delays the continuation |
+
+Helpers for common iteration shapes:
+
+```ruby
+# ActiveRecord relation, one record at a time (find_each under the hood)
+iter.iterate_over_records(hero.subscribers) { |subscriber| ... }
+
+# ActiveRecord relation in batches, yielding relations for bulk operations
+iter.iterate_over_subrelations(hero.subscribers, batch_size: 500) do |batch|
+  batch.update_all(notified_at: Time.current)
+end
+
+# Stable in-memory arrays, index used as cursor
+iter.iterate_over(items) { |item| ... }
+```
+
+### Chained Executions
+
+When a resumable step is interrupted, the current step execution **completes** (with outcome `continued`) and a successor execution is created, linked to its predecessor via `continues_from_id` and carrying the cursor forward. There is no special "suspended" state — each execution is a normal record with a clear start and end, so the full history of a long iteration is visible as a chain:
+
+```ruby
+workflow.step_executions.where(step_name: "send_notifications").order(:created_at)
+# => chunk 1 (completed/continued), chunk 2 (completed/continued), ..., chunk N (completed/success)
+```
+
+A step is interrupted when any of these happen:
+
+- `max_iterations:` is reached (`resumable_step :import, max_iterations: 10_000`)
+- `max_runtime:` is exceeded (`resumable_step :import, max_runtime: 5.minutes`)
+- The job queue signals shutdown (e.g. Sidekiq stopping)
+- The workflow is paused or canceled externally
+- The step calls `skip_to!` or `suspend!` explicitly
+
+```ruby
+# Suspend explicitly, e.g. to respect a rate limit
+resumable_step :sync_api do |iter|
+  page = iter.cursor || 1
+  loop do
+    response = ExternalApi.fetch(page: page)
+    suspend!(wait: response.retry_after) if response.rate_limited?
+    break if response.empty?
+    response.items.each { |item| process(item) }
+    page += 1
+    iter.set!(page)
+  end
+end
+```
+
+### Flow Control and Errors in Resumable Steps
+
+All flow control works inside resumable steps, with cursor-aware semantics:
+
+- `pause!` completes the current execution keeping the cursor; `resume!` continues from it.
+- `reattempt!` continues from the cursor by default; `reattempt!(rewind: true)` clears the cursor and starts the iteration over.
+- `cancel!`, `skip!` and `finished!` behave as in regular steps.
+
+Exception policies (`on_exception:` on the step, class-level `on_exception`, `max_reattempts:`, `terminal_action:`, `report:`) apply exactly as for regular steps. A `:reattempt!` policy continues from the last checkpoint, so a transient failure halfway through a large collection does not redo the completed portion. When an unhandled exception pauses the workflow, `resume!` also retries the failed step from its last checkpoint.
+
+Housekeeping recovery is cursor-aware too: a resumable execution stuck `in_progress` (dead worker) is recovered by continuing from its persisted cursor, not by restarting the iteration.
+
+### Writing Restart-Safe Iterations
+
+The cursor marks the last *checkpointed* position, and one item may be re-processed if execution stops between doing the work and checkpointing. Make each iteration idempotent (e.g. guard with a uniqueness constraint or a state flag on the processed record) rather than assuming exactly-once delivery.
+
+### Testing Resumable Steps
+
+`speedrun_workflow` and `speedrun_current_step` run resumable steps to completion with interruption checks disabled, following the execution chain across explicit suspensions. To exercise partial progress, use `run_iterations`:
+
+```ruby
+test "keeps its place across interruptions" do
+  workflow = CampaignWorkflow.create!(hero: campaign)
+  perform_next_step(workflow)             # :prepare
+
+  run_iterations(workflow, count: 3)      # three iterations, then interrupt
+  assert_cursor(workflow, 3)
+  assert_step_has_successor(workflow, :send_notifications)
+
+  speedrun_workflow(workflow)             # run the rest
+  assert workflow.finished?
+end
+```
+
 ## Exception Handling
 
 ### Default Behavior
@@ -1830,7 +1961,7 @@ end
 | `reattempt!(wait:, rewind:)` | Retry current step; `rewind: true` clears cursor |
 | `skip!` | Skip current step, proceed to next |
 | `finished!` | Complete workflow early |
-| `suspend!(wait:)` | Suspend resumable step, re-enqueue after delay |
+| `suspend!(wait:)` | Interrupt resumable step, continue via successor after delay |
 
 ### Workflow States
 
@@ -1852,7 +1983,8 @@ end
 | `failed` | Exception occurred |
 | `canceled` | Canceled before execution |
 | `skipped` | Skipped via `skip_if` or `skip!` |
-| `suspended` | Resumable step paused mid-iteration |
+
+A resumable step interrupted mid-iteration completes its execution with outcome `continued` and schedules a successor execution — there is no separate state for it.
 
 ### Step Options
 
@@ -1865,5 +1997,5 @@ end
 | `max_reattempts:` | Integer, nil | Max consecutive reattempts before pausing (default: 100, `nil` = unlimited) |
 | `before_step:` | Symbol | Insert before this step |
 | `after_step:` | Symbol | Insert after this step |
-| `max_iterations:` | Integer | (resumable_step) Suspend after N iterations |
-| `max_runtime:` | Duration | (resumable_step) Suspend after duration elapsed |
+| `max_iterations:` | Integer | (resumable_step) Interrupt after N iterations, continue via successor |
+| `max_runtime:` | Duration | (resumable_step) Interrupt after duration elapsed, continue via successor |

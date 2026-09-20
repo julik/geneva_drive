@@ -14,7 +14,7 @@
 /test/dummy/db/*.sqlite3-*
 /test/dummy/db/migrate/*geneva_drive*.rb
 /test/dummy/db/schema.rb
-/test/dummy/log/*.log
+/test/dummy/log/*.log*
 /test/dummy/storage/
 /test/dummy/tmp/
 

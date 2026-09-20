@@ -202,6 +202,16 @@ module GenevaDrive::TestHelpers
 
     loop do
       step_execution.reload
+
+      # Follow the execution chain: a completed execution that spawned a
+      # successor means the step is still going (suspend! and skip_to! create
+      # successors even with interruption checks disabled).
+      if GenevaDrive::StepExecution.resumable_columns? &&
+          step_execution.completed? && (successor = step_execution.successor)
+        step_execution = successor
+        next
+      end
+
       break if step_execution.completed? || step_execution.failed? || step_execution.canceled? || step_execution.skipped?
 
       step_execution.execute!(interrupt_configuration: config)
@@ -212,6 +222,32 @@ module GenevaDrive::TestHelpers
               "Step '#{original_step_name}' may be in an infinite loop."
       end
     end
+
+    workflow.reload
+    step_execution.reload
+    step_execution
+  end
+
+  # Runs the current (resumable) step for a limited number of iterations,
+  # then lets it interrupt and create a successor execution.
+  #
+  # Useful for testing partial progress and cursor state of resumable steps.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow containing the step
+  # @param count [Integer] the number of iterations to run before interrupting
+  # @return [GenevaDrive::StepExecution] the executed (now completed) step execution
+  #
+  # @example Run three iterations, then inspect the cursor
+  #   run_iterations(workflow, count: 3)
+  #   assert_cursor(workflow, 3)
+  #
+  def run_iterations(workflow, count:)
+    workflow.reload
+    step_execution = workflow.current_execution
+    raise "No current step execution to run" unless step_execution
+
+    config = GenevaDrive::InterruptConfiguration.new(max_iterations_override: count)
+    step_execution.execute!(interrupt_configuration: config)
 
     workflow.reload
     step_execution.reload

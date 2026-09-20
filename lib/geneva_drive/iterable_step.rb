@@ -37,7 +37,14 @@ class GenevaDrive::IterableStep
     @resumed = resumed
     @interrupter = interrupter
     @advanced = false
+    @iterations = 0
   end
+
+  # Returns the number of iterations completed during this execution
+  # (checkpoints via set!, advance! or checkpoint!).
+  #
+  # @return [Integer]
+  attr_reader :iterations
 
   # === Rails 8.1 ActiveJob::Continuation::Step compatible API ===
 
@@ -76,11 +83,13 @@ class GenevaDrive::IterableStep
     set!(@cursor + 1)
   end
 
-  # Persists the current cursor and checks for interruption.
+  # Persists the current cursor, counts the iteration, and checks for
+  # interruption (max_iterations, max_runtime, shutdown, external pause/cancel).
   # Called automatically by set! and advance!.
   #
   # @return [void]
   def checkpoint!
+    @iterations += 1
     persist_cursor!
     check_interruption!
   end
@@ -185,6 +194,6 @@ class GenevaDrive::IterableStep
   end
 
   def check_interruption!
-    throw :interrupt if @interrupter.should_interrupt?
+    throw :interrupt if @interrupter&.should_interrupt?(iterations: @iterations)
   end
 end

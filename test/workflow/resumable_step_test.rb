@@ -288,15 +288,58 @@ class ResumableStepTest < ActiveSupport::TestCase
 
   # chained executions tests
 
-  test "resumable step that gets interrupted creates successor" do
+  test "speedrun_current_step ignores max_iterations and runs to completion" do
     workflow = MaxIterationsWorkflow.create!(hero: @user)
 
-    # Execute the step to completion (no iteration limits now)
+    # speedrun disables interruption checks, so the limit does not apply
     speedrun_current_step(workflow)
 
     workflow.reload
     assert_equal "finished", workflow.state
     assert_equal (1..10).to_a, Thread.current[:bulk_items]
+    assert_equal 1, workflow.step_executions.where(step_name: "bulk_process").count
+  end
+
+  test "max_iterations interrupts the step and continues via chained successors" do
+    workflow = MaxIterationsWorkflow.create!(hero: @user)
+
+    # First execution: 3 iterations, then interrupt
+    perform_next_step(workflow)
+
+    workflow.reload
+    first_exec = workflow.step_executions.find_by(step_name: "bulk_process", continues_from_id: nil)
+    assert_equal "completed", first_exec.state
+    assert_equal "continued", first_exec.outcome
+    assert_equal [1, 2, 3], Thread.current[:bulk_items]
+
+    successor = first_exec.successor
+    assert_not_nil successor, "Expected a successor after max_iterations interrupt"
+    assert_equal "scheduled", successor.state
+    assert_equal 3, successor.cursor_value
+
+    # Run the remaining chunks to completion
+    10.times do
+      workflow.reload
+      break if workflow.finished?
+      perform_next_step(workflow)
+    end
+
+    workflow.reload
+    assert_equal "finished", workflow.state
+    assert_equal (1..10).to_a, Thread.current[:bulk_items], "each item should be processed exactly once"
+    # 10 items at 3 per execution = 4 chained executions
+    assert_equal 4, workflow.step_executions.where(step_name: "bulk_process").count
+  end
+
+  test "run_iterations runs a limited number of iterations and preserves the cursor" do
+    workflow = MaxIterationsWorkflow.create!(hero: @user)
+
+    execution = run_iterations(workflow, count: 2)
+
+    assert_equal "completed", execution.state
+    assert_equal "continued", execution.outcome
+    assert_equal [1, 2], Thread.current[:bulk_items]
+    assert_cursor(workflow, 2)
   end
 
   # Flow control tests
@@ -534,7 +577,7 @@ class ResumableStepTest < ActiveSupport::TestCase
     perform_next_step(workflow)
 
     workflow.reload
-    successor = workflow.current_execution
+    workflow.current_execution
     assert_cursor(workflow, 5)
   end
 

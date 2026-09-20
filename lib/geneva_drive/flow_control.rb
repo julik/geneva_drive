@@ -192,6 +192,12 @@ module GenevaDrive::FlowControl
   # @example Suspend to yield control
   #   suspend!
   def suspend!(wait: nil)
+    executing_step = current_step_name && steps.named(current_step_name)
+    unless executing_step&.resumable?
+      raise GenevaDrive::InvalidStateError,
+        "suspend! can only be called from inside a resumable_step (it continues from the persisted cursor)"
+    end
+
     wait_msg = wait ? " with wait #{wait.inspect}" : ""
     logger.info("Flow control: suspend! called from step#{wait_msg}")
     throw :flow_control, GenevaDrive::FlowControlSignal.new(:suspend, wait: wait)

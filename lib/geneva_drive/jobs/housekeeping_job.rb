@@ -281,6 +281,9 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
 
   # Reattempts a stuck step execution by marking it as completed and scheduling a retry.
   #
+  # Resumable step executions carry a cursor; those are continued via a
+  # successor execution so recovery does not restart the iteration from zero.
+  #
   # @param step_execution [GenevaDrive::StepExecution]
   # @param workflow [GenevaDrive::Workflow]
   # @return [void]
@@ -298,7 +301,12 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
         )
 
         workflow.update!(state: "ready") if workflow.performing?
-        workflow.reschedule_current_step!
+
+        if step_execution.step_definition&.resumable? && GenevaDrive::StepExecution.resumable_columns?
+          workflow.create_successor_execution!(step_execution)
+        else
+          workflow.reschedule_current_step!
+        end
       end
     end
   end

@@ -36,6 +36,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # Outcome values for audit purposes
   OUTCOMES = %w[
     success
+    continued
     reattempted
     skipped
     canceled
@@ -71,6 +72,36 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   scope :ready_to_execute, -> {
     scheduled.where("scheduled_for <= ?", Time.current)
   }
+
+  class << self
+    # Lazily checks whether the resumable-step columns (cursor and
+    # continues_from_id) have been migrated. Never hits the database at
+    # class definition time — only on the first runtime call.
+    #
+    # Deployments usually ship the gem update before running migrations,
+    # so all cursor/chaining behavior must degrade safely when the columns
+    # are absent: reads return nil, writes are no-ops, and executing an
+    # actual resumable_step raises a clear configuration error instead.
+    #
+    # @return [Boolean]
+    def resumable_columns?
+      if defined?(@_resumable_columns)
+        return @_resumable_columns
+      end
+
+      @_resumable_columns = table_exists? &&
+        column_names.include?("cursor") &&
+        column_names.include?("continues_from_id")
+    end
+
+    # Clears the cached detection result. Call this in tests or after
+    # running migrations in-process so the next access re-checks.
+    #
+    # @return [void]
+    def reset_resumable_columns_cache!
+      remove_instance_variable(:@_resumable_columns) if defined?(@_resumable_columns)
+    end
+  end
 
   # Transitions the step execution to 'in_progress' state.
   # Uses pessimistic locking to prevent double execution.
@@ -150,19 +181,23 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Returns the deserialized cursor value for resumable steps.
   # Uses ActiveJob serializers to handle Date, Time, and other types.
+  # Returns nil when the cursor column has not been migrated yet.
   #
   # @return [Object, nil] the cursor value
   def cursor_value
+    return nil unless self.class.resumable_columns?
     return nil if cursor.blank?
     ActiveJob::Arguments.deserialize([cursor]).first
   end
 
   # Sets the cursor value for resumable steps.
   # Uses ActiveJob serializers to handle Date, Time, and other types.
+  # Silent no-op when the cursor column has not been migrated yet.
   #
   # @param value [Object] the cursor value to store
   # @return [void]
   def cursor_value=(value)
+    return unless self.class.resumable_columns?
     self.cursor = if value.nil?
       nil
     else
@@ -171,10 +206,11 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   end
 
   # Returns true if this execution is resuming from a prior execution.
+  # Always false when the continues_from_id column has not been migrated yet.
   #
   # @return [Boolean]
   def resuming?
-    continues_from_id.present?
+    self.class.resumable_columns? && continues_from_id.present?
   end
 
   # Returns the step definition for this execution.

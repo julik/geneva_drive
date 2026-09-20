@@ -44,18 +44,12 @@ class GenevaDrive::ResumableStepDefinition < GenevaDrive::StepDefinition
   end
 
   # Executes the step block with an IterableStep in the workflow context.
-  # This is called by ResumableStepExecutor, not the normal Executor.
   #
   # @param workflow [GenevaDrive::Workflow] the workflow instance
   # @param iterable_step [GenevaDrive::IterableStep] the iteration context
   # @return [Object] the result of the step execution
-  def execute_in_context(workflow, iterable_step = nil)
-    if iterable_step
-      workflow.instance_exec(iterable_step, &@block)
-    else
-      # Fallback for non-resumable execution (shouldn't happen in practice)
-      workflow.instance_exec(&@block)
-    end
+  def execute_in_context(workflow, iterable_step)
+    workflow.instance_exec(iterable_step, &@block)
   end
 
   private

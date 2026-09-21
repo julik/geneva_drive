@@ -101,6 +101,33 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     def reset_resumable_columns_cache!
       remove_instance_variable(:@_resumable_columns) if defined?(@_resumable_columns)
     end
+
+    # Serializes a cursor value using ActiveJob serializers (handles Date,
+    # Time, and other types) and enforces GenevaDrive.max_cursor_size on
+    # the serialized JSON. The single serialization path for cursor writes.
+    #
+    # @param value [Object, nil] the cursor value
+    # @return [Object, nil] the serialized cursor
+    # @raise [CursorTooLargeError] if the serialized JSON exceeds the limit
+    def serialize_cursor(value)
+      return nil if value.nil?
+
+      serialized = ActiveJob::Arguments.serialize([value]).first
+
+      limit = GenevaDrive.max_cursor_size
+      if limit
+        bytesize = JSON.generate(serialized).bytesize
+        if bytesize > limit
+          raise GenevaDrive::CursorTooLargeError,
+            "Serialized cursor is #{bytesize} bytes, exceeding GenevaDrive.max_cursor_size " \
+            "(#{limit} bytes). The cursor is a position marker (an id, page number, or token), " \
+            "not a place to store the data being processed. Set GenevaDrive.max_cursor_size to " \
+            "nil to disable this check."
+        end
+      end
+
+      serialized
+    end
   end
 
   # Transitions the step execution to 'in_progress' state.
@@ -195,14 +222,11 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # Silent no-op when the cursor column has not been migrated yet.
   #
   # @param value [Object] the cursor value to store
+  # @raise [CursorTooLargeError] if the serialized JSON exceeds GenevaDrive.max_cursor_size
   # @return [void]
   def cursor_value=(value)
     return unless self.class.resumable_columns?
-    self.cursor = if value.nil?
-      nil
-    else
-      ActiveJob::Arguments.serialize([value]).first
-    end
+    self.cursor = self.class.serialize_cursor(value)
   end
 
   # Returns true if this execution is resuming from a prior execution.

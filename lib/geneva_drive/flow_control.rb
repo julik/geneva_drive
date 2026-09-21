@@ -33,6 +33,11 @@ class GenevaDrive::InvalidStateError < StandardError; end
 #   raise StepConfigurationError, "Step requires either a block or method name"
 class GenevaDrive::StepConfigurationError < StandardError; end
 
+# Raised when a resumable step cursor exceeds GenevaDrive.max_cursor_size
+# once serialized to JSON. The cursor is a position marker, not a payload -
+# it is rewritten on every checkpoint and copied to every successor execution.
+class GenevaDrive::CursorTooLargeError < StandardError; end
+
 # Base class for errors that occur during step execution.
 # These errors are raised after recovery actions have been performed,
 # so the workflow/step states are already updated when the exception propagates.

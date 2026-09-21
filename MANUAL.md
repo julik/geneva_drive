@@ -576,6 +576,8 @@ end
 
 The cursor is a value persisted on the step execution after every checkpoint. It is whatever your iteration needs to pick up where it stopped: a record ID, a page number, an opaque API token, a date. Cursors are serialized with ActiveJob serializers, so anything ActiveJob can serialize works — including `Date` and `Time` — without manual conversion.
 
+The cursor is a position marker, not a place to store the data being processed: it is rewritten on every checkpoint and copied to every successor execution. To keep that write path cheap, the serialized JSON is limited to 128 KB by default — exceeding it raises `GenevaDrive::CursorTooLargeError`. The limit is configurable in the initializer via `GenevaDrive.max_cursor_size` (`nil` disables the check).
+
 ```ruby
 resumable_step :process_records do |iter|
   hero.records.where("id > ?", iter.cursor || 0).find_each do |record|

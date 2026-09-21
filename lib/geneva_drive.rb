@@ -31,6 +31,7 @@ module GenevaDrive
   autoload :StepConfigurationError, "geneva_drive/flow_control"
   autoload :StepExecutionError, "geneva_drive/flow_control"
   autoload :StepNotDefinedError, "geneva_drive/flow_control"
+  autoload :CursorTooLargeError, "geneva_drive/flow_control"
   autoload :StepFailedError, "geneva_drive/flow_control"
   autoload :PreconditionError, "geneva_drive/flow_control"
   autoload :FlowControl, "geneva_drive/flow_control"
@@ -76,6 +77,16 @@ module GenevaDrive
     # Can be :reattempt or :cancel
     # @return [Symbol]
     attr_accessor :stuck_recovery_action
+
+    # Maximum size in bytes of a resumable step cursor once serialized to
+    # JSON. The cursor is meant to be a compact position marker (an id, a
+    # page number, a pagination token) - not a payload. It is rewritten on
+    # every checkpoint and copied to every successor execution, so an
+    # oversized cursor multiplies write load and row size. Exceeding the
+    # limit raises CursorTooLargeError from set!/checkpoint!.
+    # Set to nil to disable the check.
+    # @return [Integer, nil]
+    attr_accessor :max_cursor_size
 
     # Whether to defer job enqueueing to after the database transaction commits.
     # When true (the default in non-test environments), jobs are enqueued inside
@@ -163,5 +174,6 @@ module GenevaDrive
   self.stuck_scheduled_threshold = 15.minutes
   self.housekeeping_batch_size = 1000
   self.stuck_recovery_action = :reattempt
+  self.max_cursor_size = 128 * 1024
   self.enqueue_after_commit = !Rails.env.test?
 end

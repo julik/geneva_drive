@@ -186,7 +186,7 @@ class GenevaDrive::IterableStep
   private
 
   def persist_cursor!
-    serialized = @cursor.nil? ? nil : ActiveJob::Arguments.serialize([@cursor]).first
+    serialized = GenevaDrive::StepExecution.serialize_cursor(@cursor)
 
     GenevaDrive::StepExecution
       .where(id: @execution.id)

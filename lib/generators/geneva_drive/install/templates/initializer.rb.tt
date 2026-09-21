@@ -31,6 +31,14 @@
 #
 # GenevaDrive.housekeeping_batch_size = 1000
 
+# Maximum size in bytes of a resumable step cursor once serialized to JSON.
+# The cursor is a position marker (an id, page number, or pagination token),
+# not a place to store the data being processed - it is rewritten on every
+# checkpoint and copied to every successor execution. Exceeding the limit
+# raises GenevaDrive::CursorTooLargeError. Set to nil to disable the check.
+#
+# GenevaDrive.max_cursor_size = 128.kilobytes
+
 # Whether to defer job enqueueing until after the database transaction commits.
 # In production this ensures step execution records are visible to job workers
 # before the job runs. In test environments (the default when Rails.env.test?)

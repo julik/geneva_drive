@@ -123,24 +123,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       call_location = caller_loc ? [caller_loc.path, caller_loc.lineno] : nil
       block_location = block&.source_location
 
-      # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
-      if _step_definitions.equal?(superclass._step_definitions)
-        self._step_definitions = _step_definitions.dup
-      end
-      # Invalidate cached step collection since we're adding a step
-      @steps = nil
-
-      step_name = (name || generate_step_name).to_s
-
-      # Check for duplicate step names
-      if _step_definitions.any? { |s| s.name == step_name }
-        raise GenevaDrive::StepConfigurationError,
-          "Step '#{step_name}' is already defined in #{self.name}"
-      end
-
-      # Validate positioning references exist
-      validate_step_positioning_reference!(step_name, options[:before_step], :before_step)
-      validate_step_positioning_reference!(step_name, options[:after_step], :after_step)
+      step_name = prepare_step_registration!(name, options)
 
       step_def = GenevaDrive::StepDefinition.new(
         name: step_name,
@@ -148,6 +131,69 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         call_location: call_location,
         block_location: block_location,
         **options
+      )
+
+      _step_definitions << step_def
+
+      step_def
+    end
+
+    # Defines a resumable step that can iterate over large collections.
+    # The block receives an IterableStep object for cursor-based iteration
+    # that survives job restarts.
+    #
+    # @param name [String, Symbol, nil] the step name (auto-generated if nil)
+    # @param options [Hash] step options
+    # @option options [Integer, nil] :max_iterations interrupt after N iterations
+    # @option options [ActiveSupport::Duration, nil] :max_runtime interrupt after duration
+    # @option options [ActiveSupport::Duration, nil] :wait delay before execution
+    # @option options [Proc, Symbol, Boolean, nil] :skip_if condition for skipping
+    # @option options [Symbol] :on_exception exception handler (:pause!, :cancel!, :reattempt!, :skip!)
+    # @option options [String, Symbol, nil] :before_step position before this step
+    # @option options [String, Symbol, nil] :after_step position after this step
+    # @yield [iter] the step implementation receiving an IterableStep object
+    # @yieldparam iter [GenevaDrive::IterableStep] cursor management object
+    # @return [void]
+    #
+    # @example Iterate over records with automatic checkpointing
+    #   resumable_step :process_users do |iter|
+    #     iter.iterate_over_records(hero.users) do |user|
+    #       process(user)
+    #     end
+    #   end
+    #
+    # @example Manual cursor control
+    #   resumable_step :sync_pages do |iter|
+    #     page = iter.cursor || 1
+    #     loop do
+    #       response = Api.fetch(page: page)
+    #       break if response.empty?
+    #       response.each { |item| process(item) }
+    #       page += 1
+    #       iter.set!(page)
+    #     end
+    #   end
+    #
+    # @example With iteration limits
+    #   resumable_step :bulk_import, max_iterations: 10_000 do |iter|
+    #     iter.iterate_over_records(records) { |r| import(r) }
+    #   end
+    def resumable_step(name = nil, **options, &block)
+      raise ArgumentError, "resumable_step requires a block" unless block_given?
+
+      # Capture source locations before any other operations
+      caller_loc = caller_locations(1, 1).first
+      call_location = caller_loc ? [caller_loc.path, caller_loc.lineno] : nil
+      block_location = block.source_location
+
+      step_name = prepare_step_registration!(name, options)
+
+      step_def = GenevaDrive::ResumableStepDefinition.new(
+        name: step_name,
+        call_location: call_location,
+        block_location: block_location,
+        **options,
+        &block
       )
 
       _step_definitions << step_def
@@ -331,6 +377,36 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
     private
 
+    # Shared bookkeeping for registering a step definition: copy-on-write of
+    # the inherited definitions array, cache invalidation, name generation,
+    # duplicate-name check, and positioning validation.
+    #
+    # @param name [String, Symbol, nil] the requested step name
+    # @param options [Hash] the step options (read for before_step/after_step)
+    # @return [String] the resolved step name
+    def prepare_step_registration!(name, options)
+      # Duplicate parent's array only if we haven't already (avoid mutating inherited definitions)
+      if _step_definitions.equal?(superclass._step_definitions)
+        self._step_definitions = _step_definitions.dup
+      end
+      # Invalidate cached step collection since we're adding a step
+      @steps = nil
+
+      step_name = (name || generate_step_name).to_s
+
+      # Check for duplicate step names
+      if _step_definitions.any? { |s| s.name == step_name }
+        raise GenevaDrive::StepConfigurationError,
+          "Step '#{step_name}' is already defined in #{self.name}"
+      end
+
+      # Validate positioning references exist
+      validate_step_positioning_reference!(step_name, options[:before_step], :before_step)
+      validate_step_positioning_reference!(step_name, options[:after_step], :after_step)
+
+      step_name
+    end
+
     # Validates that a positioning reference (before_step/after_step) exists.
     #
     # @param step_name [String] the step being defined
@@ -445,18 +521,44 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       update!(state: "ready", transitioned_at: nil)
     end
 
-    # Look for a scheduled execution to resume
+    # A scheduled execution preserved by pause! takes precedence - re-enqueue it
     scheduled_execution = current_execution
-    if scheduled_execution
-      enqueue_scheduled_execution(scheduled_execution)
-    else
-      # No scheduled execution exists - create one for the next step
-      step_def = steps.named(next_step_name)
-      create_step_execution(step_def, wait: nil)
+    return enqueue_scheduled_execution(scheduled_execution) if scheduled_execution
+
+    # Resumable-step continuations need the cursor/continues_from_id columns
+    if GenevaDrive::StepExecution.resumable_columns?
+      # Check for a resumable step that was paused mid-iteration. Only the most
+      # recent marker row counts, and only while it has not been consumed yet
+      # (creating a successor consumes it - the successor's presence marks that).
+      paused_resumable_execution = step_executions
+        .where(outcome: "workflow_paused", state: "completed")
+        .order(created_at: :desc, id: :desc)
+        .first
+
+      if paused_resumable_execution && paused_resumable_execution.successor.nil?
+        logger.info("Resuming from resumable execution #{paused_resumable_execution.id}, cursor: #{paused_resumable_execution.cursor_value.inspect}")
+        return create_successor_execution!(paused_resumable_execution)
+      end
+
+      # A resumable step that failed (pausing the workflow) resumes from its
+      # persisted cursor instead of redoing the whole iteration.
+      failed_execution = step_executions
+        .where(step_name: next_step_name, state: "failed")
+        .order(created_at: :desc, id: :desc)
+        .first
+      if failed_execution && failed_execution.cursor.present? && failed_execution.successor.nil?
+        logger.info("Retrying failed resumable execution #{failed_execution.id} from cursor: #{failed_execution.cursor_value.inspect}")
+        return create_successor_execution!(failed_execution)
+      end
     end
+
+    # No scheduled execution exists - create one for the next step
+    step_def = steps.named(next_step_name)
+    create_step_execution(step_def, wait: nil)
   end
 
   # Returns the current active step execution, if any.
+  # Includes scheduled and in_progress states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
@@ -665,6 +767,63 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     end
 
     step_execution
+  end
+
+  # Creates a successor step execution that continues a resumable step from
+  # the cursor persisted on the given execution. Used by the Executor when a
+  # resumable step interrupts itself, by resume! for workflows paused
+  # mid-iteration, and by housekeeping recovery of stuck resumable steps.
+  #
+  # The successor is enqueued with the same merged job options (class,
+  # per-instance, per-step) as any other execution of the step.
+  #
+  # @param predecessor [StepExecution] the execution to continue from
+  # @param wait [ActiveSupport::Duration, Numeric, nil] optional delay
+  # @return [StepExecution] the new successor execution
+  # @api private
+  public def create_successor_execution!(predecessor, wait: nil)
+    scheduled_for = wait ? wait.from_now : Time.current
+
+    with_lock do
+      # Cancel any stray scheduled executions - the successor is the one
+      # execution that should run next (same as create_step_execution).
+      canceled_count = step_executions.scheduled.update_all(
+        state: "canceled",
+        outcome: "canceled",
+        canceled_at: Time.current
+      )
+      logger.debug("Canceled #{canceled_count} previously scheduled step execution(s)") if canceled_count > 0
+
+      successor = step_executions.create!(
+        step_name: predecessor.step_name,
+        state: "scheduled",
+        scheduled_for: scheduled_for,
+        continues_from_id: predecessor.id,
+        cursor: predecessor.cursor
+      )
+
+      # next_step_name points to the step that's scheduled to run next
+      update!(next_step_name: predecessor.step_name)
+
+      job_options = merged_step_job_options(predecessor.step_definition)
+      job_options[:wait_until] = scheduled_for if wait
+      successor_id = successor.id
+      workflow_logger = logger
+
+      run_after_commit do
+        job = GenevaDrive::PerformStepJob
+          .set(**job_options)
+          .perform_later(successor_id)
+
+        workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for successor execution ##{successor_id}")
+
+        GenevaDrive::StepExecution
+          .where(id: successor_id)
+          .update_all(job_id: job.job_id)
+      end
+
+      successor
+    end
   end
 
   # Creates a step execution and enqueues the job after transaction commits.

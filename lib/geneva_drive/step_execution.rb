@@ -36,6 +36,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # Outcome values for audit purposes
   OUTCOMES = %w[
     success
+    continued
     reattempted
     skipped
     canceled
@@ -50,6 +51,18 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     foreign_key: :workflow_id,
     inverse_of: :step_executions
 
+  # For chained resumable step executions
+  belongs_to :continues_from,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    optional: true,
+    inverse_of: :successor
+
+  has_one :successor,
+    class_name: "GenevaDrive::StepExecution",
+    foreign_key: :continues_from_id,
+    inverse_of: :continues_from
+
   # Validations
   validates :step_name, presence: true
   validates :scheduled_for, presence: true
@@ -59,6 +72,63 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   scope :ready_to_execute, -> {
     scheduled.where("scheduled_for <= ?", Time.current)
   }
+
+  class << self
+    # Lazily checks whether the resumable-step columns (cursor and
+    # continues_from_id) have been migrated. Never hits the database at
+    # class definition time — only on the first runtime call.
+    #
+    # Deployments usually ship the gem update before running migrations,
+    # so all cursor/chaining behavior must degrade safely when the columns
+    # are absent: reads return nil, writes are no-ops, and executing an
+    # actual resumable_step raises a clear configuration error instead.
+    #
+    # @return [Boolean]
+    def resumable_columns?
+      if defined?(@_resumable_columns)
+        return @_resumable_columns
+      end
+
+      @_resumable_columns = table_exists? &&
+        column_names.include?("cursor") &&
+        column_names.include?("continues_from_id")
+    end
+
+    # Clears the cached detection result. Call this in tests or after
+    # running migrations in-process so the next access re-checks.
+    #
+    # @return [void]
+    def reset_resumable_columns_cache!
+      remove_instance_variable(:@_resumable_columns) if defined?(@_resumable_columns)
+    end
+
+    # Serializes a cursor value using ActiveJob serializers (handles Date,
+    # Time, and other types) and enforces GenevaDrive.max_cursor_size on
+    # the serialized JSON. The single serialization path for cursor writes.
+    #
+    # @param value [Object, nil] the cursor value
+    # @return [Object, nil] the serialized cursor
+    # @raise [CursorTooLargeError] if the serialized JSON exceeds the limit
+    def serialize_cursor(value)
+      return nil if value.nil?
+
+      serialized = ActiveJob::Arguments.serialize([value]).first
+
+      limit = GenevaDrive.max_cursor_size
+      if limit
+        bytesize = JSON.generate(serialized).bytesize
+        if bytesize > limit
+          raise GenevaDrive::CursorTooLargeError,
+            "Serialized cursor is #{bytesize} bytes, exceeding GenevaDrive.max_cursor_size " \
+            "(#{limit} bytes). The cursor is a position marker (an id, page number, or token), " \
+            "not a place to store the data being processed. Set GenevaDrive.max_cursor_size to " \
+            "nil to disable this check."
+        end
+      end
+
+      serialized
+    end
+  end
 
   # Transitions the step execution to 'in_progress' state.
   # Uses pessimistic locking to prevent double execution.
@@ -136,6 +206,37 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     end
   end
 
+  # Returns the deserialized cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  # Returns nil when the cursor column has not been migrated yet.
+  #
+  # @return [Object, nil] the cursor value
+  def cursor_value
+    return nil unless self.class.resumable_columns?
+    return nil if cursor.blank?
+    ActiveJob::Arguments.deserialize([cursor]).first
+  end
+
+  # Sets the cursor value for resumable steps.
+  # Uses ActiveJob serializers to handle Date, Time, and other types.
+  # Silent no-op when the cursor column has not been migrated yet.
+  #
+  # @param value [Object] the cursor value to store
+  # @raise [CursorTooLargeError] if the serialized JSON exceeds GenevaDrive.max_cursor_size
+  # @return [void]
+  def cursor_value=(value)
+    return unless self.class.resumable_columns?
+    self.cursor = self.class.serialize_cursor(value)
+  end
+
+  # Returns true if this execution is resuming from a prior execution.
+  # Always false when the continues_from_id column has not been migrated yet.
+  #
+  # @return [Boolean]
+  def resuming?
+    self.class.resumable_columns? && continues_from_id.present?
+  end
+
   # Returns the step definition for this execution.
   #
   # @return [StepDefinition, nil] the step definition
@@ -145,9 +246,11 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   # Executes this step using the Executor.
   #
+  # @param interruptible [Boolean] whether resumable steps respect interruption conditions
+  # @param max_iterations [Integer, nil] per-execution override of the step's max_iterations
   # @return [void]
-  def execute!
-    GenevaDrive::Executor.execute!(self)
+  def execute!(interruptible: true, max_iterations: nil)
+    GenevaDrive::Executor.execute!(self, interruptible: interruptible, max_iterations: max_iterations)
   end
 
   # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow

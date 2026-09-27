@@ -3,7 +3,7 @@
 require "test_helper"
 
 class MigrationHelpersTest < ActiveSupport::TestCase
-  FakeColumn = Struct.new(:name, :sql_type, :default_function, keyword_init: true)
+  FakeColumn = Struct.new(:name, :sql_type, :default_function)
 
   # Creates a fresh harness with the given fake columns as the app id columns.
   def build_migration(columns = [])

@@ -794,7 +794,9 @@ Payloads are serialized with ActiveJob serializers, so `Date`, `Time` and Active
 - `resumable_step` accepts `wait_for:`. The wait happens once, at the start of the chain, and `received_signal` stays the same across every successor execution.
 - A reattempt — yours or an exception policy's — re-reads the *same* signal. Reattempting means "process this event again", not "wait for another event".
 
-The signal itself moves through `pending` → `claimed` → `consumed`. It is claimed when an execution attaches to it and consumed only when that execution finishes cleanly, in the same transaction as the step's own completion. A step that fails, pauses, or gets canceled leaves its signal claimed, so the retry picks up the same payload and the audit trail does not claim an event was handled when it was not.
+The signal itself moves through `pending` → `claimed` → `consumed`. It is claimed when an execution attaches to it, and consumed once every attached execution has finished cleanly, in the same transaction as the step's own completion. A step that fails, pauses, or gets canceled leaves its signal claimed, so the retry picks up the same payload and the audit trail does not claim an event was handled when it was not.
+
+Two counters on the row make that legible: `signal.claimed` counts attachments (a step that failed and was retried attaches twice), and `signal.consumed` counts cleanly resolved ones. In a linear workflow they end at one apiece. The predicates `signal.claimed?` and `signal.consumed?` read those counters, so they answer "was this event ever picked up" and "was it ever handled" — which is not the same question as `signal.state`, and is usually the one worth asking.
 
 > [!NOTE]
 > Two sequential steps waiting on `:payment_confirmed` need two signals. The first step consumes the first signal, so the second step parks until another one arrives.

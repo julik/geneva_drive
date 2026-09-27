@@ -44,6 +44,15 @@ class CreateGenevaDriveSignals < ActiveRecord::Migration[7.2]
       t.datetime :claimed_at
       t.datetime :consumed_at
 
+      # How many executions have attached to this signal, and how many of
+      # those attached chains have resolved cleanly. For a linear workflow
+      # both end at 1 (more claims if the step was retried); when one signal
+      # is dispatched onto several concurrent executions the pair is the
+      # progress readout of that fan-out. Counters, not the lifecycle state -
+      # the `state` column above is what says claimed or consumed.
+      t.bigint :claimed, null: false, default: 0
+      t.bigint :consumed, null: false, default: 0
+
       t.timestamps
     end
 

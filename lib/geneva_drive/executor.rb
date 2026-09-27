@@ -431,25 +431,33 @@ class GenevaDrive::Executor
     :attached
   end
 
-  # Marks the attached signal consumed. Called from finalization on clean
-  # outcomes only (completion, skip, finished!), in the same transaction as
-  # the step's own transition: a crash before commit consumes nothing and
-  # completes nothing, so replay stays coherent.
+  # Books one clean resolution against the attached signal. Called from
+  # finalization on clean outcomes only (completion, skip, finished!), right
+  # after the step's own terminal transition and in the same transaction: a
+  # crash before commit resolves nothing and completes nothing, so replay
+  # stays coherent.
   #
-  # Reattempts, failures and cancellations deliberately leave the signal
-  # claimed - the retry (or resume) re-attaches to it and sees the same
-  # payload, and the audit trail reads truthfully.
+  # The signal only flips to consumed once every chain attached to it has
+  # resolved - for a single claimant that is this very moment, and when one
+  # signal has been dispatched onto several executions it is whichever of
+  # them finishes last. Reattempts, failures and cancellations deliberately
+  # leave the signal claimed, so the retry (or resume) re-attaches to it and
+  # sees the same payload while the audit trail reads truthfully.
   #
   # @return [void]
-  def consume_attached_signal!
+  def resolve_attached_signal!
     return unless GenevaDrive::StepExecution.signal_columns?
     return if step_execution.signal_id.blank?
 
     signal = step_execution.signal
-    return unless signal&.claimed?
+    return unless signal
 
-    logger.info("Consuming signal #{signal.id} (#{signal.name})")
-    signal.consume!
+    signal.record_consumption!
+    if signal.state == "consumed"
+      logger.info("Consumed signal #{signal.id} (#{signal.name}) after #{signal.consumed} clean resolution(s)")
+    else
+      logger.info("Signal #{signal.id} (#{signal.name}) stays claimed - other attached executions are unresolved")
+    end
   end
 
   # Evaluates preconditions (cancel_if and skip_if) with instrumentation.
@@ -741,8 +749,8 @@ class GenevaDrive::Executor
   # @return [void]
   def handle_completion
     logger.info("Step completed successfully, scheduling next step")
-    consume_attached_signal!
     transition_step!("completed", outcome: "success")
+    resolve_attached_signal!
     transition_workflow!("ready")
     workflow.schedule_next_step!
   end
@@ -843,8 +851,8 @@ class GenevaDrive::Executor
       transition_workflow!("canceled")
     when :skip
       logger.info("Exception policy: skip!")
-      consume_attached_signal!
       transition_step!("skipped", outcome: "skipped")
+      resolve_attached_signal!
       transition_workflow!("ready")
       workflow.schedule_next_step!
     when :pause
@@ -854,8 +862,8 @@ class GenevaDrive::Executor
       transition_workflow!("paused")
     when :finished
       logger.info("Exception policy: finished!")
-      consume_attached_signal!
       transition_step!("completed", outcome: "success")
+      resolve_attached_signal!
       transition_workflow!("finished")
     else
       logger.info("Exception policy: default (pause!)")
@@ -1000,15 +1008,15 @@ class GenevaDrive::Executor
 
     when :skip
       logger.info("Processing skip signal: scheduling next step")
-      consume_attached_signal!
       transition_step!("skipped", outcome: "skipped")
+      resolve_attached_signal!
       transition_workflow!("ready")
       workflow.schedule_next_step!
 
     when :finished
       logger.info("Processing finished signal: finishing workflow")
-      consume_attached_signal!
       transition_step!("completed", outcome: "success")
+      resolve_attached_signal!
       transition_workflow!("finished")
 
     when :suspend

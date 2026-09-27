@@ -9,11 +9,16 @@
 # and being noticed - a signal that arrives before the waiting step even
 # exists simply sits in the table until the step's gate picks it up.
 #
-# The lifecycle is +pending+ -> +claimed+ -> +consumed+:
+# The lifecycle, in the +state+ column, is +pending+ -> +claimed+ -> +consumed+:
 #
 # - +pending+: persisted, nobody is working on it
-# - +claimed+: attached to at least one step execution which is processing it
-# - +consumed+: an attached execution finished cleanly; no new execution may attach
+# - +claimed+: attached to at least one step execution, at least one of which
+#   has not resolved yet
+# - +consumed+: every attached chain resolved cleanly; no new execution may attach
+#
+# Alongside the state there are two counters, +claimed+ and +consumed+: how
+# many executions have attached to this event, and how many attached chains
+# have resolved cleanly.
 #
 # @example Delivering a signal
 #   workflow = OrderFulfillmentWorkflow.ongoing.for_hero(order).first
@@ -22,13 +27,25 @@
 class GenevaDrive::Signal < ActiveRecord::Base
   self.table_name = "geneva_drive_signals"
 
-  # Signal states as enum with string values.
-  # Provides: pending?, claimed?, consumed? predicates and matching scopes.
+  # Signal lifecycle states as enum with string values.
+  #
+  # Neither predicates nor scopes are generated: the +claimed+ and +consumed+
+  # counter columns own those names, and a `Signal.claimed` scope reading the
+  # state while `signal.claimed` reads the counter would be a trap. The state
+  # is queried explicitly (`where(state: ...)`) and read off the column; the
+  # public predicates are {#claimed?} and {#consumed?} over the counters.
   enum :state, {
     pending: "pending",
     claimed: "claimed",
     consumed: "consumed"
-  }
+  }, instance_methods: false, scopes: false
+
+  # Step execution states that mean "this chain has not come to rest yet".
+  ACTIVE_EXECUTION_STATES = %w[waiting scheduled in_progress].freeze
+
+  # Outcomes that resolve an attached chain cleanly, so the signal can be
+  # considered handled by it.
+  CLEAN_OUTCOMES = %w[success skipped].freeze
 
   belongs_to :workflow,
     class_name: "GenevaDrive::Workflow",
@@ -136,25 +153,75 @@ class GenevaDrive::Signal < ActiveRecord::Base
     @duplicate_delivery = true
   end
 
-  # Claims the signal for processing. No-op unless the signal is pending,
-  # so that a second execution attaching to the same signal leaves the
-  # original claimed_at intact.
+  # Whether at least one execution has ever attached to this signal. Reads
+  # the counter, not the lifecycle state, so it stays true after the signal
+  # has been consumed - "this event was picked up" rather than "is being
+  # handled right now".
+  #
+  # @return [Boolean]
+  def claimed? = claimed > 0
+
+  # Whether at least one attached chain has resolved cleanly. Reads the
+  # counter, so for a one-to-many dispatch it goes true with the first
+  # resolved branch, while the state only flips once the last one resolves.
+  #
+  # @return [Boolean]
+  def consumed? = consumed > 0
+
+  # Records one execution attaching to this signal, bumping the claimed
+  # count. The pending -> claimed state flip and claimed_at happen on the
+  # first claim only, so the timestamp keeps meaning "when this event started
+  # being handled". A retry attaching to a still-claimed signal counts as a
+  # new claim; a successor continuing the same chain does not (it carries the
+  # pin over rather than acquiring it).
   #
   # @return [void]
   # @api private
   def claim!
-    return unless pending?
-    update!(state: "claimed", claimed_at: Time.current)
+    attrs = {claimed: claimed + 1}
+    if state == "pending"
+      attrs[:state] = "claimed"
+      attrs[:claimed_at] = Time.current
+    end
+    update!(attrs)
   end
 
-  # Marks the signal consumed. No-op unless the signal is claimed - a
-  # signal is only ever consumed by an execution that attached to it.
+  # Records one attached execution chain resolving cleanly, bumping the
+  # consumed count. The state flips to consumed - closing the signal to new
+  # attachments - only once every attached chain has resolved, which for a
+  # single claimant is the same moment.
   #
   # @return [void]
   # @api private
-  def consume!
-    return unless claimed?
-    update!(state: "consumed", consumed_at: Time.current)
+  def record_consumption!
+    attrs = {consumed: consumed + 1}
+    if state == "claimed" && fully_resolved?
+      attrs[:state] = "consumed"
+      attrs[:consumed_at] = Time.current
+    end
+    update!(attrs)
+  end
+
+  # Whether every execution chain attached to this signal has come to a
+  # clean stop. A chain that is still running (or parked), and one whose
+  # latest attached execution failed or was canceled, both keep the state at
+  # claimed - the failed chain's retry re-attaches to it and reads the same
+  # payload.
+  #
+  # Only the most recent attached execution per step counts: the earlier ones
+  # in a chain end with `continued` or `reattempted` precisely because they
+  # handed the work to the next one.
+  #
+  # @return [Boolean]
+  # @api private
+  def fully_resolved?
+    attached = step_executions.order(created_at: :asc, id: :asc).to_a
+    return true if attached.empty?
+    return false if attached.any? { |execution| ACTIVE_EXECUTION_STATES.include?(execution.state) }
+
+    attached.group_by(&:step_name).all? do |_step_name, chain|
+      CLEAN_OUTCOMES.include?(chain.last.outcome)
+    end
   end
 
   # Step executions pinned to this signal.

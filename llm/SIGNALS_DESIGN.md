@@ -50,11 +50,13 @@ create_table :geneva_drive_signals, **geneva_drive_table_options do |t|
   t.references :workflow, null: false, index: true   # type: geneva_drive_key_type when uuid
   t.string :name, null: false
   t.string :idempotency_key                          # nullable; NULLs are distinct on PG/MySQL/SQLite
-  t.string :state, null: false, default: "pending"   # pending / claimed / consumed
+  t.string :state, null: false, default: "pending"   # lifecycle: pending / claimed / consumed
   # payload: jsonb on PG, json elsewhere — same flavor logic as the cursor column
   t.jsonb/:json :payload
   t.datetime :claimed_at
   t.datetime :consumed_at
+  t.bigint :claimed, null: false, default: 0         # counter, not the state
+  t.bigint :consumed, null: false, default: 0        # counter, not the state
   t.timestamps
 end
 
@@ -71,6 +73,8 @@ Notes:
 - The dedup index works with nullable `idempotency_key` on all three databases: PG, MySQL, and SQLite all treat NULLs as distinct in unique indexes, so IK-less signals insert freely while `(workflow, name, ik)` collides exactly when it should.
 - `payload` is serialized through `ActiveJob::Arguments` — the same path as the resumable cursor — and bounded by a new `GenevaDrive.max_signal_payload_size` (default 128 KiB, same as `max_cursor_size`; `nil` disables). Nobody in the field enforces a payload bound; we do (R10).
 - `Signal#payload` deserializes and, when the value is a Hash, wraps it in `ActiveSupport::HashWithIndifferentAccess`. Webhook senders produce string keys, Ruby senders produce symbols; matchers should not have to know which.
+- The `claimed` and `consumed` **counters** are the fan-out readout: how many executions attached to this event, and how many attached chains have resolved cleanly. In a linear workflow they end at `1 / 1` (`N / 1` if the step was retried); for a DAG salvo across five nodes they end at `5 / 5`, and watching them diverge is how one tells "three branches still working" from "three branches wedged". Cheap enough to be worth having on the row rather than derived by a join every time the Admin renders a signal.
+- The counters take the names the state enum would otherwise have claimed, which is deliberate but demands care. Throughout this document, **"state claimed" / "state consumed"** means the lifecycle value in the `state` column, and **"the claimed count" / "the consumed count"** means the counters. In code the enum is declared `instance_methods: false, scopes: false`, so no `Signal.claimed` scope or generated `consumed?` predicate exists to be confused with a counter; the lifecycle is queried explicitly (`where(state: ...)`), and `Signal#claimed?` / `#consumed?` are hand-written as `claimed > 0` / `consumed > 0` — "picked up at least once" / "resolved at least once", which is the question application code actually asks.
 
 ### 3.2 Additions to `geneva_drive_step_executions`
 
@@ -105,9 +109,18 @@ So: **`pending → claimed → consumed`**, with `claimed_at` / `consumed_at`.
 
 | Transition | When | Where (transaction) |
 |---|---|---|
-| `pending → claimed` | first execution attaches (gate or dispatch) | inside the workflow lock of the gate / `signal!` |
-| `claimed → consumed` | an attached execution finalizes with a clean outcome: `completed/success`, `skipped`, or `finished!` | the Executor's `finalize_with_lock` — the existing post-step transactioned block |
-| stays `claimed` | attached execution reattempts, fails→pause, or is canceled | — |
+| state `pending → claimed` | first execution attaches (gate or dispatch); the claimed count increments on **every** attach, `claimed_at` only on the first | inside the workflow lock of the gate / `signal!` |
+| state `claimed → consumed` | the **last** attached chain finalizes with a clean outcome (`completed/success`, `skipped`, `finished!`); the consumed count increments on every clean finalize | the Executor's `finalize_with_lock` — the existing post-step transactioned block |
+| state stays `claimed` | an attached chain reattempts, fails→pause, or is canceled — or any other attached chain is still unresolved | — |
+
+**Consumption rule, precisely.** On a clean finalize of an execution carrying a `signal_id`, the consumed count is incremented unconditionally (one increment per resolved chain, because only a chain's terminal execution finalizes cleanly), and the state flips to `consumed` only if both hold:
+
+1. no execution attached to the signal is still active (`waiting` / `scheduled` / `in_progress`), and
+2. for every attached step, its most recent attached execution ended cleanly (`success` or `skipped`).
+
+Earlier executions in a chain end `continued` or `reattempted` precisely because they handed the work on, so "most recent per step" is what "did this chain resolve" means. A failed-and-paused chain therefore keeps the state at claimed *and* the signal attachable, which is exactly what makes its retry work. With a single attached chain — every v1 workflow — this is behaviorally identical to "the first clean completion consumes it"; it only starts to differ once one signal is dispatched onto several executions, which is the DAG case (§8).
+
+Both the counter increments and the state flip happen under the workflow lock `finalize_with_lock` already holds, so plain arithmetic updates are safe — no read-modify-write race to worry about.
 
 **Attachment eligibility rule (the whole matching semantics in one sentence):** a gate or dispatch may attach an execution to any signal that matches and is **not consumed** — oldest first (`created_at ASC, id ASC`; FIFO like everyone credible in the field).
 
@@ -115,11 +128,11 @@ This one rule replaces what would otherwise be three special cases:
 
 1. *Reattempt/retry redelivery:* step X claimed signal S, failed, workflow paused. `resume!` creates a fresh execution for X; its gate finds S (claimed, not consumed, matches) and re-attaches. Same payload, checkpointed by the pin. No "release the claim on cancel" bookkeeping anywhere.
 2. *Housekeeping recovery:* a dispatch whose enqueue got lost is recovered by the existing stuck-`scheduled` sweep (dispatch sets `scheduled_for = Time.current`, see §6.2); the recovery reschedule's fresh execution re-attaches through the same rule. The row is the obligation, the enqueue a hint, housekeeping the guarantee (R4) — with zero new sweeper code.
-3. *DAG fan-out:* N waiting executions attach to one signal at dispatch; a late-parking sibling can still attach while the signal is unconsumed. `consumed` flips on the **first** clean completion among attached executions — already-attached siblings keep their pin and payload (the pin, not the state, is what feeds the step body), but no *new* executions can attach afterwards.
+3. *DAG fan-out:* N waiting executions attach to one signal at dispatch, and the signal stays attachable for as long as any of them is unresolved — so a sibling that parks late, or a sibling whose first attempt failed, still gets the same event. The signal closes when the whole salvo has come to a clean stop.
 
-**Documented edge (DAG-era):** if sibling branch A attaches, runs, and completes before sibling B's execution row exists, B's later gate finds the signal `consumed` and parks for a fresh one. This ordering sensitivity exists in every implementation in the sweep in some form (it is DurableFlow's broadcast-vs-message divergence). It is acceptable here because the PR #5 scheduler creates all dependency-satisfied sibling executions together, so same-trigger siblings park together; and payload matchers give the escape hatch when it genuinely bites. Not a v1 concern at all — v1 has at most one active execution.
+**Documented edge (DAG-era):** a straggler that parks only after the *entire* wavefront has resolved finds the signal `consumed` and waits for a fresh one. The generalized rule shrinks this window from "the fastest sibling" to "all siblings", which removes the ordering sensitivity for every realistic fan-out (the PR #5 scheduler creates all dependency-satisfied sibling executions together anyway). For the pathological remainder the escape hatches are unchanged: a payload matcher that selects per branch, or distinct idempotency keys so each branch gets its own row. Not a v1 concern at all — v1 has at most one active execution.
 
-Duplicate signals (same name, different IK) while one is claimed: the duplicate sits `pending` and is never matched unless a future waiter wants it. Visible in the audit, never silently swallowed (R2 — the anti-Stepped).
+Duplicate signals (same name, different IK) while one is in state claimed: the duplicate sits `pending` and is never matched unless a future waiter wants it. Visible in the audit, never silently swallowed (R2 — the anti-Stepped).
 
 ## 5. API
 
@@ -225,7 +238,7 @@ enum :state, {..., waiting: "waiting"}
 
 ### 6.4 Consumption (the post-step transactioned block)
 
-In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skipped`: if the execution has a `signal_id` and the signal is `claimed`, flip it to `consumed` with `consumed_at`, in the same transaction as the step's own transition. Crash before commit → nothing consumed, nothing completed, replay is coherent. Reattempt outcomes leave the signal `claimed` (the retry re-attaches). Failure→pause leaves it `claimed` (resume re-attaches). Cancel leaves it `claimed` — a truthful audit record ("dispatched, never processed") on a workflow that is terminal anyway.
+In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skipped`: if the execution has a `signal_id`, bump the consumed count and flip the state to `consumed` with `consumed_at` if the §4 resolution test passes, in the same transaction as the step's own transition. The call sits **after** the step's terminal transition so the resolution test reads one consistent picture (the finalizing execution included) instead of having to special-case "everything except me". Crash before commit → nothing resolved, nothing completed, replay is coherent. Reattempt outcomes leave the state at `claimed` (the retry re-attaches). Failure→pause leaves it there too (resume re-attaches), and so does cancel — a truthful audit record ("dispatched, never processed") on a workflow that is terminal anyway.
 
 ## 7. Interaction with every existing verb
 
@@ -233,9 +246,9 @@ In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skip
 |---|---|
 | `pause!` (external) | Waiting execution is left intact, exactly like a scheduled one. `signal!` while paused **persists but does not dispatch** — dispatching would enqueue a job whose prepare cancels the execution on the "workflow not ready/performing" guard, destroying the waiter. The row buffers. |
 | `resume!` | New branch: if `current_execution` is `waiting`, re-run the rendezvous under the lock — matching non-consumed signal exists → dispatch it; none → leave it waiting. Signals that arrived during the pause are therefore delivered on resume. The existing branches (scheduled execution, resumable continuations) are unchanged and ordered before it. |
-| `cancel!` (external) | `current_execution&.mark_canceled!` already covers the waiter once `current_execution` includes `waiting`. Attached signals stay `claimed`. |
-| `skip!` (external) | Marks the waiting execution `skipped` and schedules the next step — the operator's manual override for "stop waiting, move on". This is the v1 timeout escape hatch. If the execution had an attached signal (dispatched but not yet run), finalization-on-skip does not run (no executor involved), so the signal stays `claimed`; document. |
-| `reattempt!` / exception-policy reattempt | Fresh or successor execution; gate re-attaches to the same claimed signal (or successor carries the copied `signal_id`). Same payload delivered — reattempt means "process this event again", not "wait for a new event". |
+| `cancel!` (external) | `current_execution&.mark_canceled!` already covers the waiter once `current_execution` includes `waiting`. Attached signals stay in state `claimed`. |
+| `skip!` (external) | Marks the waiting execution `skipped` and schedules the next step — the operator's manual override for "stop waiting, move on". This is the v1 timeout escape hatch. If the execution had an attached signal (dispatched but not yet run), finalization-on-skip does not run (no executor involved), so the signal stays in state `claimed`; document. |
+| `reattempt!` / exception-policy reattempt | Fresh or successor execution; gate re-attaches to the same still-claimed signal (or successor carries the copied `signal_id`). Same payload delivered — reattempt means "process this event again", not "wait for a new event". |
 | `finished!` from the step body | Clean outcome → consumes the attached signal, then finishes. |
 | `suspend!` / resumable interruption | Successor copies `signal_id`; no re-park, no re-match. |
 | `cancel_if` | Evaluated at prepare — i.e. at park time and again at wake time. A parked workflow does **not** re-evaluate `cancel_if` while it sleeps; the check runs when the signal wakes it. Document. |
@@ -249,9 +262,9 @@ In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skip
 
 - Dispatch already iterates **all** matching waiting executions; v1's single-active model just makes the loop trivially short. When node executions multiply, the same scan wakes every parked branch.
 - The attachment pin (`step_executions.signal_id`, many-to-one) is the fan-out relationship. No join table, no signal-side execution pointer to outgrow.
-- Consumption ("first clean completion closes the signal; existing pins survive") is defined for N claimants from day one (§4), with the sibling-ordering edge documented rather than discovered.
+- Consumption ("the signal closes when the last attached chain resolves cleanly; a chain that failed keeps it open") is defined for N claimants from day one (§4). The motivating case is a salvo of nodes waiting on one signal name: they attach together at dispatch, each runs at its own pace, and the event is only spent once the whole wavefront is done — with the claimed / consumed counters on the row as the progress readout. The one remaining pathological straggler (a node parking after the entire wavefront resolved) stays documented, with matcher and distinct-idempotency-key escape hatches, rather than discovered in production.
 - The one-active index is left for the DAG migration to replace; `waiting` joins the new per-node index's state list there (§3.3).
-- Per PR #5's own column rubric ("real column if the scheduler queries it"), `signal_id` and `waiting_since` are real columns, not metadata entries.
+- Per PR #5's own column rubric ("real column if the scheduler queries it"), `signal_id` and `waiting_since` are real columns, not metadata entries. The claimed / consumed counters are real columns for the same reason the resolution test is a query and not a guess.
 
 ## 9. Timeouts: deferred, with the seam kept warm
 
@@ -291,7 +304,7 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 | 2 | Signal races the park | Workflow lock serializes; whichever commits second sees the other. |
 | 3 | Duplicate delivery, same IK | Unique-index no-op in a savepoint; existing row returned, flagged `duplicate_delivery?`; no dispatch. |
 | 4 | Duplicate delivery, no IK | Two rows; oldest wins at the gate; the newer one buffers (auditable, R2). |
-| 5 | Two sequential steps wait on the same name | First consumes its signal on clean completion; second parks for a fresh one. Consume-once per event. |
+| 5 | Two sequential steps wait on the same name | First consumes its signal on clean completion (it is the only attached chain); second parks for a fresh one. Consume-once per event. |
 | 6 | `signal!` on paused workflow | Persist, no dispatch; delivered by `resume!`'s rendezvous. |
 | 7 | `signal!` on finished/canceled workflow | Return existing row on IK match; otherwise raise `WorkflowNotOngoing`. |
 | 8 | `signal!` on a workflow whose class was removed (STI fallback) | Row ops only; matcher evaluation requires step definitions, so dispatch scan treats undefinable steps as non-matching; buffering still works. |
@@ -299,7 +312,7 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 | 10 | Matcher raises at the gate | Existing prepare-exception machinery: policy → report → pause by default. |
 | 11 | Dispatch enqueue lost | Execution is `scheduled` + overdue → existing housekeeping recovery; fresh execution re-attaches via §4 rule. |
 | 12 | Worker crashes mid-step after attach | Stuck-in-progress recovery → reattempt path → re-attach (claimed, not consumed) → same payload. Consumption checkpointed only with completion. |
-| 13 | Workflow paused between dispatch and job run | Prepare's paused-guard cancels the execution; signal stays claimed; `resume!` → new execution → gate re-attaches. |
+| 13 | Workflow paused between dispatch and job run | Prepare's paused-guard cancels the execution; signal stays in state claimed; `resume!` → new execution → gate re-attaches. |
 | 14 | Payload too large | `SignalPayloadTooLargeError` at `signal!`, before persist — mirror of `CursorTooLargeError`. |
 | 15 | Payload key type mismatch (string vs symbol) | `payload` reader returns indifferent-access hashes; matchers see one shape. |
 | 16 | `wait:` + `wait_for:` on one step | Compose: run no earlier than `scheduled_for`, and only once signaled (§5.2). |

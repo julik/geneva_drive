@@ -245,6 +245,27 @@ enum :state, {..., waiting: "waiting"}
 
 In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skipped`: if the execution has a `signal_id`, bump the consumed count and flip the state to `consumed` with `consumed_at` if the §4 resolution test passes, in the same transaction as the step's own transition. The call sits **after** the step's terminal transition so the resolution test reads one consistent picture (the finalizing execution included) instead of having to special-case "everything except me". Crash before commit → nothing resolved, nothing completed, replay is coherent. Reattempt outcomes leave the state at `claimed` (the retry re-attaches). Failure→pause leaves it there too (resume re-attaches), and so does cancel — a truthful audit record ("dispatched, never processed") on a workflow that is terminal anyway.
 
+### 6.5 Skips settle what they were delivered
+
+Consumption follows attachment: **any** skip of a chain holding an attached signal consumes that signal (and bumps the consumed count); a skip of an execution that never attached touches nothing. A skip — in every flavor — is the decision "we deliberately move past this step", and an event delivered to that step is settled by that decision. Leaving it `claimed` would hand a stale event to the next waiter for the same name, which is precisely what consume-once-per-event (§4, edge 5) forbids.
+
+The skip flavors and where each settles:
+
+| Flavor | Site | Attached? |
+|---|---|---|
+| flow-control `skip!` inside the step | `finalize_with_lock` | yes if the step ran with a signal |
+| exception-policy skip | `finalize_with_lock` | same |
+| `skip_if` true at wake | `evaluate_preconditions`, in `prepare_execution` | yes — dispatch woke it, or a retry re-attached |
+| `skip_if` true at park time | same site, before the gate | no — nothing to settle (edge 17) |
+| operator `skip!` on a `ready` workflow | `external_skip!` | yes if dispatched but not yet run |
+| operator `skip!` on a `paused` workflow | `external_skip!` | yes — the *failed* execution still holds the claim, and no future execution of that step is coming to release it |
+
+The last two rows are why this is one shared helper (`Workflow#settle_signal_for_skipped!`) rather than logic in the Executor: two of the six sites never involve an executor at all. Every site already holds the workflow lock, so the settle rides the same transaction as the skip (§6.2's all-or-nothing rule applies unchanged).
+
+The paused case needs one wrinkle: the chain being skipped past ended in a *failure*, so §4's resolution test would never pass for it. The settle therefore names that step as resolved by decree (`record_consumption!(resolved_step_names: [...])`) — which is the honest reading, since the operator has just declared the chain over. Under DAGs this is also what keeps the counters from stranding: a per-branch skip increments `consumed` like any other clean resolution, so the flip condition stays reachable for the rest of the wavefront.
+
+**Cancels are deliberately not included.** A canceled execution keeps its claim so that `resume!` and re-attach keep working, and a canceled workflow is terminal anyway — nothing is left to mis-deliver the event to.
+
 ## 7. Interaction with every existing verb
 
 | Verb / mechanism | Behavior with a waiting execution or in-flight signal |
@@ -252,12 +273,12 @@ In `finalize_with_lock`, on outcomes `success` (including `finished!`) and `skip
 | `pause!` (external) | Waiting execution is left intact, exactly like a scheduled one. `signal!` while paused **persists but does not dispatch** — dispatching would enqueue a job whose prepare cancels the execution on the "workflow not ready/performing" guard, destroying the waiter. The row buffers. |
 | `resume!` | New branch: if `current_execution` is `waiting`, re-run the rendezvous under the lock — matching non-consumed signal exists → dispatch it; none → leave it waiting. Signals that arrived during the pause are therefore delivered on resume. The existing branches (scheduled execution, resumable continuations) are unchanged and ordered before it. |
 | `cancel!` (external) | `current_execution&.mark_canceled!` already covers the waiter once `current_execution` includes `waiting`. Attached signals stay in state `claimed`. |
-| `skip!` (external) | Marks the waiting execution `skipped` and schedules the next step — the operator's manual override for "stop waiting, move on". This is the v1 timeout escape hatch. If the execution had an attached signal (dispatched but not yet run), finalization-on-skip does not run (no executor involved), so the signal stays in state `claimed`; document. |
+| `skip!` (external) | Marks the waiting execution `skipped` and schedules the next step — the operator's manual override for "stop waiting, move on". This is the v1 timeout escape hatch. If the execution held an attached signal, the skip settles it (§6.5): on a `ready` workflow that is a dispatched-but-not-yet-run execution, and on a `paused` one it is the failed execution that paused the workflow, whose claim nothing else will ever release. A parked execution has no attachment, so buffered signals it never reached are untouched. |
 | `reattempt!` / exception-policy reattempt | Fresh or successor execution; gate re-attaches to the same still-claimed signal (or successor carries the copied `signal_id`). Same payload delivered — reattempt means "process this event again", not "wait for a new event". |
 | `finished!` from the step body | Clean outcome → consumes the attached signal, then finishes. |
 | `suspend!` / resumable interruption | Successor copies `signal_id`; no re-park, no re-match. |
 | `cancel_if` | Evaluated at prepare — i.e. at park time and again at wake time. A parked workflow does **not** re-evaluate `cancel_if` while it sleeps; the check runs when the signal wakes it. Document. |
-| `skip_if` | Evaluated before the gate (skip beats wait), and again at wake. |
+| `skip_if` | Evaluated before the gate (skip beats wait), and again at wake. Skipping at park time settles nothing (the step never attached); skipping at wake settles the signal that woke it (§6.5). |
 | Hero deleted while parked | Checked at wake (prepare's hero guard), workflow cancels then — same timing semantics as `cancel_if`. |
 | Housekeeping recovery | `waiting` is neither `scheduled` nor `in_progress`, so the stuck sweeps ignore parked rows by construction — waiting indefinitely is a legitimate state, not a stuck one. Dispatched-but-lost executions are `scheduled`+overdue and get recovered normally. |
 | Housekeeping cleanup / wipe | `has_many :signals, dependent: :delete_all` on Workflow, plus a third batched `DELETE ... INNER JOIN` pass in `cleanup_completed_workflows!` (signals deleted before workflows, same pattern as step executions). |
@@ -322,7 +343,8 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 | 15 | Payload key type mismatch (string vs symbol) | `payload` reader returns indifferent-access hashes; matchers see one shape. |
 | 16 | `wait:` + `wait_for:` on one step | Compose: run no earlier than `scheduled_for`, and only once signaled (§5.2). |
 | 16a | `wait_for: 2.days` or `wait: :payment_confirmed` | `StepConfigurationError` at class load, message pointing to the kwarg the author meant (§5.2). |
-| 17 | `skip_if` true on a waiting step | Skips at park time — never parks. Also re-checked at wake. |
+| 17 | `skip_if` true on a waiting step | Skips at park time — never parks, and settles nothing: the step never attached, so buffered signals stay `pending`. Also re-checked at wake, where the skip *does* settle the signal that woke it (§6.5). |
+| 17a | Any skip of a step holding an attached signal | The signal is consumed, consumed count +1 — `skip_if` at wake, flow-control `skip!`, an exception-policy skip, or an operator `skip!` on a ready or paused workflow. Consumption follows attachment (§6.5). |
 | 18 | First step of the workflow has `wait_for:` | Works; workflow parks immediately after creation. No signal-with-start race since `signal!` needs the instance. |
 | 19 | Resumable step chain with `wait_for:` | Gate runs once; `signal_id` copied to every successor with the cursor. |
 | 20 | Same-name signal while a claimed one is in flight (linear) | Impossible to double-deliver: single active execution; the newcomer buffers (see #4). |

@@ -492,6 +492,11 @@ class GenevaDrive::Executor
         if step_def.should_skip?(workflow)
           logger.info("skip_if condition matched, skipping step")
           transition_step!("skipped", outcome: "skipped")
+          # The step may have been woken by a signal and only then decided it
+          # had nothing to do (or a retry re-attached before skip_if flipped).
+          # Skipping settles that event instead of leaving it for the next
+          # waiter on the same name.
+          workflow.settle_signal_for_skipped!(step_execution)
           transition_workflow!("ready")
           workflow.schedule_next_step!
           p[:outcome] = :skipped

@@ -792,11 +792,13 @@ Payloads are serialized with ActiveJob serializers, so `Date`, `Time` and Active
 ### How Waiting Composes
 
 - `wait: 2.days, wait_for: :payment_confirmed` means "no earlier than two days from now, and only once signaled". A signal arriving during the delay is buffered and claimed when the step finally runs.
-- `skip_if:` is evaluated before waiting, so "wait for the signature — unless the contract was pre-signed" skips immediately instead of parking forever. Both `skip_if:` and `cancel_if` are re-evaluated when a signal wakes the step; a parked workflow does not re-check them while it sleeps.
+- `skip_if:` is evaluated before waiting, so "wait for the signature — unless the contract was pre-signed" skips immediately instead of parking forever. Both `skip_if:` and `cancel_if` are re-evaluated when a signal wakes the step; a parked workflow does not re-check them while it sleeps. A step skipped at wake consumes the signal that woke it, so the next waiter does not inherit a stale event.
 - `resumable_step` accepts `wait_for:`. The wait happens once, at the start of the chain, and `received_signal` stays the same across every successor execution.
 - A reattempt — yours or an exception policy's — re-reads the *same* signal. Reattempting means "process this event again", not "wait for another event".
 
 The signal itself moves through `pending` → `claimed` → `consumed`. It is claimed when an execution attaches to it, and consumed once every attached execution has finished cleanly, in the same transaction as the step's own completion. A step that fails, pauses, or gets canceled leaves its signal claimed, so the retry picks up the same payload and the audit trail does not claim an event was handled when it was not.
+
+Skipping counts as finishing: skipping a step that was delivered a signal consumes that signal, whether the skip came from `skip_if:`, from `skip!` inside the step, from an exception policy, or from an operator calling `workflow.skip!` on a ready or paused workflow. Moving past a step deliberately settles the event it was given. Skipping a step that never attached — one still parked, or one whose `skip_if:` fired before it ever looked for a signal — leaves buffered signals exactly as they were.
 
 Two counters on the row make that legible: `signal.claimed` counts attachments (a step that failed and was retried attaches twice), and `signal.consumed` counts cleanly resolved ones. In a linear workflow they end at one apiece. The predicates `signal.claimed?` and `signal.consumed?` read those counters, so they answer "was this event ever picked up" and "was it ever handled" — which is not the same question as `signal.state`, and is usually the one worth asking.
 

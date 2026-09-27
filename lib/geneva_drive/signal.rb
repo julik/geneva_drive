@@ -191,11 +191,14 @@ class GenevaDrive::Signal < ActiveRecord::Base
   # attachments - only once every attached chain has resolved, which for a
   # single claimant is the same moment.
   #
+  # @param resolved_step_names [Array<String, Symbol>] steps whose chains are
+  #   resolved by decree rather than by outcome - a skip settles the chain it
+  #   skips past even when that chain's last execution failed
   # @return [void]
   # @api private
-  def record_consumption!
+  def record_consumption!(resolved_step_names: [])
     attrs = {consumed: consumed + 1}
-    if state == "claimed" && fully_resolved?
+    if state == "claimed" && fully_resolved?(resolved_step_names: resolved_step_names)
       attrs[:state] = "consumed"
       attrs[:consumed_at] = Time.current
     end
@@ -212,14 +215,21 @@ class GenevaDrive::Signal < ActiveRecord::Base
   # in a chain end with `continued` or `reattempted` precisely because they
   # handed the work to the next one.
   #
+  # @param resolved_step_names [Array<String, Symbol>] steps to treat as
+  #   resolved whatever their executions say. Skipping a step is a decision
+  #   that its chain is over, including when that chain ended in a failure -
+  #   no future execution of it is coming to resolve it cleanly.
   # @return [Boolean]
   # @api private
-  def fully_resolved?
+  def fully_resolved?(resolved_step_names: [])
+    settled = Array(resolved_step_names).map(&:to_s)
     attached = step_executions.order(created_at: :asc, id: :asc).to_a
     return true if attached.empty?
-    return false if attached.any? { |execution| ACTIVE_EXECUTION_STATES.include?(execution.state) }
 
-    attached.group_by(&:step_name).all? do |_step_name, chain|
+    unsettled = attached.reject { |execution| settled.include?(execution.step_name) }
+    return false if unsettled.any? { |execution| ACTIVE_EXECUTION_STATES.include?(execution.state) }
+
+    unsettled.group_by(&:step_name).all? do |_step_name, chain|
       CLEAN_OUTCOMES.include?(chain.last.outcome)
     end
   end

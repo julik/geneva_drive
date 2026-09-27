@@ -39,13 +39,32 @@ class SignalConsumptionTest < ActiveSupport::TestCase
     end
   end
 
+  class SkippableWaitWorkflow < GenevaDrive::Workflow
+    step :await_payment, wait_for: :payment_confirmed, skip_if: -> { Thread.current[:consumption_presigned] } do
+    end
+
+    step :await_payment_again, wait_for: :payment_confirmed do
+    end
+  end
+
+  class FailingWaitWorkflow < GenevaDrive::Workflow
+    step :await_payment, wait_for: :payment_confirmed do
+      raise "gateway unavailable"
+    end
+
+    step :issue_receipt do
+    end
+  end
+
   setup do
     @user = create_user
     Thread.current[:consumption_healed] = true
+    Thread.current[:consumption_presigned] = nil
   end
 
   teardown do
     Thread.current[:consumption_healed] = nil
+    Thread.current[:consumption_presigned] = nil
   end
 
   # Builds a step execution attached to a signal, the way dispatch or the gate
@@ -215,6 +234,116 @@ class SignalConsumptionTest < ActiveSupport::TestCase
     # The names the enum would have taken belong to the counters
     assert_equal 0, GenevaDrive::Signal.new.claimed
     assert_equal 0, GenevaDrive::Signal.new.consumed
+  end
+
+  # === Skips settle the signal they were delivered ===
+
+  test "skip_if firing at wake consumes the signal that woke the step" do
+    workflow = SkippableWaitWorkflow.create!(hero: @user)
+    workflow.current_execution.execute!
+    assert_waiting_for_signal(workflow, :payment_confirmed)
+
+    # The condition flips while the step sits parked, then the event arrives
+    Thread.current[:consumption_presigned] = true
+    signal = workflow.signal!(:payment_confirmed)
+    assert_equal "claimed", signal.reload.state
+    assert_equal signal.id, workflow.reload.current_execution.signal_id
+
+    perform_next_step(workflow)
+    signal.reload
+
+    assert_step_executed(workflow, :await_payment, state: "skipped")
+    assert_equal "consumed", signal.state
+    assert_equal 1, signal.claimed
+    assert_equal 1, signal.consumed
+    assert_not_nil signal.consumed_at
+  end
+
+  test "a step skipped at wake does not hand its stale event to the next waiter" do
+    workflow = SkippableWaitWorkflow.create!(hero: @user)
+    workflow.current_execution.execute!
+
+    Thread.current[:consumption_presigned] = true
+    signal = workflow.signal!(:payment_confirmed)
+    perform_next_step(workflow)
+
+    # The second step waits on the same name and must park: the only event so
+    # far was settled by the skip
+    workflow.reload.current_execution.execute!
+
+    assert_waiting_for_signal(workflow, :payment_confirmed)
+    assert_nil workflow.reload.current_execution.signal_id
+    assert_equal 1, signal.reload.consumed
+
+    # ... and a fresh event moves it along
+    fresh = workflow.signal!(:payment_confirmed)
+    perform_next_step(workflow)
+
+    assert_equal "consumed", fresh.reload.state
+    assert_equal "finished", workflow.reload.state
+  end
+
+  test "external skip! settles the signal of a dispatched execution" do
+    workflow = SkippableWaitWorkflow.create!(hero: @user)
+    workflow.current_execution.execute!
+    signal = workflow.signal!(:payment_confirmed)
+
+    # Dispatched, attached, but its job never ran
+    assert_equal "scheduled", workflow.reload.current_execution.state
+    workflow.skip!
+    signal.reload
+
+    assert_step_executed(workflow, :await_payment, state: "skipped")
+    assert_equal "consumed", signal.state
+    assert_equal 1, signal.consumed
+  end
+
+  test "external skip! on a paused workflow settles the claim its failed step held" do
+    workflow = FailingWaitWorkflow.create!(hero: @user)
+    signal = workflow.signal!(:payment_confirmed)
+
+    assert_raises(RuntimeError) { perform_next_step(workflow) }
+    assert_equal "paused", workflow.reload.state
+    assert_equal "claimed", signal.reload.state
+    assert_equal 1, signal.claimed
+    assert_equal 0, signal.consumed
+
+    workflow.skip!
+    signal.reload
+
+    assert_equal "consumed", signal.state
+    assert_equal 1, signal.consumed
+    assert_not_nil signal.consumed_at
+    assert_equal "issue_receipt", workflow.reload.next_step_name
+    assert_equal "scheduled", workflow.current_execution.state
+  end
+
+  test "skipping at park time leaves a buffered signal pending" do
+    Thread.current[:consumption_presigned] = true
+    workflow = SkippableWaitWorkflow.create!(hero: @user)
+    buffered = workflow.signal!(:unrelated_event)
+
+    # The step never attaches - skip_if is evaluated before the gate
+    perform_next_step(workflow)
+
+    assert_step_executed(workflow, :await_payment, state: "skipped")
+    buffered.reload
+    assert_equal "pending", buffered.state
+    assert_equal 0, buffered.claimed
+    assert_equal 0, buffered.consumed
+  end
+
+  test "external skip! of an unattached parked execution touches no buffered signal" do
+    workflow = SkippableWaitWorkflow.create!(hero: @user)
+    workflow.current_execution.execute!
+    assert_waiting_for_signal(workflow, :payment_confirmed)
+    buffered = workflow.signal!(:unrelated_event)
+
+    workflow.skip!
+
+    buffered.reload
+    assert_equal "pending", buffered.state
+    assert_equal 0, buffered.consumed
   end
 
   test "a signal with no attachments is vacuously resolved" do

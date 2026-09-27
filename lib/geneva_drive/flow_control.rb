@@ -287,14 +287,43 @@ module GenevaDrive::FlowControl
       end
 
       if state == "paused"
-        # Workflow was paused (e.g., due to failed step). Resume and skip to next step.
+        # Workflow was paused (e.g., due to failed step). Resume and skip to
+        # next step. The step being skipped past may hold a signal claim on a
+        # failed execution - no further execution of it is coming, so the
+        # operator's skip is what settles that event.
+        holder = execution_holding_signal_claim(next_step_name)
         update!(state: "ready", transitioned_at: nil)
+        settle_signal_for_skipped!(holder)
       else
-        # Workflow is ready with a scheduled step - mark it as skipped
-        current_execution&.mark_skipped!(outcome: "skipped")
+        # Workflow is ready with a scheduled step - mark it as skipped. A
+        # dispatched-but-not-yet-run execution carries an attached signal;
+        # skipping it settles that signal too.
+        skipped_execution = current_execution
+        skipped_execution&.mark_skipped!(outcome: "skipped")
+        settle_signal_for_skipped!(skipped_execution)
       end
 
       schedule_next_step!
     end
+  end
+
+  # Finds the execution that still holds a signal claim for a step we are
+  # about to skip past on a paused workflow: the current one if it was
+  # dispatched before the pause, otherwise the failed attempt that paused the
+  # workflow in the first place (same lookup shape resume! uses).
+  #
+  # @param step_name [String, nil] the step being skipped past
+  # @return [GenevaDrive::StepExecution, nil]
+  def execution_holding_signal_claim(step_name)
+    return nil unless GenevaDrive::StepExecution.signal_columns?
+
+    candidate = current_execution
+    return candidate if candidate&.signal_id.present?
+    return nil if step_name.blank?
+
+    step_executions
+      .where(step_name: step_name, state: "failed")
+      .order(created_at: :desc, id: :desc)
+      .first
   end
 end

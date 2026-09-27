@@ -703,6 +703,35 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     with_lock { wake_executions_matching!(signal) }
   end
 
+  # Settles the signal attached to an execution we are deliberately moving
+  # past, wherever the skip came from: `skip_if` firing at wake, flow control
+  # inside the step, an exception policy, or an operator calling `skip!`.
+  #
+  # Consumption follows attachment. A skip in any flavor says "we are done
+  # with this step", so an event that was delivered to it is spent by that
+  # decision - leaving it claimed would hand a stale event to the next waiter
+  # for the same name, which is exactly what consume-once-per-event forbids.
+  # An execution that never attached has nothing to settle, so buffered
+  # signals a step never reached are left alone.
+  #
+  # Must be called with the workflow lock held, so the settle rides the same
+  # transaction as the skip itself.
+  #
+  # @param step_execution [StepExecution, nil] the execution being skipped past
+  # @return [GenevaDrive::Signal, nil] the settled signal, if there was one
+  # @api private
+  public def settle_signal_for_skipped!(step_execution)
+    return unless GenevaDrive::StepExecution.signal_columns?
+    return if step_execution.nil? || step_execution.signal_id.blank?
+
+    signal = step_execution.signal
+    return unless signal && signal.state == "claimed"
+
+    logger.info("Skipping past step #{step_execution.step_name}, settling attached signal #{signal.id} (#{signal.name})")
+    signal.record_consumption!(resolved_step_names: [step_execution.step_name])
+    signal
+  end
+
   # The body of dispatch, for callers that already hold the workflow lock
   # (`signal!` holds it across the whole delivery so the rows land atomically).
   #

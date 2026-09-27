@@ -787,7 +787,7 @@ end
 Payloads are serialized with ActiveJob serializers, so `Date`, `Time` and ActiveRecord objects survive the round trip. Hashes come back with indifferent access, because a webhook sender produces string keys and a Ruby caller produces symbols and a matcher should not have to care. The serialized payload is limited to 128 KB (`GenevaDrive.max_signal_payload_size`, `nil` disables) — a payload describes the event; the data your workflow works on belongs on the hero.
 
 > [!WARNING]
-> Matchers run at the gate *and* inside `signal!`, in the sender's process. Keep them cheap and free of side effects, exactly like `skip_if:`. A matcher that raises during `signal!` raises to whoever sent the signal.
+> Matchers run at the gate *and* inside `signal!`, in the sender's process. Keep them cheap and free of side effects, exactly like `skip_if:`. A matcher that raises during `signal!` raises to whoever sent the signal — and because `signal!` is a single transaction, the delivery rolls back whole: no signal row is recorded, nothing is attached or woken, no counter moves. The sender (or the webhook provider's retry) re-delivers once the matcher is fixed.
 
 ### How Waiting Composes
 

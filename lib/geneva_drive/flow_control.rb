@@ -38,6 +38,17 @@ class GenevaDrive::StepConfigurationError < StandardError; end
 # it is rewritten on every checkpoint and copied to every successor execution.
 class GenevaDrive::CursorTooLargeError < StandardError; end
 
+# Raised when a signal payload exceeds GenevaDrive.max_signal_payload_size
+# once serialized to JSON. A payload describes the event; the data the step
+# works on belongs on the hero.
+class GenevaDrive::SignalPayloadTooLargeError < StandardError; end
+
+# Raised when a signal is delivered to a workflow that has already finished
+# or been canceled. Delivering the very same event twice (same idempotency
+# key) is a no-op rather than an error, so callers who want lenience can
+# rescue just this one class.
+class GenevaDrive::WorkflowNotOngoing < StandardError; end
+
 # Base class for errors that occur during step execution.
 # These errors are raised after recovery actions have been performed,
 # so the workflow/step states are already updated when the exception propagates.

@@ -26,6 +26,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   # Provides: scheduled, in_progress, etc. scopes
   enum :state, {
     scheduled: "scheduled",
+    waiting: "waiting",
     in_progress: "in_progress",
     completed: "completed",
     failed: "failed",
@@ -62,6 +63,14 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     class_name: "GenevaDrive::StepExecution",
     foreign_key: :continues_from_id,
     inverse_of: :continues_from
+
+  # The signal this execution is processing (the "attachment pin"). Set once,
+  # at the gate or by dispatch, and copied to successor executions so the
+  # payload stays stable across a whole resumable chain.
+  belongs_to :signal,
+    class_name: "GenevaDrive::Signal",
+    foreign_key: :signal_id,
+    optional: true
 
   # Validations
   validates :step_name, presence: true
@@ -100,6 +109,33 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     # @return [void]
     def reset_resumable_columns_cache!
       remove_instance_variable(:@_resumable_columns) if defined?(@_resumable_columns)
+    end
+
+    # Lazily checks whether the signal columns (signal_id and
+    # waiting_since) have been migrated, mirroring resumable_columns?.
+    # Never hits the database at class definition time.
+    #
+    # Everything unrelated to signals keeps working without them; a step
+    # declaring wait_for: fails loudly with a "run the install generator"
+    # message instead of silently running without its event.
+    #
+    # @return [Boolean]
+    def signal_columns?
+      if defined?(@_signal_columns)
+        return @_signal_columns
+      end
+
+      @_signal_columns = table_exists? &&
+        column_names.include?("signal_id") &&
+        column_names.include?("waiting_since")
+    end
+
+    # Clears the cached signal column detection result. Call this in tests or
+    # after running migrations in-process so the next access re-checks.
+    #
+    # @return [void]
+    def reset_signal_columns_cache!
+      remove_instance_variable(:@_signal_columns) if defined?(@_signal_columns)
     end
 
     # Serializes a cursor value using ActiveJob serializers (handles Date,

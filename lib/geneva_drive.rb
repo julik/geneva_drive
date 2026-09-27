@@ -32,6 +32,8 @@ module GenevaDrive
   autoload :StepExecutionError, "geneva_drive/flow_control"
   autoload :StepNotDefinedError, "geneva_drive/flow_control"
   autoload :CursorTooLargeError, "geneva_drive/flow_control"
+  autoload :SignalPayloadTooLargeError, "geneva_drive/flow_control"
+  autoload :WorkflowNotOngoing, "geneva_drive/flow_control"
   autoload :StepFailedError, "geneva_drive/flow_control"
   autoload :PreconditionError, "geneva_drive/flow_control"
   autoload :FlowControl, "geneva_drive/flow_control"
@@ -40,6 +42,8 @@ module GenevaDrive
   autoload :StepCollection, "geneva_drive/step_collection"
   autoload :Workflow, "geneva_drive/workflow"
   autoload :StepExecution, "geneva_drive/step_execution"
+  autoload :Signal, "geneva_drive/signal"
+  autoload :SignalMatcher, "geneva_drive/signal_matcher"
   autoload :IterableStep, "geneva_drive/iterable_step"
   autoload :Executor, "geneva_drive/executor"
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
@@ -87,6 +91,22 @@ module GenevaDrive
     # Set to nil to disable the check.
     # @return [Integer, nil]
     attr_accessor :max_cursor_size
+
+    # Maximum size in bytes of a signal payload once serialized to JSON.
+    # A payload describes an event - an order id, an amount, a decision -
+    # not the data the step is going to work on. Exceeding the limit raises
+    # SignalPayloadTooLargeError from Workflow#signal!, before anything is
+    # persisted. Set to nil to disable the check.
+    # @return [Integer, nil]
+    attr_accessor :max_signal_payload_size
+
+    # How long a step execution may sit in the "waiting" state before
+    # housekeeping counts it in the `geneva_drive.waiting_overdue` gauge.
+    # Waiting indefinitely is legitimate, so this is not a timeout - it is
+    # the floor that keeps a stalled rendezvous from being silent.
+    # Set to nil to disable the gauge.
+    # @return [ActiveSupport::Duration, nil]
+    attr_accessor :waiting_visibility_threshold
 
     # Whether to defer job enqueueing to after the database transaction commits.
     # When true (the default in non-test environments), jobs are enqueued inside
@@ -175,5 +195,7 @@ module GenevaDrive
   self.housekeeping_batch_size = 1000
   self.stuck_recovery_action = :reattempt
   self.max_cursor_size = 128 * 1024
+  self.max_signal_payload_size = 128 * 1024
+  self.waiting_visibility_threshold = 7.days
   self.enqueue_after_commit = !Rails.env.test?
 end

@@ -80,7 +80,6 @@ class GenevaDrive::StepDefinition
     @block_location = block_location
     @wait = options[:wait]
     @wait_for = options[:wait_for]
-    @matching = options[:matching]
     @job_options = options.fetch(:job_options, {})
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]
@@ -167,17 +166,16 @@ class GenevaDrive::StepDefinition
     validate_wait_for!
   end
 
-  # Builds the SignalMatcher from the validated wait_for:/matching: options.
+  # Normalizes wait_for: into a matcher. A bare name becomes a
+  # {GenevaDrive::SignalMatcher}; anything else already is one (or quacks
+  # like one).
   #
-  # @return [GenevaDrive::SignalMatcher, nil]
+  # @return [Object, nil] an object responding to #matches?(signal)
   def build_signal_matcher
     return nil if @wait_for.nil?
+    return GenevaDrive::SignalMatcher.new(@wait_for) if signal_shaped_name?(@wait_for)
 
-    if signal_shaped_name?(@wait_for)
-      GenevaDrive::SignalMatcher.new(name: @wait_for, condition: @matching)
-    else
-      GenevaDrive::SignalMatcher.new(matcher: @wait_for)
-    end
+    @wait_for
   end
 
   # Whether the value is a plain signal name.
@@ -196,19 +194,13 @@ class GenevaDrive::StepDefinition
     DURATION_SHAPED_TYPES.any? { |type| value.is_a?(type) }
   end
 
-  # Validates wait_for: and matching:, including the two swap guards that
-  # catch wait:/wait_for: mix-ups at class load. The kwargs read alike and
-  # take disjoint types, so each direction of the mistake gets an error
-  # naming the kwarg the author meant.
+  # Validates wait_for:, including the swap guard that catches a duration
+  # passed to it. wait: and wait_for: read alike and take disjoint types, so
+  # each direction of the mistake gets an error naming the kwarg the author
+  # meant (the other direction lives in validate_wait!).
   #
-  # @raise [StepConfigurationError] if the options are invalid or swapped
+  # @raise [StepConfigurationError] if the option is invalid or swapped
   def validate_wait_for!
-    if @matching && @wait_for.nil?
-      raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has matching: without wait_for: — matching: narrows the payload of a " \
-        "signal, so it only makes sense alongside wait_for: :signal_name"
-    end
-
     return if @wait_for.nil?
 
     if duration_shaped?(@wait_for)
@@ -217,26 +209,12 @@ class GenevaDrive::StepDefinition
         "matcher; to delay the step, use wait:"
     end
 
-    if signal_shaped_name?(@wait_for)
-      if @matching && !@matching.is_a?(Proc)
-        raise GenevaDrive::StepConfigurationError,
-          "Step '#{@name}' has invalid matching: must be a Proc taking the signal payload, " \
-          "but was #{@matching.class}"
-      end
-      return
-    end
+    return if signal_shaped_name?(@wait_for)
+    return if @wait_for.respond_to?(:matches?)
 
-    unless @wait_for.respond_to?(:matches?)
-      raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has invalid wait_for: must be a Symbol, String, or an object responding " \
-        "to #matches?(signal), but was #{@wait_for.class}"
-    end
-
-    if @matching
-      raise GenevaDrive::StepConfigurationError,
-        "Step '#{@name}' has both a matcher object in wait_for: and matching: — a matcher object " \
-        "owns its whole predicate, so matching: is only legal alongside a signal name"
-    end
+    raise GenevaDrive::StepConfigurationError,
+      "Step '#{@name}' has invalid wait_for: must be a Symbol, String, GenevaDrive::SignalMatcher, " \
+      "or an object responding to #matches?(signal), but was #{@wait_for.class}"
   end
 
   # Builds the ExceptionPolicy from validated raw inputs.

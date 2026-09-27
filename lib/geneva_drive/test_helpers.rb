@@ -320,7 +320,7 @@ module GenevaDrive::TestHelpers
     return unless signal_name
 
     matcher = execution.step_definition&.signal_matcher
-    assert_equal signal_name.to_s, matcher&.name,
+    assert_equal signal_name.to_s, matcher_name(matcher),
       "Expected step '#{execution.step_name}' to be waiting for #{signal_name.inspect}, " \
       "but it waits for #{matcher}"
   end
@@ -345,6 +345,15 @@ module GenevaDrive::TestHelpers
 
   private
 
+  # The signal name a matcher accepts, when it has one to give. Custom
+  # matchers own their whole predicate and need not expose a name.
+  #
+  # @param matcher [Object, nil] anything responding to #matches?(signal)
+  # @return [String, nil]
+  def matcher_name(matcher)
+    matcher.name if matcher.respond_to?(:name)
+  end
+
   # Raises a descriptive error when a step-driving helper runs into a parked
   # execution. Without this a parked workflow would look like an infinite
   # loop (or a silently passing assertion) instead of "you forgot to signal".
@@ -361,9 +370,10 @@ module GenevaDrive::TestHelpers
       nil
     end
     waiting_for = matcher ? " waiting for #{matcher}" : ""
+    example_name = matcher_name(matcher)&.to_sym
 
     raise "#{helper_name} cannot drive step '#{step_execution.step_name}': its execution is parked" \
           "#{waiting_for}. Deliver the signal first, e.g. " \
-          "workflow.signal!(#{matcher&.name&.to_sym.inspect}), then call #{helper_name} again."
+          "workflow.signal!(#{example_name.inspect}), then call #{helper_name} again."
   end
 end

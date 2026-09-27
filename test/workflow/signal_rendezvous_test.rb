@@ -39,9 +39,12 @@ class SignalRendezvousTest < ActiveSupport::TestCase
   end
 
   class NarrowedWorkflow < GenevaDrive::Workflow
-    step :await_payment,
-      wait_for: :payment_confirmed,
-      matching: ->(payload) { payload[:email] == hero.email } do
+    # A matcher is a plain object, so it can live in a constant and be shared
+    FOR_THIS_HERO = GenevaDrive::SignalMatcher.new(:payment_confirmed) do |payload|
+      payload[:email] == hero.email
+    end
+
+    step :await_payment, wait_for: FOR_THIS_HERO do
       Thread.current[:rendezvous_log] << :matched
     end
   end
@@ -49,6 +52,20 @@ class SignalRendezvousTest < ActiveSupport::TestCase
   class MatcherObjectWorkflow < GenevaDrive::Workflow
     step :await_payment, wait_for: MinimumAmountMatcher.new(min_cents: 1000) do
       Thread.current[:rendezvous_log] << :big_enough
+    end
+  end
+
+  class IdentityWorkflow < GenevaDrive::Workflow
+    # The block runs on signal.workflow - record which object that was
+    RECORDS_ITS_CONTEXT = GenevaDrive::SignalMatcher.new(:ping) do |_payload|
+      (Thread.current[:rendezvous_workflows] ||= []) << self
+      true
+    end
+
+    step :await_ping, wait_for: RECORDS_ITS_CONTEXT do
+    end
+
+    step :second_await_ping, wait_for: RECORDS_ITS_CONTEXT do
     end
   end
 
@@ -104,7 +121,7 @@ class SignalRendezvousTest < ActiveSupport::TestCase
   end
 
   class MatcherRaisingWorkflow < GenevaDrive::Workflow
-    step :await_payment, wait_for: :payment_confirmed, matching: ->(payload) { raise "matcher blew up" } do
+    step :await_payment, wait_for: GenevaDrive::SignalMatcher.new(:payment_confirmed) { |payload| raise "matcher blew up" } do
       Thread.current[:rendezvous_log] << :never
     end
   end
@@ -114,12 +131,14 @@ class SignalRendezvousTest < ActiveSupport::TestCase
     Thread.current[:rendezvous_log] = []
     Thread.current[:rendezvous_presigned] = nil
     Thread.current[:rendezvous_healed] = nil
+    Thread.current[:rendezvous_workflows] = nil
   end
 
   teardown do
     Thread.current[:rendezvous_log] = nil
     Thread.current[:rendezvous_presigned] = nil
     Thread.current[:rendezvous_healed] = nil
+    Thread.current[:rendezvous_workflows] = nil
   end
 
   # --- Receiver arrives first (park, then wake) ---
@@ -215,7 +234,7 @@ class SignalRendezvousTest < ActiveSupport::TestCase
     assert_equal "pending", workflow.signals.last.reload.state
   end
 
-  test "matching: narrows by payload and is evaluated on the workflow" do
+  test "a matcher block narrows by payload and is evaluated on the workflow" do
     workflow = NarrowedWorkflow.create!(hero: @user)
     workflow.current_execution.execute!
 
@@ -227,6 +246,29 @@ class SignalRendezvousTest < ActiveSupport::TestCase
 
     speedrun_workflow(workflow)
     assert_equal [:matched], Thread.current[:rendezvous_log]
+  end
+
+  test "a matcher block runs against the live workflow instance, not a reloaded copy" do
+    workflow = IdentityWorkflow.create!(hero: @user)
+
+    # Gate side: the executor's own workflow object
+    execution = workflow.current_execution
+    executor_workflow = execution.workflow
+    workflow.signal!(:ping)
+    Thread.current[:rendezvous_workflows] = []
+    execution.execute!
+
+    assert_equal 1, Thread.current[:rendezvous_workflows].size
+    assert_same executor_workflow, Thread.current[:rendezvous_workflows].first
+
+    # Dispatch side: the object signal! was called on
+    workflow.reload.current_execution.execute!
+    assert_waiting_for_signal(workflow, :ping)
+    Thread.current[:rendezvous_workflows] = []
+    workflow.signal!(:ping)
+
+    assert_equal 1, Thread.current[:rendezvous_workflows].size
+    assert_same workflow, Thread.current[:rendezvous_workflows].first
   end
 
   test "a matcher object owns the whole predicate" do

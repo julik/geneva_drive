@@ -415,7 +415,7 @@ class GenevaDrive::Executor
     end
 
     matcher = step_def.signal_matcher
-    candidate = workflow.signals.attachable.detect { |signal| matcher.matches?(signal, workflow) }
+    candidate = workflow.attachable_signals.detect { |signal| matcher.matches?(signal) }
 
     unless candidate
       logger.info("No signal matching #{matcher} has arrived, parking step execution")

@@ -661,6 +661,20 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     step_executions.where(state: %w[scheduled waiting in_progress]).first
   end
 
+  # Signals that may still be attached to an execution, oldest first, each
+  # pointing back at this workflow instance.
+  #
+  # Matcher blocks are instance_exec'd on `signal.workflow`, and `inverse_of:`
+  # only primes records loaded straight off the association - a scoped
+  # relation would hand each signal a freshly loaded workflow, which would
+  # then see none of the caller's unsaved state.
+  #
+  # @return [Array<GenevaDrive::Signal>]
+  # @api private
+  public def attachable_signals
+    signals.attachable.map { |signal| adopt_signal(signal) }
+  end
+
   # Wakes every parked step execution whose matcher accepts the given signal.
   #
   # Runs under the workflow row lock - the same lock create_step_execution
@@ -673,6 +687,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   public def dispatch_signal!(signal)
     return [] unless GenevaDrive::StepExecution.signal_columns?
 
+    # Matcher blocks run on signal.workflow, so point the signal at this very
+    # instance instead of letting it load a second copy from the database.
+    adopt_signal(signal)
     woken = []
 
     with_lock do
@@ -684,7 +701,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         # A step whose definition is gone (class removed, step renamed) can
         # never match - the matcher lives on the definition.
         next unless step_def&.waits_for_signal?
-        next unless step_def.signal_matcher.matches?(signal, self)
+        next unless step_def.signal_matcher.matches?(signal)
 
         signal.claim!
         execution.update!(
@@ -871,6 +888,16 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(first_step, wait: first_step.wait)
   end
 
+  # Points a signal's workflow association at this instance, so matcher
+  # blocks - which are instance_exec'd on it - see the live object.
+  #
+  # @param signal [GenevaDrive::Signal]
+  # @return [GenevaDrive::Signal] the same signal
+  def adopt_signal(signal)
+    signal.association(:workflow).target = self
+    signal
+  end
+
   # Enqueues the PerformStepJob for an execution that dispatch just flipped
   # from waiting to scheduled. Uses the same enqueue discipline (merged job
   # options, after-commit deferral, job_id writeback) as create_step_execution.
@@ -907,7 +934,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     matcher = step_def&.signal_matcher
 
     if matcher
-      candidate = signals.attachable.detect { |signal| matcher.matches?(signal, self) }
+      candidate = attachable_signals.detect { |signal| matcher.matches?(signal) }
       if candidate
         logger.info("Resuming into a matching signal #{candidate.id} (#{candidate.name}) for step #{step_execution.step_name}")
         dispatch_signal!(candidate)

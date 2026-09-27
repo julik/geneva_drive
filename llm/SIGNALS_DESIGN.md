@@ -9,7 +9,7 @@
 1. `Workflow#signal!(signal_name, payload: {}, idempotency_key: nil)` is the one delivery avenue. `signal_name` is a Symbol at the API surface, stored as a string. Returns a persisted `GenevaDrive::Signal`.
 2. Signals are rows in `geneva_drive_signals`, persisted before any processing (R1). The row is the buffer for early arrivals (R3).
 3. Idempotency: a unique index on `(workflow_id, name, idempotency_key)`. A duplicate insert is a database-level no-op that returns the existing row (R2, SagaForge shape).
-4. A step definition opts into waiting with `wait_for:`. Matching is by name, optionally narrowed by a payload block, or delegated entirely to any object responding to `#matches?(signal)`.
+4. A step definition opts into waiting with `wait_for:`, which takes a signal name, a `GenevaDrive::SignalMatcher`, or any object responding to `#matches?(signal)`. Payload narrowing is a block on the matcher, not a second step kwarg.
 5. Waiting is a first-class step-execution state (`waiting`), holds no queue slot, and is visible to scopes, gauges, and the Admin (R5).
 6. The signal lifecycle is `pending → claimed → consumed` (see §4 — two states are not enough).
 7. Wake is push: `signal!` scans waiting executions under the workflow row lock and enqueues jobs for the matches (R4, R9). No polling anywhere.
@@ -146,15 +146,15 @@ Matcher blocks run at dispatch time in the sender's process. That is a deliberat
 ### 5.2 Declaring the wait
 
 ```ruby
-# Name match
+# Name match - sugar for wait_for: GenevaDrive::SignalMatcher.new(:payment_confirmed)
 step :capture, wait_for: :payment_confirmed do
   hero.capture!(received_signal.payload[:amount_cents])
 end
 
-# Name + payload narrowing; block is instance_exec'd on the workflow (hero is in scope)
+# Name + payload narrowing; the block is instance_exec'd on signal.workflow
+# (hero is in scope). A matcher is a plain object, so it can be a shared constant.
 step :capture,
-  wait_for: :payment_confirmed,
-  matching: ->(payload) { payload[:order_id] == hero.order_id } do
+  wait_for: GenevaDrive::SignalMatcher.new(:payment_confirmed) { |payload| payload[:order_id] == hero.order_id } do
   ...
 end
 
@@ -164,11 +164,11 @@ step :capture, wait_for: PaymentMatcher.new(min_cents: 100) do
 end
 ```
 
-- `wait_for:` accepts a Symbol/String (name equality) or an object responding to `#matches?(signal)`. `matching:` is only legal alongside a name (a matcher object owns its whole predicate). Internally both normalize to a `GenevaDrive::SignalMatcher` stored on the `StepDefinition`; `step_def.waits_for_signal?` is the flag the Executor checks.
+- `wait_for:` accepts a Symbol/String, a `GenevaDrive::SignalMatcher`, or any object responding to `#matches?(signal)`. A bare name is normalized into `GenevaDrive::SignalMatcher.new(name)`; everything else is stored as given on the `StepDefinition`. The matcher protocol is one argument — `matches?(signal)` — and workflow context is reached through `signal.workflow`, which keeps custom matchers trivial to write and lets a matcher be shared between steps and workflows as a constant. `step_def.waits_for_signal?` is the flag the Executor checks. There is deliberately no second step kwarg for narrowing: one option, one object.
 - **Mixed-up `wait:` / `wait_for:` arguments raise `StepConfigurationError` at class load.** The two kwargs read alike and take disjoint types, so `StepDefinition` validation enforces the disjointness in both directions with an error message that names the kwarg the author meant:
   - `wait_for:` given a duration-shaped value (`ActiveSupport::Duration`, `Numeric`, `Time`/`Date`-like) → `"Step 'x' has wait_for: 2 days — wait_for: takes a signal name or matcher; to delay the step, use wait:"`.
   - `wait:` given a signal-shaped value (Symbol, String, or anything responding to `#matches?`) → `"Step 'x' has wait: :payment_confirmed — wait: takes a duration; to wait for a signal, use wait_for:"`. This closes a today-silent trap: the existing `validate_wait!` accepts any value responding to `#to_i`, so `wait: "payment_confirmed"` currently passes as a zero-second wait instead of erroring. The String arm of this check tightens `wait:` for everyone, not just signal users (a duration-shaped String like `"7200"` is still rejected — durations are numbers or `Duration`s, never Strings).
-- Matcher blocks receive the (indifferent-access) payload and are `instance_exec`'d on the workflow instance. They must be side-effect free and cheap — they run at dispatch (sender's process) and at the gate. Document this with the same severity as the `skip_if` purity expectation.
+- `SignalMatcher` blocks receive the (indifferent-access) payload and are `instance_exec`'d on `signal.workflow`. `inverse_of:` is declared on both sides of the Workflow/Signal association and candidate signals are handed the live workflow instance explicitly (`Workflow#attachable_signals`), so a matcher never triggers a second load of the workflow it is already running for. Blocks must be side-effect free and cheap — they run at dispatch (sender's process) and at the gate. Document this with the same severity as the `skip_if` purity expectation.
 - `wait: 2.days, wait_for: :sig` composes for free and means "no earlier than 2 days, and only once signaled": the execution is scheduled for `scheduled_for` as today; the gate runs when the job first runs; a signal arriving during the delay is simply buffered and claimed at gate time. Zero special code.
 - `resumable_step` + `wait_for:` is allowed: the gate runs once, on the first execution of the chain; `create_successor_execution!` copies `signal_id` alongside `cursor`, so successors never re-park and `received_signal` stays stable across the whole chain.
 - `received_signal` is the accessor in step bodies (a `GenevaDrive::Signal` or nil), injected by the Executor the same way the tagged logger is (`workflow.with_received_signal(signal) { ... }`). Not named `signal` — `Workflow#signal!` is the writer, and bare `Signal` is a Ruby core constant; the extra word buys unambiguity in both directions. The payload lands in the step body, which writes what matters onto the hero — the signal row is audit, not a parallel state store (R10).
@@ -311,4 +311,4 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 
 ## 13. Implementation surface (for the plan that follows)
 
-New files: `signal.rb` (model), `signal_matcher.rb`; migration templates `create_signals_migration.rb` + `add_signal_support_to_step_executions.rb` (+ dummy-app mirrors). Touched: `workflow.rb` (`signal!`, `has_many :signals`, resume branch, successor `signal_id` copy, stray-sweep widening), `step_definition.rb` (+`wait_for:`/`matching:` validation, `waits_for_signal?`), `step_execution.rb` (enum value, `signal` association, `signal_columns?`), `executor.rb` (gate segment, consumption in finalize, transitions table, `received_signal` injection), `flow_control.rb` (external verbs already flow through `current_execution` — verify each against §7), `housekeeping_job.rb` (signal delete pass, waiting gauges), `test_helpers.rb`, `geneva_drive.rb` (config accessors), MANUAL chapter.
+New files: `signal.rb` (model), `signal_matcher.rb`; migration templates `create_signals_migration.rb` + `add_signal_support_to_step_executions.rb` (+ dummy-app mirrors). Touched: `workflow.rb` (`signal!`, `has_many :signals`, resume branch, successor `signal_id` copy, stray-sweep widening), `step_definition.rb` (+`wait_for:` validation and normalization, `waits_for_signal?`), `step_execution.rb` (enum value, `signal` association, `signal_columns?`), `executor.rb` (gate segment, consumption in finalize, transitions table, `received_signal` injection), `flow_control.rb` (external verbs already flow through `current_execution` — verify each against §7), `housekeeping_job.rb` (signal delete pass, waiting gauges), `test_helpers.rb`, `geneva_drive.rb` (config accessors), MANUAL chapter.

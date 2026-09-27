@@ -34,20 +34,26 @@ class SignalStepDefinitionTest < ActiveSupport::TestCase
     assert_equal "payment_confirmed", step_def.signal_matcher.name
   end
 
-  test "wait_for: with matching: keeps the payload predicate" do
-    predicate = ->(payload) { payload[:order_id] == 1 }
-    step_def = build_step(wait_for: :payment_confirmed, matching: predicate)
+  test "wait_for: with a SignalMatcher keeps it as-is" do
+    matcher = GenevaDrive::SignalMatcher.new(:payment_confirmed) { |payload| payload[:order_id] == 1 }
+    step_def = build_step(wait_for: matcher)
 
-    assert_equal predicate, step_def.signal_matcher.condition
+    assert_same matcher, step_def.signal_matcher
+    assert_equal "payment_confirmed", step_def.signal_matcher.name
+    assert step_def.signal_matcher.condition
   end
 
-  test "wait_for: with a matcher object delegates the whole predicate" do
+  test "a SignalMatcher needs a name" do
+    assert_raises(ArgumentError) { GenevaDrive::SignalMatcher.new(nil) }
+    assert_raises(ArgumentError) { GenevaDrive::SignalMatcher.new("") }
+  end
+
+  test "wait_for: with a custom matcher object delegates the whole predicate" do
     matcher = NameSetMatcher.new(:a, :b)
     step_def = build_step(wait_for: matcher)
 
     assert step_def.waits_for_signal?
-    assert_equal matcher, step_def.signal_matcher.matcher
-    assert_nil step_def.signal_matcher.name
+    assert_same matcher, step_def.signal_matcher
   end
 
   test "steps without wait_for: do not wait for a signal" do
@@ -104,32 +110,10 @@ class SignalStepDefinitionTest < ActiveSupport::TestCase
     assert_equal 30, build_step(wait: 30).wait
   end
 
-  test "matching: without wait_for: is rejected" do
-    error = assert_raises(GenevaDrive::StepConfigurationError) { build_step(matching: ->(payload) { true }) }
-
-    assert_match(/matching: without wait_for:/, error.message)
-  end
-
-  test "matching: alongside a matcher object is rejected" do
-    error = assert_raises(GenevaDrive::StepConfigurationError) do
-      build_step(wait_for: NameSetMatcher.new(:a), matching: ->(payload) { true })
-    end
-
-    assert_match(/owns its whole predicate/, error.message)
-  end
-
-  test "matching: must be a proc" do
-    error = assert_raises(GenevaDrive::StepConfigurationError) do
-      build_step(wait_for: :payment_confirmed, matching: :some_method)
-    end
-
-    assert_match(/invalid matching:/, error.message)
-  end
-
   test "wait_for: with an unusable value is rejected" do
     error = assert_raises(GenevaDrive::StepConfigurationError) { build_step(wait_for: Object.new) }
 
-    assert_match(/must be a Symbol, String, or an object responding to #matches\?/, error.message)
+    assert_match(/must be a Symbol, String, GenevaDrive::SignalMatcher, or an object responding to #matches\?/, error.message)
   end
 
   test "wait: and wait_for: compose" do

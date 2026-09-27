@@ -740,23 +740,34 @@ Redelivering the very event that finished the workflow is also a no-op, not an e
 
 ### Narrowing What Counts as a Match
 
-By default a signal matches on name alone. Two ways to be pickier:
+`wait_for: :document_signed` is shorthand for `wait_for: GenevaDrive::SignalMatcher.new(:document_signed)`, which matches on name alone. Give the matcher a block and it also has to like the payload:
 
 ```ruby
 class ContractWorkflow < GenevaDrive::Workflow
-  # A predicate over the payload. It receives the payload and runs on the
-  # workflow instance, so `hero` and the workflow's own methods are in scope.
+  # The block receives the payload and runs on the workflow the signal was
+  # sent to, so `hero` and the workflow's own methods are in scope.
   step :await_countersignature,
-    wait_for: :document_signed,
-    matching: ->(payload) { payload[:document_id] == hero.contract_id } do
+    wait_for: GenevaDrive::SignalMatcher.new(:document_signed) { |payload|
+      payload[:document_id] == hero.contract_id
+    } do
     hero.mark_countersigned!
   end
 end
 ```
 
+A matcher is a plain object with no ties to the step that uses it, so a rule worth repeating can live in a constant and be shared across steps and workflows:
+
 ```ruby
-# Anything responding to #matches?(signal) can own the whole predicate.
-# Useful for reusable rules - including "either of these names".
+SETTLED = GenevaDrive::SignalMatcher.new(:payment_confirmed) { |payload| payload[:amount_cents].to_i > 0 }
+
+step :capture_payment, wait_for: SETTLED do
+  hero.capture!
+end
+```
+
+Anything responding to `#matches?(signal)` works too, and owns the whole predicate — which is how a single step waits on either of two names:
+
+```ruby
 class PaymentSettled
   def initialize(min_cents:) = @min_cents = min_cents
 
@@ -2151,8 +2162,7 @@ A resumable step interrupted mid-iteration completes its execution with outcome 
 | Option | Type | Description |
 |--------|------|-------------|
 | `wait:` | Duration | Delay before step executes |
-| `wait_for:` | Symbol, String, matcher object | Park until a matching signal arrives |
-| `matching:` | Proc | Narrow `wait_for:` by payload (receives the payload, runs on the workflow) |
+| `wait_for:` | Symbol, String, `SignalMatcher`, matcher object | Park until a matching signal arrives |
 | `job_options:` | Hash | Options passed to Active Job's `set` method for this step |
 | `skip_if:` | Proc, Symbol, Boolean | Condition to skip step |
 | `on_exception:` | Symbol | Exception handler (`:pause!`, `:cancel!`, `:reattempt!`, `:skip!`) |

@@ -33,6 +33,7 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     results = {
       workflows_cleaned_up: 0,
       step_executions_cleaned_up: 0,
+      signals_cleaned_up: 0,
       stuck_in_progress_recovered: 0,
       stuck_scheduled_recovered: 0
     }
@@ -40,6 +41,7 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     cleanup_completed_workflows!(results)
     recover_stuck_step_executions!(results)
     report_workflow_gauges!
+    report_waiting_gauges!
 
     logger.info("Completed: #{results}")
     results
@@ -89,6 +91,42 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     end
   end
 
+  # Reports gauges for step executions parked waiting for a signal.
+  #
+  # Waiting indefinitely is a legitimate state, not a stuck one, so the stuck
+  # sweeps ignore parked rows. These gauges are what keeps a stalled
+  # rendezvous from being silent:
+  # - `geneva_drive.waiting_step_executions` - parked rows, total and per class
+  # - `geneva_drive.waiting_overdue` - parked longer than
+  #   GenevaDrive.waiting_visibility_threshold, total and per class
+  #
+  # @return [void]
+  def report_waiting_gauges!
+    return unless GenevaDrive::StepExecution.signal_columns?
+
+    report_waiting_gauge!("geneva_drive.waiting_step_executions", GenevaDrive::StepExecution.waiting)
+
+    threshold = GenevaDrive.waiting_visibility_threshold
+    return if threshold.blank?
+
+    overdue = GenevaDrive::StepExecution.waiting.where(waiting_since: ..threshold.ago)
+    report_waiting_gauge!("geneva_drive.waiting_overdue", overdue)
+  end
+
+  # Sets one gauge per workflow class plus an untagged total for the scope.
+  #
+  # @param gauge_name [String] the Measurometer gauge name
+  # @param scope [ActiveRecord::Relation] a step execution scope
+  # @return [void]
+  def report_waiting_gauge!(gauge_name, scope)
+    counts = scope.joins(:workflow).group("#{GenevaDrive::Workflow.table_name}.type").count
+
+    Measurometer.set_gauge(gauge_name, counts.values.sum)
+    counts.each do |type, count|
+      Measurometer.set_gauge(gauge_name, count, workflow: type)
+    end
+  end
+
   # Cleans up completed/canceled workflows older than the configured threshold.
   # Uses efficient batched SQL DELETEs - step executions are deleted first via
   # INNER JOIN, then workflows. Loops until all eligible records are deleted.
@@ -114,7 +152,17 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
       break if deleted_count < batch_size
     end
 
-    # Second pass: delete the workflows themselves
+    # Second pass: delete the signals delivered to old workflows
+    if GenevaDrive::Signal.table_available?
+      loop do
+        deleted_count = delete_signals_batch(cutoff_time, batch_size)
+        logger.info("Deleted #{deleted_count} signals")
+        results[:signals_cleaned_up] += deleted_count
+        break if deleted_count < batch_size
+      end
+    end
+
+    # Third pass: delete the workflows themselves
     loop do
       deleted_count = delete_workflows_batch(cutoff_time, batch_size)
       logger.info("Deleted #{deleted_count} workflows")
@@ -123,9 +171,41 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     end
 
     logger.info(
-      "Cleaned up #{results[:workflows_cleaned_up]} workflows " \
-      "and #{results[:step_executions_cleaned_up]} step executions older than #{cutoff_time}"
+      "Cleaned up #{results[:workflows_cleaned_up]} workflows, " \
+      "#{results[:step_executions_cleaned_up]} step executions and " \
+      "#{results[:signals_cleaned_up]} signals older than #{cutoff_time}"
     )
+  end
+
+  # Deletes a batch of signals belonging to old workflows.
+  #
+  # @param cutoff_time [Time] workflows transitioned before this time are eligible
+  # @param batch_size [Integer] maximum records to delete in this batch
+  # @return [Integer] number of records deleted
+  def delete_signals_batch(cutoff_time, batch_size)
+    GenevaDrive::Signal.connection_pool.with_connection do |conn|
+      signals_table = conn.quote_table_name(GenevaDrive::Signal.table_name)
+      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
+      limit = batch_size.to_i
+
+      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
+      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
+      sql = <<~SQL.squish
+        DELETE FROM #{signals_table}
+        WHERE id IN (
+          SELECT id FROM (
+            SELECT s.id
+            FROM #{signals_table} s
+            INNER JOIN #{workflows_table} w ON w.id = s.workflow_id
+            WHERE w.state IN ('finished', 'canceled')
+            AND w.transitioned_at < ?
+            LIMIT #{limit}
+          ) AS batch_to_delete
+        )
+      SQL
+
+      conn.delete(GenevaDrive::Signal.sanitize_sql([sql, cutoff_time]))
+    end
   end
 
   # Deletes a batch of step executions belonging to old workflows.

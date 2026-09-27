@@ -46,6 +46,8 @@ module GenevaDrive::TestHelpers
       step_execution = workflow.current_execution
       break unless step_execution
 
+      raise_if_parked!(step_execution, "speedrun_workflow")
+
       # interruptible: false so resumable steps run to completion
       step_execution.execute!(interruptible: false)
       iterations += 1
@@ -78,6 +80,8 @@ module GenevaDrive::TestHelpers
     workflow.reload
     step_execution = workflow.current_execution
     return nil unless step_execution
+
+    raise_if_parked!(step_execution, "perform_next_step")
 
     step_execution.execute!
     workflow.reload
@@ -117,8 +121,9 @@ module GenevaDrive::TestHelpers
         "Available steps: #{available}"
     end
 
-    # Cancel any existing scheduled step executions to satisfy uniqueness constraint
-    workflow.step_executions.where(state: "scheduled").update_all(
+    # Cancel any existing scheduled or parked step executions to satisfy the
+    # uniqueness constraint
+    workflow.step_executions.where(state: %w[scheduled waiting]).update_all(
       state: "canceled",
       outcome: "canceled",
       canceled_at: Time.current
@@ -194,11 +199,14 @@ module GenevaDrive::TestHelpers
     step_execution = workflow.current_execution
     return nil unless step_execution
 
+    raise_if_parked!(step_execution, "speedrun_current_step")
+
     executions = 0
     original_step_name = step_execution.step_name
 
     loop do
       step_execution.reload
+      raise_if_parked!(step_execution, "speedrun_current_step")
 
       # Follow the execution chain: a completed execution that spawned a
       # successor means the step is still going (suspend! and skip_to! create
@@ -288,5 +296,74 @@ module GenevaDrive::TestHelpers
     successor = completed.successor
     assert successor, "Expected successor execution for step #{step_name}, but none found"
     assert successor.scheduled?, "Expected successor to be scheduled, but was #{successor.state}"
+  end
+
+  # === Signal Test Helpers ===
+
+  # Asserts that the workflow is parked waiting for a signal.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow to check
+  # @param signal_name [String, Symbol, nil] the signal name the step waits for
+  # @return [void]
+  #
+  # @example Check that the workflow is waiting
+  #   assert_waiting_for_signal(workflow, :payment_confirmed)
+  #
+  def assert_waiting_for_signal(workflow, signal_name = nil)
+    workflow.reload
+    execution = workflow.step_executions.where(state: "waiting").first
+
+    assert execution,
+      "Expected #{workflow.class.name} to be waiting for a signal, but no parked step execution was found " \
+      "(current execution: #{workflow.current_execution&.state.inspect})"
+
+    return unless signal_name
+
+    matcher = execution.step_definition&.signal_matcher
+    assert_equal signal_name.to_s, matcher&.name,
+      "Expected step '#{execution.step_name}' to be waiting for #{signal_name.inspect}, " \
+      "but it waits for #{matcher}"
+  end
+
+  # Asserts that a signal with the given name exists in the given state.
+  #
+  # @param workflow [GenevaDrive::Workflow] the workflow to check
+  # @param signal_name [String, Symbol] the signal name
+  # @param state [String, Symbol] the expected signal state
+  # @return [void]
+  #
+  # @example Check that the signal was consumed
+  #   assert_signal_state(workflow, :payment_confirmed, :consumed)
+  #
+  def assert_signal_state(workflow, signal_name, state)
+    signal = workflow.signals.where(name: signal_name.to_s).order(:created_at, :id).last
+
+    assert signal, "Expected a #{signal_name.inspect} signal on #{workflow.class.name}, but none was found"
+    assert_equal state.to_s, signal.state,
+      "Expected signal #{signal_name.inspect} to be #{state}, but was #{signal.state}"
+  end
+
+  private
+
+  # Raises a descriptive error when a step-driving helper runs into a parked
+  # execution. Without this a parked workflow would look like an infinite
+  # loop (or a silently passing assertion) instead of "you forgot to signal".
+  #
+  # @param step_execution [GenevaDrive::StepExecution] the execution about to be driven
+  # @param helper_name [String] the helper that was called
+  # @return [void]
+  def raise_if_parked!(step_execution, helper_name)
+    return unless step_execution.waiting?
+
+    matcher = begin
+      step_execution.step_definition&.signal_matcher
+    rescue
+      nil
+    end
+    waiting_for = matcher ? " waiting for #{matcher}" : ""
+
+    raise "#{helper_name} cannot drive step '#{step_execution.step_name}': its execution is parked" \
+          "#{waiting_for}. Deliver the signal first, e.g. " \
+          "workflow.signal!(#{matcher&.name&.to_sym.inspect}), then call #{helper_name} again."
   end
 end

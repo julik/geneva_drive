@@ -24,5 +24,8 @@ gem "redcarpet" # needed for the yard gem to enable Github Flavored Markdown and
 # Testing with various databases
 gem "sqlite3"
 
+# Minitest 6 dropped minitest/mock, which the test suite uses for stubbing
+gem "minitest", "~> 5.25"
+
 # Multi-version testing
 gem "appraisal"

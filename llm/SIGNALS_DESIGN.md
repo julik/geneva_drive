@@ -78,6 +78,8 @@ Notes:
 
 ### 3.2 Additions to `geneva_drive_step_executions`
 
+These land in the same migration as the table above — a signals table nobody can wait on and a waiting step with nowhere to read its event from are each useless alone.
+
 ```ruby
 add_column :geneva_drive_step_executions, :signal_id, geneva_drive_key_type  # no FK (SQLite rule)
 add_index  :geneva_drive_step_executions, :signal_id
@@ -146,13 +148,14 @@ workflow.signal!(:payment_confirmed,
 
 Behavior, in order:
 
-1. **Validate.** `signal_name` must be present; unknown keyword options raise (`**any_future_options` is reserved surface, not a junk drawer — raising now keeps it usable later).
-2. **Terminal check with dedup escape.** On a `finished`/`canceled` workflow: if `(name, idempotency_key)` matches an existing row, return that row (a webhook retry of the very event that finished the workflow is a no-op, not an error). Otherwise raise `GenevaDrive::WorkflowNotOngoing`. Loud beats silent (the Stepped no-op is the named worst-in-field); callers who want lenience rescue one exception class.
-3. **Persist.** INSERT inside a `requires_new: true` savepoint; `rescue ActiveRecord::RecordNotUnique` → fetch and return the existing row without dispatching (and without poisoning a caller's open PG transaction). The returned duplicate is flagged on the instance (`signal.duplicate_delivery?` — not a column) so the controller can log it.
-4. **Dispatch** (skipped when the workflow is `paused` — see §7). `workflow.with_lock`: scan `step_executions.waiting`, evaluate each one's matcher against the signal, and for every match: attach (`signal_id`, `pending→claimed` if first), flip `waiting → scheduled` with `scheduled_for: Time.current` and `waiting_since: nil`, and enqueue `PerformStepJob` via `run_after_commit` with the step's merged job options — the exact enqueue discipline `create_step_execution` uses today.
-5. Return the Signal.
+1. **Validate.** `signal_name` must be present; unknown keyword options raise (`**any_future_options` is reserved surface, not a junk drawer — raising now keeps it usable later). The payload is serialized and bounded here, before anything is written.
+2. **Take the workflow lock.** `workflow.with_lock` wraps *everything* that follows — steps 3 to 5 share one transaction. The lock comes **before** the INSERT, not between INSERT and dispatch: persisting first and dispatching second would mean two commits, and a crash between them leaves a `pending` signal beside a `waiting` execution with nothing left to introduce them. Delivery is all-or-nothing (§6.2).
+3. **Terminal check with dedup escape** (under the lock, so it reads the workflow's committed state). On a `finished`/`canceled` workflow: if `(name, idempotency_key)` matches an existing row, return that row (a webhook retry of the very event that finished the workflow is a no-op, not an error). Otherwise raise `GenevaDrive::WorkflowNotOngoing`. Loud beats silent (the Stepped no-op is the named worst-in-field); callers who want lenience rescue one exception class.
+4. **Persist.** INSERT inside a nested `requires_new: true` savepoint; `rescue ActiveRecord::RecordNotUnique` → fetch and return the existing row without dispatching. The savepoint is what keeps a duplicate from poisoning the enclosing transaction — ours, and the caller's if they had one open (on PG a failed statement otherwise aborts everything after it). The returned duplicate is flagged on the instance (`signal.duplicate_delivery?` — not a column) so the controller can log it.
+5. **Dispatch** (skipped when the workflow is `paused` — see §7). Scan `step_executions.waiting`, evaluate each one's matcher against the signal, and for every match: attach (`signal_id`, state `pending→claimed` if first, claimed count +1), flip `waiting → scheduled` with `scheduled_for: Time.current` and `waiting_since: nil`, and enqueue `PerformStepJob` via `run_after_commit` with the step's merged job options — the exact enqueue discipline `create_step_execution` uses today.
+6. Return the Signal.
 
-`signal!` may be called from anywhere: a controller, another job, another workflow's step, even a step of this workflow (it buffers; nothing is waiting while the caller itself is the active step). It holds the workflow lock only for the scan-and-flip, never while enqueueing.
+`signal!` may be called from anywhere: a controller, another job, another workflow's step, even a step of this workflow (it buffers; nothing is waiting while the caller itself is the active step). It holds the workflow lock for the whole delivery, but never while enqueueing — the enqueue is deferred to after commit.
 
 Matcher blocks run at dispatch time in the sender's process. That is a deliberate trade (the DurableFlow wart, accepted knowingly): the scan is over at most a handful of `waiting` rows for one workflow, and the alternative — a dispatcher job — buys latency and a new moving part. A matcher that raises at dispatch raises to the sender; that is an application bug surfacing at the right doorstep.
 
@@ -219,6 +222,8 @@ What this buys:
 
 ### 6.2 Dispatch details
 
+- **Delivery is one transaction.** The signal INSERT, the `waiting → scheduled` flip, the `signal_id` pin, `scheduled_for` / `waiting_since`, the signal's state and its claimed counter are all written inside the single transaction `signal!` opens with the workflow lock. The crash contract follows from that: either the event is delivered in full, or no row moved at all and the sender's retry re-delivers. There is no in-between state for housekeeping to reason about, which is why there is no reconciliation sweeper for signals.
+- The job enqueue is deliberately **not** in that transaction: it fires after commit (`run_after_commit`), because a queue INSERT that rolls back is a job that never runs, and a queue INSERT that commits ahead of its row is a job that cannot find one. The gap this leaves — committed rows, lost enqueue — is covered by `scheduled_for = Time.current` plus the existing stuck-`scheduled` housekeeping sweep, below.
 - Dispatch flips `waiting → scheduled` **and rewrites `scheduled_for` to now**. This is what plugs the lost-enqueue hole: a dispatched execution whose job evaporated is picked up by the existing stuck-`scheduled` housekeeping sweep after `stuck_scheduled_threshold`, recovered through `reschedule_current_step!`, and the fresh execution's gate re-attaches via the §4 eligibility rule. Push is the mechanism, housekeeping the guarantee, no new sweeper (R4).
 - A duplicate `PerformStepJob` firing against a `waiting` execution hits the existing "already `waiting`, skipping duplicate job" guard in prepare — no worker slot burned beyond the no-op (the anti-ChronoForge).
 - Two signals racing each other: serialized by the workflow lock. The first wakes the waiter; the second finds no `waiting` execution and buffers. The gate's oldest-first order makes delivery deterministic.
@@ -308,7 +313,7 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 | 6 | `signal!` on paused workflow | Persist, no dispatch; delivered by `resume!`'s rendezvous. |
 | 7 | `signal!` on finished/canceled workflow | Return existing row on IK match; otherwise raise `WorkflowNotOngoing`. |
 | 8 | `signal!` on a workflow whose class was removed (STI fallback) | Row ops only; matcher evaluation requires step definitions, so dispatch scan treats undefinable steps as non-matching; buffering still works. |
-| 9 | Matcher raises at dispatch | Raises to the sender (app bug at the sender's doorstep). Signal row is already committed — retry-safe. |
+| 9 | Matcher raises at dispatch | Raises to the sender (app bug at the sender's doorstep) and rolls the whole delivery back — no row, no attach, no counter bump. The sender's retry re-delivers. |
 | 10 | Matcher raises at the gate | Existing prepare-exception machinery: policy → report → pause by default. |
 | 11 | Dispatch enqueue lost | Execution is `scheduled` + overdue → existing housekeeping recovery; fresh execution re-attaches via §4 rule. |
 | 12 | Worker crashes mid-step after attach | Stuck-in-progress recovery → reattempt path → re-attach (claimed, not consumed) → same payload. Consumption checkpointed only with completion. |
@@ -324,4 +329,4 @@ At park time, enqueue a nudge job `set(wait_until: waiting_since + timeout)`. On
 
 ## 13. Implementation surface (for the plan that follows)
 
-New files: `signal.rb` (model), `signal_matcher.rb`; migration templates `create_signals_migration.rb` + `add_signal_support_to_step_executions.rb` (+ dummy-app mirrors). Touched: `workflow.rb` (`signal!`, `has_many :signals`, resume branch, successor `signal_id` copy, stray-sweep widening), `step_definition.rb` (+`wait_for:` validation and normalization, `waits_for_signal?`), `step_execution.rb` (enum value, `signal` association, `signal_columns?`), `executor.rb` (gate segment, consumption in finalize, transitions table, `received_signal` injection), `flow_control.rb` (external verbs already flow through `current_execution` — verify each against §7), `housekeeping_job.rb` (signal delete pass, waiting gauges), `test_helpers.rb`, `geneva_drive.rb` (config accessors), MANUAL chapter.
+New files: `signal.rb` (model), `signal_matcher.rb`; one migration template `add_signals_support.rb` — the signals table and the two step-execution columns ship together, so they are one migration (+ dummy-app mirror). Touched: `workflow.rb` (`signal!`, `has_many :signals`, resume branch, successor `signal_id` copy, stray-sweep widening), `step_definition.rb` (+`wait_for:` validation and normalization, `waits_for_signal?`), `step_execution.rb` (enum value, `signal` association, `signal_columns?`), `executor.rb` (gate segment, consumption in finalize, transitions table, `received_signal` injection), `flow_control.rb` (external verbs already flow through `current_execution` — verify each against §7), `housekeeping_job.rb` (signal delete pass, waiting gauges), `test_helpers.rb`, `geneva_drive.rb` (config accessors), MANUAL chapter.

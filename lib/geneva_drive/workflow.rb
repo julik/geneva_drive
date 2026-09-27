@@ -614,42 +614,55 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # Serialize (and bound) before anything is persisted.
     serialized_payload = GenevaDrive::Signal.serialize_payload(payload)
 
-    unless ongoing?
-      existing = dedup_key && signals.find_by(name: name, idempotency_key: dedup_key)
-      if existing
+    signal = nil
+    duplicate = false
+
+    # One transaction covers the lot: the INSERT, the waiting-execution scan,
+    # and every attach, flip and counter bump. Taking the lock before writing
+    # anything is what makes delivery all-or-nothing - insert first and
+    # dispatch second, and a crash in between would leave a pending signal
+    # sitting next to a waiting execution with nothing left to introduce them.
+    with_lock do
+      # with_lock reloads; the terminal check belongs inside it
+      unless ongoing?
+        existing = dedup_key && signals.find_by(name: name, idempotency_key: dedup_key)
+        unless existing
+          raise GenevaDrive::WorkflowNotOngoing,
+            "Cannot deliver signal #{name.inspect} to a #{state} workflow"
+        end
+
         logger.info("Signal #{name.inspect} redelivered to #{state} workflow, returning existing row")
-        existing.duplicate_delivery!
-        return existing
+        signal = existing
+        duplicate = true
+        next
       end
 
-      raise GenevaDrive::WorkflowNotOngoing,
-        "Cannot deliver signal #{name.inspect} to a #{state} workflow"
-    end
-
-    signal = begin
-      # A savepoint so that hitting the dedup index does not poison an
-      # enclosing transaction the caller may have open.
-      transaction(requires_new: true) do
-        record = signals.new(name: name, idempotency_key: dedup_key, state: "pending")
-        record[:payload] = serialized_payload
-        record.save!
-        record
+      begin
+        # A savepoint so that hitting the dedup index does not poison the
+        # transaction - the caller's, if they had one open, or ours.
+        transaction(requires_new: true) do
+          record = signals.new(name: name, idempotency_key: dedup_key, state: "pending")
+          record[:payload] = serialized_payload
+          record.save!
+          signal = record
+        end
+      rescue ActiveRecord::RecordNotUnique
+        signal = signals.find_by!(name: name, idempotency_key: dedup_key)
+        logger.info("Signal #{name.inspect} is a duplicate delivery of signal #{signal.id}, not dispatching")
+        duplicate = true
+        next
       end
-    rescue ActiveRecord::RecordNotUnique
-      existing = signals.find_by!(name: name, idempotency_key: dedup_key)
-      logger.info("Signal #{name.inspect} is a duplicate delivery of signal #{existing.id}, not dispatching")
-      existing.duplicate_delivery!
-      return existing
+
+      logger.info("Received signal #{name.inspect} as signal #{signal.id}")
+
+      if paused?
+        logger.info("Workflow is paused, buffering signal #{signal.id} until resume!")
+      else
+        wake_executions_matching!(signal)
+      end
     end
 
-    logger.info("Received signal #{name.inspect} as signal #{signal.id}")
-
-    if paused?
-      logger.info("Workflow is paused, buffering signal #{signal.id} until resume!")
-    else
-      dispatch_signal!(signal)
-    end
-
+    signal.duplicate_delivery! if duplicate
     signal
   end
 
@@ -687,35 +700,43 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   public def dispatch_signal!(signal)
     return [] unless GenevaDrive::StepExecution.signal_columns?
 
+    with_lock { wake_executions_matching!(signal) }
+  end
+
+  # The body of dispatch, for callers that already hold the workflow lock
+  # (`signal!` holds it across the whole delivery so the rows land atomically).
+  #
+  # @param signal [GenevaDrive::Signal] the signal to deliver
+  # @return [Array<StepExecution>] the executions that were woken
+  # @api private
+  public def wake_executions_matching!(signal)
+    return [] unless GenevaDrive::StepExecution.signal_columns?
+    return [] if paused? || !ongoing?
+
     # Matcher blocks run on signal.workflow, so point the signal at this very
     # instance instead of letting it load a second copy from the database.
     adopt_signal(signal)
     woken = []
 
-    with_lock do
-      # with_lock reloads; re-check now that we hold the lock
-      return [] if paused? || !ongoing?
+    step_executions.where(state: "waiting").order(created_at: :asc, id: :asc).each do |execution|
+      step_def = execution.step_definition
+      # A step whose definition is gone (class removed, step renamed) can
+      # never match - the matcher lives on the definition.
+      next unless step_def&.waits_for_signal?
+      next unless step_def.signal_matcher.matches?(signal)
 
-      step_executions.where(state: "waiting").order(created_at: :asc, id: :asc).each do |execution|
-        step_def = execution.step_definition
-        # A step whose definition is gone (class removed, step renamed) can
-        # never match - the matcher lives on the definition.
-        next unless step_def&.waits_for_signal?
-        next unless step_def.signal_matcher.matches?(signal)
+      signal.claim!
+      execution.update!(
+        signal_id: signal.id,
+        state: "scheduled",
+        scheduled_for: Time.current,
+        waiting_since: nil
+      )
+      woken << [execution, step_def]
+    end
 
-        signal.claim!
-        execution.update!(
-          signal_id: signal.id,
-          state: "scheduled",
-          scheduled_for: Time.current,
-          waiting_since: nil
-        )
-        woken << [execution, step_def]
-      end
-
-      woken.each do |execution, step_def|
-        enqueue_woken_execution(execution, step_def)
-      end
+    woken.each do |execution, step_def|
+      enqueue_woken_execution(execution, step_def)
     end
 
     woken.map(&:first)

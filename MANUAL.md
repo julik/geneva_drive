@@ -713,7 +713,7 @@ end
 
 When `:capture_payment` runs and no matching signal has arrived, its execution parks in the `waiting` state and the job ends. Nothing is enqueued, nothing polls, and the parked row costs nothing until `signal!` wakes it. When the webhook lands, `signal!` wakes the execution and enqueues its job again.
 
-Signals need two migrations — the `geneva_drive_signals` table and two columns on `geneva_drive_step_executions` — so re-run `bin/rails generate geneva_drive:install` on an existing installation to pick them up. Until then everything else keeps working, and executing a step that declares `wait_for:` fails with a configuration error pointing at the missing migration.
+Signals need one migration — it creates the `geneva_drive_signals` table and adds two columns to `geneva_drive_step_executions` — so re-run `bin/rails generate geneva_drive:install` on an existing installation to pick it up. Until then everything else keeps working, and executing a step that declares `wait_for:` fails with a configuration error pointing at the missing migration.
 
 ### Arrival Order Does Not Matter
 
@@ -723,6 +723,8 @@ The signal row is written before anything is dispatched, which is what makes the
 - When `signal!` is called, it looks for parked executions. Found: attach, reschedule, enqueue. Not found: the row simply sits there.
 
 So a webhook that arrives while the workflow is still three steps away from the waiter is not lost and not early — it is buffered, and claimed when the waiting step finally runs. A webhook that arrives a week after the step parked wakes it immediately.
+
+Delivery is one database transaction: the signal row, the waking of the parked execution and the bookkeeping around it either all land or none of them do. If `signal!` raises, nothing was written and the sender can simply try again.
 
 > [!IMPORTANT]
 > `signal!` is an instance method: you find the workflow the way you find anything in Rails, usually `SomeWorkflow.ongoing.for_hero(record).first`. Delivering a brand-new event to a workflow that has already finished or been canceled raises `GenevaDrive::WorkflowNotOngoing` rather than silently doing nothing.

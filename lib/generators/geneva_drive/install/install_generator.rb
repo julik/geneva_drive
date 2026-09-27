@@ -67,13 +67,8 @@ module GenevaDrive
         )
 
         migration_template(
-          "create_signals_migration.rb",
-          "db/migrate/create_geneva_drive_signals.rb"
-        )
-
-        migration_template(
-          "add_signal_support_to_step_executions.rb",
-          "db/migrate/add_signal_support_to_geneva_drive_step_executions.rb"
+          "add_signals_support.rb",
+          "db/migrate/add_signals_support_to_geneva_drive.rb"
         )
       end
 

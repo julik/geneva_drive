@@ -1,6 +1,10 @@
 # frozen_string_literal: true
 
-class CreateGenevaDriveSignals < ActiveRecord::Migration[7.2]
+# Signals: external events delivered to a workflow, and the two columns on
+# step executions that let one park until a matching event arrives. Both halves
+# ship together - a signals table nobody can wait on is useless, and a waiting
+# step with nowhere to read its event from is worse - so they are one migration.
+class AddSignalsSupportToGenevaDrive < ActiveRecord::Migration[7.2]
   include GenevaDrive::MigrationHelpers
 
   def change
@@ -27,7 +31,7 @@ class CreateGenevaDriveSignals < ActiveRecord::Migration[7.2]
       # without an idempotency key always insert.
       t.string :idempotency_key
 
-      # pending -> claimed -> consumed
+      # Lifecycle: pending -> claimed -> consumed
       t.string :state, null: false, default: "pending"
 
       # Serialized payload. Use the database-native JSON type, same flavor
@@ -68,6 +72,23 @@ class CreateGenevaDriveSignals < ActiveRecord::Migration[7.2]
     unless adapter.include?("mysql")
       add_foreign_key :geneva_drive_signals, :geneva_drive_workflows,
         column: :workflow_id, on_delete: :cascade
+    end
+
+    unless column_exists?(:geneva_drive_step_executions, :signal_id)
+      # The attachment pin: which signal this execution is processing. One
+      # signal may be pinned by many executions, so this lives on the
+      # execution side. Match the primary key type (bigint or uuid) of the
+      # signals table.
+      # No foreign key constraint - SQLite rewrites the table on
+      # add_foreign_key, which can destroy data.
+      add_column :geneva_drive_step_executions, :signal_id, key_type
+      add_index :geneva_drive_step_executions, :signal_id
+    end
+
+    unless column_exists?(:geneva_drive_step_executions, :waiting_since)
+      # When the execution parked waiting for a signal, so "waiting for N
+      # days" is queryable without abusing updated_at.
+      add_column :geneva_drive_step_executions, :waiting_since, :datetime
     end
   end
 end

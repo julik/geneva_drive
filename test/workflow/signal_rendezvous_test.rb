@@ -307,15 +307,17 @@ class SignalRendezvousTest < ActiveSupport::TestCase
     assert_equal [], Thread.current[:rendezvous_log]
   end
 
-  test "a matcher raising at dispatch raises to the sender" do
+  test "a matcher raising at dispatch raises to the sender and rolls the delivery back" do
     workflow = MatcherRaisingWorkflow.create!(hero: @user)
     workflow.current_execution.execute!
     assert_waiting_for_signal(workflow)
 
     assert_raises(RuntimeError) { workflow.signal!(:payment_confirmed) }
 
-    # The row is committed regardless, so redelivery is safe
-    assert_equal 1, workflow.signals.count
+    # Delivery is all-or-nothing: nothing was written, so the sender's retry
+    # re-delivers rather than finding a half-delivered event
+    assert_equal 0, workflow.signals.count
+    assert_equal "waiting", workflow.reload.current_execution.state
   end
 
   # --- Composition with other step options ---

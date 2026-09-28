@@ -38,6 +38,17 @@ class GenevaDrive::StepConfigurationError < StandardError; end
 # it is rewritten on every checkpoint and copied to every successor execution.
 class GenevaDrive::CursorTooLargeError < StandardError; end
 
+# Raised when a signal payload exceeds GenevaDrive.max_signal_payload_size
+# once serialized to JSON. A payload describes the event; the data the step
+# works on belongs on the hero.
+class GenevaDrive::SignalPayloadTooLargeError < StandardError; end
+
+# Raised when a signal is delivered to a workflow that has already finished
+# or been canceled. Delivering the very same event twice (same idempotency
+# key) is a no-op rather than an error, so callers who want lenience can
+# rescue just this one class.
+class GenevaDrive::WorkflowNotOngoing < StandardError; end
+
 # Base class for errors that occur during step execution.
 # These errors are raised after recovery actions have been performed,
 # so the workflow/step states are already updated when the exception propagates.
@@ -276,14 +287,43 @@ module GenevaDrive::FlowControl
       end
 
       if state == "paused"
-        # Workflow was paused (e.g., due to failed step). Resume and skip to next step.
+        # Workflow was paused (e.g., due to failed step). Resume and skip to
+        # next step. The step being skipped past may hold a signal claim on a
+        # failed execution - no further execution of it is coming, so the
+        # operator's skip is what settles that event.
+        holder = execution_holding_signal_claim(next_step_name)
         update!(state: "ready", transitioned_at: nil)
+        settle_signal_for_skipped!(holder)
       else
-        # Workflow is ready with a scheduled step - mark it as skipped
-        current_execution&.mark_skipped!(outcome: "skipped")
+        # Workflow is ready with a scheduled step - mark it as skipped. A
+        # dispatched-but-not-yet-run execution carries an attached signal;
+        # skipping it settles that signal too.
+        skipped_execution = current_execution
+        skipped_execution&.mark_skipped!(outcome: "skipped")
+        settle_signal_for_skipped!(skipped_execution)
       end
 
       schedule_next_step!
     end
+  end
+
+  # Finds the execution that still holds a signal claim for a step we are
+  # about to skip past on a paused workflow: the current one if it was
+  # dispatched before the pause, otherwise the failed attempt that paused the
+  # workflow in the first place (same lookup shape resume! uses).
+  #
+  # @param step_name [String, nil] the step being skipped past
+  # @return [GenevaDrive::StepExecution, nil]
+  def execution_holding_signal_claim(step_name)
+    return nil unless GenevaDrive::StepExecution.signal_columns?
+
+    candidate = current_execution
+    return candidate if candidate&.signal_id.present?
+    return nil if step_name.blank?
+
+    step_executions
+      .where(step_name: step_name, state: "failed")
+      .order(created_at: :desc, id: :desc)
+      .first
   end
 end

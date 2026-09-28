@@ -15,7 +15,8 @@
 class GenevaDrive::Executor
   # Valid state transitions for step executions
   STEP_TRANSITIONS = {
-    "scheduled" => %w[scheduled in_progress canceled skipped failed completed],
+    "scheduled" => %w[scheduled waiting in_progress canceled skipped failed completed],
+    "waiting" => %w[scheduled canceled skipped],
     "in_progress" => %w[in_progress completed failed canceled skipped]
   }.freeze
 
@@ -113,17 +114,23 @@ class GenevaDrive::Executor
     @step_definition = step_def
     @start_time = Time.current
 
-    # Phase 2: Execute step block (locks released)
-    @logger.debug("Running before_step_execution hook")
-    @workflow.before_step_execution(@step_execution)
+    # Phase 2: Execute step block (locks released). The signal this execution
+    # is attached to (if any) is injected for the duration, so step code can
+    # read `received_signal`.
+    flow_result = @workflow.with_received_signal(@received_signal) do
+      @logger.debug("Running before_step_execution hook")
+      @workflow.before_step_execution(@step_execution)
 
-    @logger.debug("Running the actual step code")
-    flow_result = @workflow.around_step_execution(@step_execution) do
-      execute_step(step_def)
+      @logger.debug("Running the actual step code")
+      result = @workflow.around_step_execution(@step_execution) do
+        execute_step(step_def)
+      end
+
+      @logger.debug("Running after_step_execution hook")
+      @workflow.after_step_execution(@step_execution)
+
+      result
     end
-
-    @logger.debug("Running after_step_execution hook")
-    @workflow.after_step_execution(@step_execution)
 
     # Phase 3: Acquire locks and handle result
     @logger.info("Finished step with outcome #{flow_result.inspect}")
@@ -336,10 +343,33 @@ class GenevaDrive::Executor
         next nil
       end
 
+      # Steps that wait for a signal need the signal_id and waiting_since
+      # columns. Fail loudly (instead of degrading) - without them a step
+      # would run without the event it was written to react to.
+      if step_def.waits_for_signal? && !GenevaDrive::StepExecution.signal_columns?
+        error_message = "Step '#{step_execution.step_name}' declares wait_for:, but the signal_id and " \
+          "waiting_since columns are missing from geneva_drive_step_executions. " \
+          "Run `bin/rails generate geneva_drive:install` and migrate."
+        logger.error(error_message)
+
+        step_execution.update!(error_message: error_message)
+        transition_step!("failed", outcome: "failed")
+        transition_workflow!("paused")
+        exception_to_raise = GenevaDrive::StepConfigurationError.new(error_message)
+        next nil
+      end
+
       # Evaluate preconditions with instrumentation
       precondition_result = evaluate_preconditions(step_def)
       if precondition_result[:abort]
         exception_to_raise = precondition_result[:exception]
+        next nil
+      end
+
+      # The rendezvous, receiver side: skip_if has had its say (skip beats
+      # wait), so now find the signal or park. Parking ends the job without
+      # enqueueing anything - dispatch will wake us.
+      if step_def.waits_for_signal? && run_signal_gate(step_def) == :parked
         next nil
       end
 
@@ -365,6 +395,69 @@ class GenevaDrive::Executor
 
     raise exception_to_raise if exception_to_raise
     result
+  end
+
+  # The receiver side of the rendezvous. Runs under the workflow and step
+  # execution locks, inside prepare_execution.
+  #
+  # An execution that already carries an attachment pin (dispatch woke it, or
+  # it inherited the pin from its predecessor) runs straight away. Otherwise
+  # the oldest matching non-consumed signal is attached, and failing that the
+  # execution parks.
+  #
+  # @param step_def [StepDefinition] the waiting step's definition
+  # @return [Symbol] :attached or :parked
+  def run_signal_gate(step_def)
+    if step_execution.signal_id.present?
+      @received_signal = step_execution.signal
+      logger.info("Step is attached to signal #{step_execution.signal_id}, proceeding")
+      return :attached
+    end
+
+    matcher = step_def.signal_matcher
+    candidate = workflow.attachable_signals.detect { |signal| matcher.matches?(signal) }
+
+    unless candidate
+      logger.info("No signal matching #{matcher} has arrived, parking step execution")
+      transition_step!("waiting")
+      step_execution.update!(waiting_since: Time.current)
+      return :parked
+    end
+
+    logger.info("Attaching signal #{candidate.id} (#{candidate.name}) to step execution")
+    candidate.claim!
+    step_execution.update!(signal_id: candidate.id)
+    @received_signal = candidate
+    :attached
+  end
+
+  # Books one clean resolution against the attached signal. Called from
+  # finalization on clean outcomes only (completion, skip, finished!), right
+  # after the step's own terminal transition and in the same transaction: a
+  # crash before commit resolves nothing and completes nothing, so replay
+  # stays coherent.
+  #
+  # The signal only flips to consumed once every chain attached to it has
+  # resolved - for a single claimant that is this very moment, and when one
+  # signal has been dispatched onto several executions it is whichever of
+  # them finishes last. Reattempts, failures and cancellations deliberately
+  # leave the signal claimed, so the retry (or resume) re-attaches to it and
+  # sees the same payload while the audit trail reads truthfully.
+  #
+  # @return [void]
+  def resolve_attached_signal!
+    return unless GenevaDrive::StepExecution.signal_columns?
+    return if step_execution.signal_id.blank?
+
+    signal = step_execution.signal
+    return unless signal
+
+    signal.record_consumption!
+    if signal.state == "consumed"
+      logger.info("Consumed signal #{signal.id} (#{signal.name}) after #{signal.consumed} clean resolution(s)")
+    else
+      logger.info("Signal #{signal.id} (#{signal.name}) stays claimed - other attached executions are unresolved")
+    end
   end
 
   # Evaluates preconditions (cancel_if and skip_if) with instrumentation.
@@ -399,6 +492,11 @@ class GenevaDrive::Executor
         if step_def.should_skip?(workflow)
           logger.info("skip_if condition matched, skipping step")
           transition_step!("skipped", outcome: "skipped")
+          # The step may have been woken by a signal and only then decided it
+          # had nothing to do (or a retry re-attached before skip_if flipped).
+          # Skipping settles that event instead of leaving it for the next
+          # waiter on the same name.
+          workflow.settle_signal_for_skipped!(step_execution)
           transition_workflow!("ready")
           workflow.schedule_next_step!
           p[:outcome] = :skipped
@@ -657,6 +755,7 @@ class GenevaDrive::Executor
   def handle_completion
     logger.info("Step completed successfully, scheduling next step")
     transition_step!("completed", outcome: "success")
+    resolve_attached_signal!
     transition_workflow!("ready")
     workflow.schedule_next_step!
   end
@@ -758,6 +857,7 @@ class GenevaDrive::Executor
     when :skip
       logger.info("Exception policy: skip!")
       transition_step!("skipped", outcome: "skipped")
+      resolve_attached_signal!
       transition_workflow!("ready")
       workflow.schedule_next_step!
     when :pause
@@ -768,6 +868,7 @@ class GenevaDrive::Executor
     when :finished
       logger.info("Exception policy: finished!")
       transition_step!("completed", outcome: "success")
+      resolve_attached_signal!
       transition_workflow!("finished")
     else
       logger.info("Exception policy: default (pause!)")
@@ -913,12 +1014,14 @@ class GenevaDrive::Executor
     when :skip
       logger.info("Processing skip signal: scheduling next step")
       transition_step!("skipped", outcome: "skipped")
+      resolve_attached_signal!
       transition_workflow!("ready")
       workflow.schedule_next_step!
 
     when :finished
       logger.info("Processing finished signal: finishing workflow")
       transition_step!("completed", outcome: "success")
+      resolve_attached_signal!
       transition_workflow!("finished")
 
     when :suspend

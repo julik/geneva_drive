@@ -24,5 +24,9 @@ gem "redcarpet" # needed for the yard gem to enable Github Flavored Markdown and
 # Testing with various databases
 gem "sqlite3"
 
+# Minitest 5.26 dropped minitest/mock, which the test suite uses for stubbing.
+# The appraisal gemfiles carry the same pin.
+gem "minitest", "< 5.26"
+
 # Multi-version testing
 gem "appraisal"

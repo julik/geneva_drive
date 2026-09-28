@@ -43,6 +43,11 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     foreign_key: :workflow_id,
     inverse_of: :workflow,
     dependent: :delete_all
+  has_many :signals,
+    class_name: "GenevaDrive::Signal",
+    foreign_key: :workflow_id,
+    inverse_of: :workflow,
+    dependent: :delete_all
 
   # Class-inheritable attributes for DSL
   class_attribute :_step_definitions, instance_writer: false, default: []
@@ -523,7 +528,14 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
     # A scheduled execution preserved by pause! takes precedence - re-enqueue it
     scheduled_execution = current_execution
-    return enqueue_scheduled_execution(scheduled_execution) if scheduled_execution
+    if scheduled_execution
+      # A parked execution is not re-enqueued: it is waiting for an event, not
+      # for a clock. Re-run the rendezvous instead, which delivers any signal
+      # that arrived while the workflow was paused.
+      return rendezvous_waiting_execution!(scheduled_execution) if scheduled_execution.waiting?
+
+      return enqueue_scheduled_execution(scheduled_execution)
+    end
 
     # Resumable-step continuations need the cursor/continues_from_id columns
     if GenevaDrive::StepExecution.resumable_columns?
@@ -557,12 +569,206 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(step_def, wait: nil)
   end
 
+  # Delivers an external event to this workflow.
+  #
+  # The signal row is persisted first and dispatched second, which is what
+  # makes arrival order irrelevant: a signal that lands before the waiting
+  # step's execution even exists simply sits in the table until that step's
+  # gate picks it up, and a signal that lands while a step is already parked
+  # wakes it immediately.
+  #
+  # Pass an +idempotency_key+ (a webhook's event id, typically) to make
+  # redelivery a no-op: the second call returns the row the first one wrote,
+  # flagged {GenevaDrive::Signal#duplicate_delivery?}, without dispatching.
+  #
+  # On a paused workflow the row is persisted but not dispatched - waking a
+  # step while the workflow is paused would only get its execution canceled.
+  # {#resume!} performs the rendezvous instead.
+  #
+  # @param signal_name [Symbol, String] the event name
+  # @param payload [Object] data describing the event, serialized through ActiveJob
+  # @param idempotency_key [String, nil] deduplication key, scoped to (workflow, name)
+  # @return [GenevaDrive::Signal] the persisted signal
+  # @raise [ArgumentError] if the signal name is blank
+  # @raise [WorkflowNotOngoing] if the workflow is finished or canceled and this is a new event
+  # @raise [SignalPayloadTooLargeError] if the payload exceeds GenevaDrive.max_signal_payload_size
+  #
+  # @example Deliver a webhook event
+  #   workflow = OrderFulfillmentWorkflow.ongoing.for_hero(order).first
+  #   workflow.signal!(:payment_confirmed,
+  #     payload: {amount_cents: 12_500},
+  #     idempotency_key: event["id"])
+  def signal!(signal_name, payload: {}, idempotency_key: nil, **unknown_options)
+    if unknown_options.any?
+      raise ArgumentError,
+        "Unknown options passed to signal!: #{unknown_options.keys.join(", ")}"
+    end
+
+    if signal_name.blank?
+      raise ArgumentError, "signal! requires a signal name"
+    end
+
+    name = signal_name.to_s
+    dedup_key = idempotency_key&.to_s
+
+    # Serialize (and bound) before anything is persisted.
+    serialized_payload = GenevaDrive::Signal.serialize_payload(payload)
+
+    signal = nil
+    duplicate = false
+
+    # One transaction covers the lot: the INSERT, the waiting-execution scan,
+    # and every attach, flip and counter bump. Taking the lock before writing
+    # anything is what makes delivery all-or-nothing - insert first and
+    # dispatch second, and a crash in between would leave a pending signal
+    # sitting next to a waiting execution with nothing left to introduce them.
+    with_lock do
+      # with_lock reloads; the terminal check belongs inside it
+      unless ongoing?
+        existing = dedup_key && signals.find_by(name: name, idempotency_key: dedup_key)
+        unless existing
+          raise GenevaDrive::WorkflowNotOngoing,
+            "Cannot deliver signal #{name.inspect} to a #{state} workflow"
+        end
+
+        logger.info("Signal #{name.inspect} redelivered to #{state} workflow, returning existing row")
+        signal = existing
+        duplicate = true
+        next
+      end
+
+      begin
+        # A savepoint so that hitting the dedup index does not poison the
+        # transaction - the caller's, if they had one open, or ours.
+        transaction(requires_new: true) do
+          record = signals.new(name: name, idempotency_key: dedup_key, state: "pending")
+          record[:payload] = serialized_payload
+          record.save!
+          signal = record
+        end
+      rescue ActiveRecord::RecordNotUnique
+        signal = signals.find_by!(name: name, idempotency_key: dedup_key)
+        logger.info("Signal #{name.inspect} is a duplicate delivery of signal #{signal.id}, not dispatching")
+        duplicate = true
+        next
+      end
+
+      logger.info("Received signal #{name.inspect} as signal #{signal.id}")
+
+      if paused?
+        logger.info("Workflow is paused, buffering signal #{signal.id} until resume!")
+      else
+        wake_executions_matching!(signal)
+      end
+    end
+
+    signal.duplicate_delivery! if duplicate
+    signal
+  end
+
   # Returns the current active step execution, if any.
-  # Includes scheduled and in_progress states.
+  # Includes scheduled, waiting and in_progress states.
   #
   # @return [StepExecution, nil] the current execution
   def current_execution
-    step_executions.where(state: %w[scheduled in_progress]).first
+    step_executions.where(state: %w[scheduled waiting in_progress]).first
+  end
+
+  # Signals that may still be attached to an execution, oldest first, each
+  # pointing back at this workflow instance.
+  #
+  # Matcher blocks are instance_exec'd on `signal.workflow`, and `inverse_of:`
+  # only primes records loaded straight off the association - a scoped
+  # relation would hand each signal a freshly loaded workflow, which would
+  # then see none of the caller's unsaved state.
+  #
+  # @return [Array<GenevaDrive::Signal>]
+  # @api private
+  public def attachable_signals
+    signals.attachable.map { |signal| adopt_signal(signal) }
+  end
+
+  # Wakes every parked step execution whose matcher accepts the given signal.
+  #
+  # Runs under the workflow row lock - the same lock create_step_execution
+  # and the Executor take - so whichever of dispatch and the gate commits
+  # second sees the other's write and no signal can slip through the gap.
+  #
+  # @param signal [GenevaDrive::Signal] the signal to deliver
+  # @return [Array<StepExecution>] the executions that were woken
+  # @api private
+  public def dispatch_signal!(signal)
+    return [] unless GenevaDrive::StepExecution.signal_columns?
+
+    with_lock { wake_executions_matching!(signal) }
+  end
+
+  # Settles the signal attached to an execution we are deliberately moving
+  # past, wherever the skip came from: `skip_if` firing at wake, flow control
+  # inside the step, an exception policy, or an operator calling `skip!`.
+  #
+  # Consumption follows attachment. A skip in any flavor says "we are done
+  # with this step", so an event that was delivered to it is spent by that
+  # decision - leaving it claimed would hand a stale event to the next waiter
+  # for the same name, which is exactly what consume-once-per-event forbids.
+  # An execution that never attached has nothing to settle, so buffered
+  # signals a step never reached are left alone.
+  #
+  # Must be called with the workflow lock held, so the settle rides the same
+  # transaction as the skip itself.
+  #
+  # @param step_execution [StepExecution, nil] the execution being skipped past
+  # @return [GenevaDrive::Signal, nil] the settled signal, if there was one
+  # @api private
+  public def settle_signal_for_skipped!(step_execution)
+    return unless GenevaDrive::StepExecution.signal_columns?
+    return if step_execution.nil? || step_execution.signal_id.blank?
+
+    signal = step_execution.signal
+    return unless signal && signal.state == "claimed"
+
+    logger.info("Skipping past step #{step_execution.step_name}, settling attached signal #{signal.id} (#{signal.name})")
+    signal.record_consumption!(resolved_step_names: [step_execution.step_name])
+    signal
+  end
+
+  # The body of dispatch, for callers that already hold the workflow lock
+  # (`signal!` holds it across the whole delivery so the rows land atomically).
+  #
+  # @param signal [GenevaDrive::Signal] the signal to deliver
+  # @return [Array<StepExecution>] the executions that were woken
+  # @api private
+  public def wake_executions_matching!(signal)
+    return [] unless GenevaDrive::StepExecution.signal_columns?
+    return [] if paused? || !ongoing?
+
+    # Matcher blocks run on signal.workflow, so point the signal at this very
+    # instance instead of letting it load a second copy from the database.
+    adopt_signal(signal)
+    woken = []
+
+    step_executions.where(state: "waiting").order(created_at: :asc, id: :asc).each do |execution|
+      step_def = execution.step_definition
+      # A step whose definition is gone (class removed, step renamed) can
+      # never match - the matcher lives on the definition.
+      next unless step_def&.waits_for_signal?
+      next unless step_def.signal_matcher.matches?(signal)
+
+      signal.claim!
+      execution.update!(
+        signal_id: signal.id,
+        state: "scheduled",
+        scheduled_for: Time.current,
+        waiting_since: nil
+      )
+      woken << [execution, step_def]
+    end
+
+    woken.each do |execution, step_def|
+      enqueue_woken_execution(execution, step_def)
+    end
+
+    woken.map(&:first)
   end
 
   # Returns all step executions in chronological order.
@@ -732,6 +938,64 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     create_step_execution(first_step, wait: first_step.wait)
   end
 
+  # Points a signal's workflow association at this instance, so matcher
+  # blocks - which are instance_exec'd on it - see the live object.
+  #
+  # @param signal [GenevaDrive::Signal]
+  # @return [GenevaDrive::Signal] the same signal
+  def adopt_signal(signal)
+    signal.association(:workflow).target = self
+    signal
+  end
+
+  # Enqueues the PerformStepJob for an execution that dispatch just flipped
+  # from waiting to scheduled. Uses the same enqueue discipline (merged job
+  # options, after-commit deferral, job_id writeback) as create_step_execution.
+  #
+  # @param step_execution [StepExecution] the woken execution
+  # @param step_definition [StepDefinition] its step definition
+  # @return [void]
+  def enqueue_woken_execution(step_execution, step_definition)
+    job_options = merged_step_job_options(step_definition)
+    execution_id = step_execution.id
+    workflow_logger = logger
+
+    run_after_commit do
+      job = GenevaDrive::PerformStepJob
+        .set(**job_options)
+        .perform_later(execution_id)
+
+      workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for woken step execution #{execution_id}")
+
+      GenevaDrive::StepExecution
+        .where(id: execution_id)
+        .update_all(job_id: job.job_id)
+    end
+  end
+
+  # Re-runs the rendezvous for a step execution that is parked waiting for a
+  # signal. Signals that arrived while the workflow was paused are delivered
+  # here, on resume.
+  #
+  # @param step_execution [StepExecution] the parked execution
+  # @return [StepExecution] the same execution (rescheduled if a signal matched)
+  def rendezvous_waiting_execution!(step_execution)
+    step_def = step_execution.step_definition
+    matcher = step_def&.signal_matcher
+
+    if matcher
+      candidate = attachable_signals.detect { |signal| matcher.matches?(signal) }
+      if candidate
+        logger.info("Resuming into a matching signal #{candidate.id} (#{candidate.name}) for step #{step_execution.step_name}")
+        dispatch_signal!(candidate)
+        return step_execution.reload
+      end
+    end
+
+    logger.info("Step #{step_execution.step_name} stays parked - no matching signal has arrived yet")
+    step_execution
+  end
+
   # Enqueues a job for an existing scheduled execution.
   #
   # If the execution is overdue (scheduled_for is in the past), runs immediately.
@@ -785,22 +1049,24 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     scheduled_for = wait ? wait.from_now : Time.current
 
     with_lock do
-      # Cancel any stray scheduled executions - the successor is the one
-      # execution that should run next (same as create_step_execution).
-      canceled_count = step_executions.scheduled.update_all(
-        state: "canceled",
-        outcome: "canceled",
-        canceled_at: Time.current
-      )
-      logger.debug("Canceled #{canceled_count} previously scheduled step execution(s)") if canceled_count > 0
+      # Cancel any stray scheduled or parked executions - the successor is the
+      # one execution that should run next (same as create_step_execution).
+      cancel_stray_executions!
 
-      successor = step_executions.create!(
+      successor_attributes = {
         step_name: predecessor.step_name,
         state: "scheduled",
         scheduled_for: scheduled_for,
         continues_from_id: predecessor.id,
         cursor: predecessor.cursor
-      )
+      }
+      # Carry the attachment pin across the chain so successors never re-park
+      # and received_signal stays stable for the whole iteration.
+      if GenevaDrive::StepExecution.signal_columns?
+        successor_attributes[:signal_id] = predecessor.signal_id
+      end
+
+      successor = step_executions.create!(**successor_attributes)
 
       # next_step_name points to the step that's scheduled to run next
       update!(next_step_name: predecessor.step_name)
@@ -840,15 +1106,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     scheduled_for = wait ? wait.from_now : Time.current
 
     with_lock do
-      # Cancel any scheduled step executions (not in_progress - those are being executed).
-      # Safe to use update_all since we hold the workflow lock, blocking any executor
-      # that would try to start these steps.
-      canceled_count = step_executions.scheduled.update_all(
-        state: "canceled",
-        outcome: "canceled",
-        canceled_at: Time.current
-      )
-      logger.debug("Canceled #{canceled_count} previously scheduled step execution(s)") if canceled_count > 0
+      cancel_stray_executions!
 
       step_execution = step_executions.create!(
         step_name: step_definition.name,
@@ -890,6 +1148,26 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
       step_execution
     end
+  end
+
+  # Cancels any scheduled or parked step executions so that the execution
+  # about to be created is the only one that will run. In-progress executions
+  # are left alone - they are being executed.
+  #
+  # Safe to use update_all because the caller holds the workflow lock, which
+  # blocks any executor that would try to start these steps. Parked executions
+  # are swept for the same reason: no legitimate path creates a new execution
+  # past one that is waiting.
+  #
+  # @return [Integer] the number of executions canceled
+  def cancel_stray_executions!
+    canceled_count = step_executions.where(state: %w[scheduled waiting]).update_all(
+      state: "canceled",
+      outcome: "canceled",
+      canceled_at: Time.current
+    )
+    logger.debug("Canceled #{canceled_count} previously scheduled step execution(s)") if canceled_count > 0
+    canceled_count
   end
 
   # Finishes the workflow.
@@ -946,6 +1224,33 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     yield
   ensure
     @tagged_logger = previous_tagged_logger
+  end
+
+  # The signal that woke the step currently executing, or nil when the step
+  # does not declare +wait_for:+. Available inside step bodies only.
+  #
+  # @return [GenevaDrive::Signal, nil]
+  #
+  # @example Read the payload of the event that woke the step
+  #   step :capture, wait_for: :payment_confirmed do
+  #     hero.capture!(received_signal.payload[:amount_cents])
+  #   end
+  public attr_reader :received_signal
+
+  # Temporarily makes a signal available to step code as +received_signal+
+  # for the duration of the block. Injected by the Executor the same way the
+  # tagged logger is.
+  #
+  # @param signal [GenevaDrive::Signal, nil] the attached signal
+  # @yield the block to execute with the signal in scope
+  # @return [Object] the result of the block
+  # @api private
+  public def with_received_signal(signal)
+    previous_received_signal = @received_signal
+    @received_signal = signal
+    yield
+  ensure
+    @received_signal = previous_received_signal
   end
 
   # Returns the Logger properly tagged to this Workflow

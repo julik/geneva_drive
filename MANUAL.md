@@ -679,6 +679,179 @@ test "keeps its place across interruptions" do
 end
 ```
 
+## Waiting for Signals
+
+Some steps cannot finish on their own. A payment needs the provider's webhook, a contract needs a countersignature, a shipment needs the carrier to scan the parcel. The usual Rails answer is to poll — schedule the step, check whether the thing happened, `reattempt!(wait: 5.minutes)` if it did not — and that works, but it burns a worker slot on every check and it puts a floor under how fast the workflow can react.
+
+A **signal** inverts that. It is an event record addressed to one workflow instance:
+
+```ruby
+# app/controllers/payment_webhooks_controller.rb
+workflow = OrderFulfillmentWorkflow.ongoing.for_hero(order).first
+workflow.signal!(:payment_confirmed,
+  payload: {amount_cents: event["amount"]},
+  idempotency_key: event["id"])
+```
+
+And a step declares that it waits for one with `wait_for:`:
+
+```ruby
+class OrderFulfillmentWorkflow < GenevaDrive::Workflow
+  step :reserve_stock do
+    hero.reserve_stock!
+  end
+
+  step :capture_payment, wait_for: :payment_confirmed do
+    hero.capture!(received_signal.payload[:amount_cents])
+  end
+
+  step :ship do
+    ShippingLabel.create!(order: hero)
+  end
+end
+```
+
+When `:capture_payment` runs and no matching signal has arrived, its execution parks in the `waiting` state and the job ends. Nothing is enqueued, nothing polls, and the parked row costs nothing until `signal!` wakes it. When the webhook lands, `signal!` wakes the execution and enqueues its job again.
+
+Signals need one migration — it creates the `geneva_drive_signals` table and adds two columns to `geneva_drive_step_executions` — so re-run `bin/rails generate geneva_drive:install` on an existing installation to pick it up. Until then everything else keeps working, and executing a step that declares `wait_for:` fails with a configuration error pointing at the missing migration.
+
+### Arrival Order Does Not Matter
+
+The signal row is written before anything is dispatched, which is what makes the timing irrelevant. There are exactly two places where sender and receiver meet, and both run under the workflow row lock:
+
+- When the waiting step's job runs, it looks for a matching unconsumed signal. Found: attach and run. Not found: park.
+- When `signal!` is called, it looks for parked executions. Found: attach, reschedule, enqueue. Not found: the row simply sits there.
+
+So a webhook that arrives while the workflow is still three steps away from the waiter is not lost and not early — it is buffered, and claimed when the waiting step finally runs. A webhook that arrives a week after the step parked wakes it immediately.
+
+Delivery is one database transaction: the signal row, the waking of the parked execution and the bookkeeping around it either all land or none of them do. If `signal!` raises, nothing was written and the sender can simply try again.
+
+> [!IMPORTANT]
+> `signal!` is an instance method: you find the workflow the way you find anything in Rails, usually `SomeWorkflow.ongoing.for_hero(record).first`. Delivering a brand-new event to a workflow that has already finished or been canceled raises `GenevaDrive::WorkflowNotOngoing` rather than silently doing nothing.
+
+### Deduplicating Redelivery
+
+Webhook providers redeliver. Pass an `idempotency_key:` — the provider's event id is the natural choice — and the second delivery becomes a database-level no-op that returns the row the first one wrote:
+
+```ruby
+signal = workflow.signal!(:payment_confirmed, idempotency_key: event["id"])
+Rails.logger.info("Ignoring redelivered #{event["id"]}") if signal.duplicate_delivery?
+```
+
+Redelivering the very event that finished the workflow is also a no-op, not an error — that specific case is what the deduplication is for. Signals sent without an idempotency key never deduplicate: two calls make two rows, the older one is delivered first, and the newer one stays in the table as an auditable record of what arrived.
+
+### Narrowing What Counts as a Match
+
+`wait_for: :document_signed` is shorthand for `wait_for: GenevaDrive::SignalMatcher.new(:document_signed)`, which matches on name alone. Give the matcher a block and it also has to like the payload:
+
+```ruby
+class ContractWorkflow < GenevaDrive::Workflow
+  # The block receives the payload and runs on the workflow the signal was
+  # sent to, so `hero` and the workflow's own methods are in scope.
+  step :await_countersignature,
+    wait_for: GenevaDrive::SignalMatcher.new(:document_signed) { |payload|
+      payload[:document_id] == hero.contract_id
+    } do
+    hero.mark_countersigned!
+  end
+end
+```
+
+A matcher is a plain object with no ties to the step that uses it, so a rule worth repeating can live in a constant and be shared across steps and workflows:
+
+```ruby
+SETTLED = GenevaDrive::SignalMatcher.new(:payment_confirmed) { |payload| payload[:amount_cents].to_i > 0 }
+
+step :capture_payment, wait_for: SETTLED do
+  hero.capture!
+end
+```
+
+Anything responding to `#matches?(signal)` works too, and owns the whole predicate — which is how a single step waits on either of two names:
+
+```ruby
+class PaymentSettled
+  def initialize(min_cents:) = @min_cents = min_cents
+
+  def matches?(signal)
+    %w[payment_confirmed payment_captured].include?(signal.name) &&
+      signal.payload[:amount_cents].to_i >= @min_cents
+  end
+end
+
+step :capture_payment, wait_for: PaymentSettled.new(min_cents: 100) do
+  hero.capture!
+end
+```
+
+Payloads are serialized with ActiveJob serializers, so `Date`, `Time` and ActiveRecord objects survive the round trip. Hashes come back with indifferent access, because a webhook sender produces string keys and a Ruby caller produces symbols and a matcher should not have to care. The serialized payload is limited to 128 KB (`GenevaDrive.max_signal_payload_size`, `nil` disables) — a payload describes the event; the data your workflow works on belongs on the hero.
+
+> [!WARNING]
+> Matchers run at the gate *and* inside `signal!`, in the sender's process. Keep them cheap and free of side effects, exactly like `skip_if:`. A matcher that raises during `signal!` raises to whoever sent the signal — and because `signal!` is a single transaction, the delivery rolls back whole: no signal row is recorded, nothing is attached or woken, no counter moves. The sender (or the webhook provider's retry) re-delivers once the matcher is fixed.
+
+### How Waiting Composes
+
+- `wait: 2.days, wait_for: :payment_confirmed` means "no earlier than two days from now, and only once signaled". A signal arriving during the delay is buffered and claimed when the step finally runs.
+- `skip_if:` is evaluated before waiting, so "wait for the signature — unless the contract was pre-signed" skips immediately instead of parking forever. Both `skip_if:` and `cancel_if` are re-evaluated when a signal wakes the step; a parked workflow does not re-check them while it sleeps. A step skipped at wake consumes the signal that woke it, so the next waiter does not inherit a stale event.
+- `resumable_step` accepts `wait_for:`. The wait happens once, at the start of the chain, and `received_signal` stays the same across every successor execution.
+- A reattempt — yours or an exception policy's — re-reads the *same* signal. Reattempting means "process this event again", not "wait for another event".
+
+The signal itself moves through `pending` → `claimed` → `consumed`. It is claimed when an execution attaches to it, and consumed once every attached execution has finished cleanly, in the same transaction as the step's own completion. A step that fails, pauses, or gets canceled leaves its signal claimed, so the retry picks up the same payload and the audit trail does not claim an event was handled when it was not.
+
+Skipping counts as finishing: skipping a step that was delivered a signal consumes that signal, whether the skip came from `skip_if:`, from `skip!` inside the step, from an exception policy, or from an operator calling `workflow.skip!` on a ready or paused workflow. Moving past a step deliberately settles the event it was given. Skipping a step that never attached — one still parked, or one whose `skip_if:` fired before it ever looked for a signal — leaves buffered signals exactly as they were.
+
+Two counters on the row make that legible: `signal.claimed` counts attachments (a step that failed and was retried attaches twice), and `signal.consumed` counts cleanly resolved ones. In a linear workflow they end at one apiece. The predicates `signal.claimed?` and `signal.consumed?` read those counters, so they answer "was this event ever picked up" and "was it ever handled" — which is not the same question as `signal.state`, and is usually the one worth asking.
+
+> [!NOTE]
+> Two sequential steps waiting on `:payment_confirmed` need two signals. The first step consumes the first signal, so the second step parks until another one arrives.
+
+### Getting Unstuck
+
+There is no `timeout:` option. Waiting forever is a legitimate state — a contract may genuinely sit unsigned for months — so instead of a timer, waiting is made loud: a distinct `waiting` state, a `waiting_since` timestamp, and two housekeeping gauges, `geneva_drive.waiting_step_executions` and `geneva_drive.waiting_overdue` (parked longer than `GenevaDrive.waiting_visibility_threshold`, seven days by default). Alert on the overdue gauge.
+
+When something does stall, three escape hatches already exist:
+
+- `workflow.skip!` abandons the wait and moves to the next step.
+- `workflow.cancel!` gives up on the workflow.
+- The queue is already a clock: schedule a job that signals a deadline, and let the step decide.
+
+```ruby
+# Send the workflow its own deadline; the step reads it off the payload
+class ContractDeadlineJob < ApplicationJob
+  def perform(contract)
+    workflow = ContractWorkflow.ongoing.for_hero(contract).first
+    workflow&.signal!(:document_signed,
+      payload: {timed_out: true},
+      idempotency_key: "deadline-#{workflow.id}")
+  end
+end
+
+step :await_countersignature, wait_for: :document_signed do
+  cancel! if received_signal.payload[:timed_out]
+  hero.mark_countersigned!
+end
+```
+
+### Testing Waiting Steps
+
+The step-driving helpers refuse to spin on a parked execution — they raise and tell you which signal is missing, because a test that hangs on a rendezvous is far worse than one that fails:
+
+```ruby
+test "captures once the payment is confirmed" do
+  workflow = OrderFulfillmentWorkflow.create!(hero: order)
+  perform_next_step(workflow)                    # :reserve_stock
+  perform_next_step(workflow)                    # :capture_payment parks
+
+  assert_waiting_for_signal(workflow, :payment_confirmed)
+
+  workflow.signal!(:payment_confirmed, payload: {amount_cents: 12_500})
+  speedrun_workflow(workflow)
+
+  assert_signal_state(workflow, :payment_confirmed, :consumed)
+  assert workflow.finished?
+end
+```
+
 ## Exception Handling
 
 ### Default Behavior
@@ -1080,6 +1253,7 @@ Step executions have their own state machine:
 | State | Meaning |
 |-------|---------|
 | `scheduled` | Waiting to run |
+| `waiting` | Parked until a matching signal arrives |
 | `in_progress` | Currently executing |
 | `completed` | Finished successfully |
 | `failed` | Exception occurred |
@@ -1980,6 +2154,7 @@ end
 | State | Meaning |
 |-------|---------|
 | `scheduled` | Waiting to run |
+| `waiting` | Parked until a matching signal arrives |
 | `in_progress` | Currently executing |
 | `completed` | Finished successfully |
 | `failed` | Exception occurred |
@@ -1993,6 +2168,7 @@ A resumable step interrupted mid-iteration completes its execution with outcome 
 | Option | Type | Description |
 |--------|------|-------------|
 | `wait:` | Duration | Delay before step executes |
+| `wait_for:` | Symbol, String, `SignalMatcher`, matcher object | Park until a matching signal arrives |
 | `job_options:` | Hash | Options passed to Active Job's `set` method for this step |
 | `skip_if:` | Proc, Symbol, Boolean | Condition to skip step |
 | `on_exception:` | Symbol | Exception handler (`:pause!`, `:cancel!`, `:reattempt!`, `:skip!`) |

@@ -55,6 +55,8 @@ class ActiveSupport::TestCase
   setup do
     GenevaDrive::StepExecution.reset_metadata_column_cache!
     GenevaDrive::StepExecution.reset_resumable_columns_cache!
+    GenevaDrive::StepExecution.reset_signal_columns_cache!
+    GenevaDrive::Signal.reset_table_available_cache!
     GenevaDrive::Workflow.reset_metadata_column_cache!
   end
 

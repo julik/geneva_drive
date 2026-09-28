@@ -15,6 +15,10 @@ class GenevaDrive::StepDefinition
   # Valid types for skip conditions
   VALID_SKIP_CONDITION_TYPES = [Symbol, Proc, TrueClass, FalseClass, NilClass].freeze
 
+  # Types that mean "a delay" and therefore belong to wait:, never wait_for:.
+  # ActiveSupport::Duration is a Numeric-alike but not a Numeric, hence both.
+  DURATION_SHAPED_TYPES = [ActiveSupport::Duration, Numeric, Time, Date].freeze
+
   # @return [String] the step name
   attr_reader :name
 
@@ -45,6 +49,12 @@ class GenevaDrive::StepDefinition
   # @return [Array<String, Integer>, nil] source location of the step block [path, lineno]
   attr_reader :block_location
 
+  # @return [Symbol, String, Object, nil] the raw wait_for: option
+  attr_reader :wait_for
+
+  # @return [GenevaDrive::SignalMatcher, nil] the normalized signal matcher, if this step waits
+  attr_reader :signal_matcher
+
   # Creates a new step definition.
   #
   # @param name [String, Symbol] the step name
@@ -69,6 +79,7 @@ class GenevaDrive::StepDefinition
     @call_location = call_location
     @block_location = block_location
     @wait = options[:wait]
+    @wait_for = options[:wait_for]
     @job_options = options.fetch(:job_options, {})
     @skip_if_option = options[:skip_if]
     @if_option = options[:if]
@@ -83,6 +94,7 @@ class GenevaDrive::StepDefinition
     validate!
     @job_options = GenevaDrive::JobOptions.validate!(@job_options, context: "Step '#{@name}'").freeze
     @exception_policy = build_exception_policy
+    @signal_matcher = build_signal_matcher
   end
 
   # Returns the action symbol from the exception policy.
@@ -119,6 +131,13 @@ class GenevaDrive::StepDefinition
     false
   end
 
+  # Whether this step parks until a matching signal arrives.
+  #
+  # @return [Boolean]
+  def waits_for_signal?
+    !@signal_matcher.nil?
+  end
+
   # Executes the step callable in the context of the workflow.
   #
   # @param workflow [GenevaDrive::Workflow] the workflow instance
@@ -144,6 +163,58 @@ class GenevaDrive::StepDefinition
     validate_terminal_action_raw!
     validate_positioning!
     validate_skip_condition!
+    validate_wait_for!
+  end
+
+  # Normalizes wait_for: into a matcher. A bare name becomes a
+  # {GenevaDrive::SignalMatcher}; anything else already is one (or quacks
+  # like one).
+  #
+  # @return [Object, nil] an object responding to #matches?(signal)
+  def build_signal_matcher
+    return nil if @wait_for.nil?
+    return GenevaDrive::SignalMatcher.new(@wait_for) if signal_shaped_name?(@wait_for)
+
+    @wait_for
+  end
+
+  # Whether the value is a plain signal name.
+  #
+  # @param value [Object]
+  # @return [Boolean]
+  def signal_shaped_name?(value)
+    value.is_a?(Symbol) || value.is_a?(String)
+  end
+
+  # Whether the value means "a delay" and therefore belongs to wait:.
+  #
+  # @param value [Object]
+  # @return [Boolean]
+  def duration_shaped?(value)
+    DURATION_SHAPED_TYPES.any? { |type| value.is_a?(type) }
+  end
+
+  # Validates wait_for:, including the swap guard that catches a duration
+  # passed to it. wait: and wait_for: read alike and take disjoint types, so
+  # each direction of the mistake gets an error naming the kwarg the author
+  # meant (the other direction lives in validate_wait!).
+  #
+  # @raise [StepConfigurationError] if the option is invalid or swapped
+  def validate_wait_for!
+    return if @wait_for.nil?
+
+    if duration_shaped?(@wait_for)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has wait_for: #{@wait_for.inspect} — wait_for: takes a signal name or " \
+        "matcher; to delay the step, use wait:"
+    end
+
+    return if signal_shaped_name?(@wait_for)
+    return if @wait_for.respond_to?(:matches?)
+
+    raise GenevaDrive::StepConfigurationError,
+      "Step '#{@name}' has invalid wait_for: must be a Symbol, String, GenevaDrive::SignalMatcher, " \
+      "or an object responding to #matches?(signal), but was #{@wait_for.class}"
   end
 
   # Builds the ExceptionPolicy from validated raw inputs.
@@ -196,9 +267,19 @@ class GenevaDrive::StepDefinition
 
   # Validates the wait duration.
   #
-  # @raise [StepConfigurationError] if wait is negative
+  # @raise [StepConfigurationError] if wait is negative or signal-shaped
   def validate_wait!
     return if @wait.nil?
+
+    # The other half of the wait:/wait_for: swap guard. Durations are numbers
+    # or Durations, never Strings - and a String sails through the to_i check
+    # below as a zero-second wait, so this arm tightens wait: for everyone.
+    if signal_shaped_name?(@wait) || @wait.respond_to?(:matches?)
+      raise GenevaDrive::StepConfigurationError,
+        "Step '#{@name}' has wait: #{@wait.inspect} — wait: takes a duration; to wait for a " \
+        "signal, use wait_for:"
+    end
+
     return if @wait.respond_to?(:to_i) && @wait.to_i >= 0
 
     raise GenevaDrive::StepConfigurationError,

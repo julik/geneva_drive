@@ -42,3 +42,7 @@ additional_reference/
 
 # Built gems
 /pkg/
+
+# Scratch directory - keep the directory, ignore everything in it
+/tmp/*
+!/tmp/.keep

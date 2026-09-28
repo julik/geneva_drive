@@ -42,6 +42,98 @@ class SyntaxHighlightingHTML < Redcarpet::Render::HTML
   end
 end
 
+# GitHub-Flavored Markdown alerts: `> [!NOTE]` etc. Redcarpet emits these
+# as ordinary blockquotes, so we post-process the HTML to spot the marker,
+# strip it, and rewrite the blockquote with an alert class + title.
+# GitHub knows exactly these five and matches them case-sensitively —
+# `[!note]` or `[!FOO]` stay literal text there, and so must they here.
+GFM_ALERT_TYPES = %w[NOTE TIP IMPORTANT WARNING CAUTION].freeze
+# Only spaces/tabs and one line ending may follow the marker. `\s*` would
+# swallow the blank line separating the marker from a following paragraph.
+GFM_ALERT_PATTERN = /\A\[!(#{GFM_ALERT_TYPES.join("|")})\][ \t]*\r?\n?/
+
+# The marker opens the text of a paragraph. GitHub insists it sit alone on the
+# blockquote's first line; we are laxer and also accept body text trailing it
+# on the same line, rather than leaving a half-parsed `[!NOTE]` on the page.
+def alert_marker_of(child)
+  return nil unless child.element? && child.name == "p"
+  first_text = child.children.first
+  return nil unless first_text&.text?
+  match = first_text.content.match(GFM_ALERT_PATTERN)
+  match && match[1]
+end
+
+# Take the marker out of the paragraph it introduces and keep everything else,
+# element children included — that is the whole point: an alert whose body
+# opens with `**bold**` has the marker and a <strong> in the same <p>, so we
+# may only edit that leading text node, never replace the paragraph.
+def strip_alert_marker!(paragraph)
+  first_text = paragraph.children.first
+  first_text.content = first_text.content.sub(GFM_ALERT_PATTERN, "") if first_text&.text?
+
+  # A marker line ending in two spaces is a Markdown hard break, so Redcarpet
+  # leaves a <br> where the marker was. Drop that leading padding, otherwise
+  # the alert body opens with a blank line.
+  while (node = paragraph.children.first)
+    blank_text = node.text? && node.content.strip.empty?
+    break unless blank_text || (node.element? && node.name == "br")
+    node.remove
+  end
+
+  # The marker was alone on its line: the paragraph has nothing left to say.
+  paragraph.remove if paragraph.children.empty?
+end
+
+def transform_gfm_alerts(html_body)
+  doc = Nokogiri::HTML::DocumentFragment.parse(html_body)
+  doc.css("blockquote").each do |bq|
+    # Redcarpet collapses adjacent blockquotes into one, so a single
+    # <blockquote> may carry several `[!TYPE]` markers. Partition its
+    # children into segments, each introduced by a marker (or the
+    # untagged preamble before any marker).
+    segments = [[nil, []]]
+    bq.children.to_a.each do |child|
+      marker = alert_marker_of(child)
+      if marker
+        segments << [marker, [child]]
+      else
+        segments.last[1] << child
+      end
+    end
+    segments.reject! do |_, nodes|
+      nodes.all? { |n| n.text? && n.content.strip.empty? }
+    end
+
+    # Nothing to do if no markers appeared at all.
+    next if segments.all? { |type, _| type.nil? }
+
+    prev = bq
+    segments.each_with_index do |(type, children), i|
+      new_bq = Nokogiri::XML::Node.new("blockquote", bq.document)
+      children.each { |c| new_bq.add_child(c) }
+
+      if type
+        first_p = new_bq.children.find(&:element?)
+        strip_alert_marker!(first_p) if first_p && first_p.name == "p"
+
+        title = Nokogiri::XML::Node.new("p", bq.document)
+        title["class"] = "markdown-alert-title"
+        title.content = type.capitalize
+        new_bq.prepend_child(title)
+        new_bq["class"] = "markdown-alert markdown-alert-#{type.downcase}"
+      end
+
+      if i == 0
+        bq.replace(new_bq)
+      else
+        prev.add_next_sibling(new_bq)
+      end
+      prev = new_bq
+    end
+  end
+  doc.to_html
+end
+
 def build_toc(html_body)
   doc = Nokogiri::HTML::DocumentFragment.parse(html_body)
   headings = doc.css("h1, h2")
@@ -82,6 +174,11 @@ def html_template(title, content, toc: "")
       --table-border: #dfe2e5;
       --blockquote-color: #6a737d;
       --blockquote-border: #dfe2e5;
+      --alert-note: #0969da;
+      --alert-tip: #1a7f37;
+      --alert-important: #8250df;
+      --alert-warning: #9a6700;
+      --alert-caution: #cf222e;
       --toc-width: 280px;
     }
 
@@ -246,6 +343,22 @@ def html_template(title, content, toc: "")
     blockquote > :last-child {
       margin-bottom: 0;
     }
+
+    /* GitHub-Flavored Markdown alerts (> [!NOTE] etc.) */
+    .markdown-alert {
+      color: var(--text-color);
+      padding: 0.5em 1em;
+    }
+    .markdown-alert-title {
+      font-weight: 600;
+      margin: 0 0 0.25em;
+      color: var(--alert-accent, inherit);
+    }
+    .markdown-alert-note      { border-left-color: var(--alert-note);      --alert-accent: var(--alert-note); }
+    .markdown-alert-tip       { border-left-color: var(--alert-tip);       --alert-accent: var(--alert-tip); }
+    .markdown-alert-important { border-left-color: var(--alert-important); --alert-accent: var(--alert-important); }
+    .markdown-alert-warning   { border-left-color: var(--alert-warning);   --alert-accent: var(--alert-warning); }
+    .markdown-alert-caution   { border-left-color: var(--alert-caution);   --alert-accent: var(--alert-caution); }
 
     /* Horizontal rules */
     hr {
@@ -444,6 +557,7 @@ def convert_markdown_to_html(input_path, output_path = nil, toc: true)
   })
 
   html_body = markdown.render(markdown_content)
+  html_body = transform_gfm_alerts(html_body)
   toc_html = toc ? build_toc(html_body) : ""
   html_document = html_template(title, html_body, toc: toc_html)
 

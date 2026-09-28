@@ -8,6 +8,8 @@ GenevaDrive provides a clean DSL for defining multi-step workflows that execute 
 
 - **Hero-oriented**: Workflows are associated with a polymorphic "hero" (the subject of the workflow)
 - **Step-based execution**: Define workflows as a series of steps with optional wait times
+- **Resumable steps**: Iterate over large collections with a database-checkpointed cursor, surviving interruptions
+- **Signals**: Steps can park until an external event arrives (`wait_for:`), woken by `workflow.signal!` from a webhook or controller
 - **Durable**: Steps are persisted to the database, surviving process restarts
 - **Idempotent**: Database constraints ensure each step runs exactly once
 - **Flow control**: Methods like `cancel!`, `pause!`, `skip!`, `reattempt!`, and `finished!`

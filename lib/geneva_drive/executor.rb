@@ -327,6 +327,24 @@ class GenevaDrive::Executor
         next nil
       end
 
+      # A step declared with `removed_step` is a gravestone: scheduling stopped
+      # spooling executions for it, but one scheduled before the removal was
+      # deployed can still arrive here. The author of the removal has already
+      # said this step no longer needs to happen, so skip it and move on rather
+      # than pausing the workflow the way an undeclared removal does.
+      if step_def.removed?
+        logger.info("Step '#{step_execution.step_name}' is declared removed_step — skipping it and continuing")
+
+        transition_step!("skipped", outcome: "skipped")
+        # The execution may have been carrying a signal when the step was
+        # removed under it; settle it here rather than leaving it claimed
+        # forever, exactly as a skip_if skip does.
+        workflow.settle_signal_for_skipped!(step_execution)
+        transition_workflow!("ready")
+        workflow.schedule_next_step!
+        next nil
+      end
+
       # Resumable steps need the cursor and continues_from_id columns. Fail
       # loudly (instead of degrading) - without cursor persistence an
       # interrupted iteration would silently restart from the beginning.

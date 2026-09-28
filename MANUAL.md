@@ -325,6 +325,80 @@ end
 
 The referenced step must already be defined — you can only insert before or after steps that appear earlier in the class body.
 
+### Removing a Step with `removed_step`
+
+Deleting a `step` is not safe while workflows are in flight. Step executions are rows scheduled ahead of time, so at the moment a deploy lands there are workflows holding a row that names a step the new code no longer has. When such a row's job runs, the executor finds no definition and pauses the workflow with `StepNotDefinedError`. During a rolling deploy this can happen to every workflow sitting on that step at once.
+
+GenevaDrive cannot recover from this by itself, and the reason is worth being precise about. It knows the step is gone. It does not know whether the work that step did still needs doing, and — more importantly — it does not know which of the remaining steps would have run had it executed. A step's position in the sequence says nothing about reachability: a `capture_payment` that normally ends the workflow by calling `finished!` sits directly before `refund`, and nothing in the database distinguishes "carry on to the next one" from "stop here". Skipping forward on the workflow's behalf would, in exactly that case, issue a refund for a payment that was never captured. So the executor pauses and waits for a human, which is the only correct thing it can do on its own.
+
+`removed_step` is how you tell it the answer in advance. Declare it in the position the step used to occupy:
+
+```ruby
+class PaymentWorkflow < GenevaDrive::Workflow
+  step :authorize do
+    PaymentGateway.authorize(hero)
+  end
+
+  removed_step :capture_payment
+
+  step :send_receipt do
+    ReceiptMailer.receipt(hero).deliver_later
+  end
+end
+```
+
+The declaration is an assertion only you can make: *this step no longer needs to happen, carry on past it.* Having been told, GenevaDrive can act without guessing:
+
+- Executions already scheduled under the old name resolve, are marked `skipped`, and the workflow proceeds to the next runnable step.
+- Scheduling never spools a new execution for the name again — a new `PaymentWorkflow` goes `authorize` → `send_receipt`.
+- `before_step:` / `after_step:` references to the name keep working.
+- An execution parked on the step waiting for a signal is released on `resume!` instead of waiting for an event that can no longer match.
+
+A removed step takes a name and nothing else. There is nothing to configure about a step that does not run.
+
+Because the gravestone is in the source, in order, the decision is visible in the diff that removes the step — which is where a reviewer can still object to it.
+
+### Retiring the Gravestone
+
+A `removed_step` line is temporary. It can go once no step execution row can land on it any more, which is a question you can ask directly:
+
+```ruby
+PaymentWorkflow.removed_steps_in_flight
+# => {"capture_payment" => 3}   # three rows still point at it — leave the line in place
+# => {}                          # drained — the removed_step line can be deleted
+```
+
+Rows belonging to finished and canceled workflows are ignored, since they will never execute again. The full lifecycle is: replace `step` with `removed_step` and deploy; let in-flight workflows drain past it; delete the line in a later deploy once `removed_steps_in_flight` comes back empty.
+
+### Recovering a Workflow Stranded by a Deleted Step
+
+If a step was deleted without leaving a gravestone, the workflows that were sitting on it are paused and pointed at a name that no longer resolves. Plain `resume!` has nowhere to send them and says so:
+
+```ruby
+workflow.resume!
+# GenevaDrive::StepNotDefinedError: Cannot resume PaymentWorkflow #42: step 'capture_payment'
+# is no longer defined in PaymentWorkflow. Pick the step to continue from with
+# resume_at!(:step_name) — the steps still defined are authorize, send_receipt — or cancel!
+# the workflow. ...
+```
+
+`resume_at!` is the escape hatch. You name the step to continue from, because only you know what the deleted step would have done:
+
+```ruby
+workflow.resume_at!(:send_receipt)
+```
+
+It cancels any stray execution, points the workflow at the named step, and continues from there. It refuses names that are not defined, and refuses to land on a `removed_step`. To find the affected workflows:
+
+```ruby
+GenevaDrive::Workflow.paused
+  .joins(:step_executions)
+  .where(geneva_drive_step_executions: {error_class_name: "GenevaDrive::StepNotDefinedError"})
+  .distinct
+```
+
+If the workflow should not continue at all, `cancel!` it.
+
 ## Conditional Execution
 
 ### Skipping Steps with `skip_if:`
@@ -1227,7 +1301,12 @@ end
 # Resume a specific workflow
 workflow = GenevaDrive::Workflow.find(id)
 workflow.resume!  # Re-enqueues existing scheduled step or creates new one
+
+# Or continue from a specific step, when the step it was pointed at is gone
+workflow.resume_at!(:send_receipt)
 ```
+
+`resume_at!` exists for workflows paused on a step that no longer exists in the code. See [Recovering a Workflow Stranded by a Deleted Step](#recovering-a-workflow-stranded-by-a-deleted-step).
 
 ## Workflow States
 
@@ -1957,7 +2036,11 @@ The workflow will sit in `paused` state — holding the slot, preventing duplica
 
 ### Pause on missing step definitions
 
-There is one more scenario where pause happens automatically. If a workflow references a step name that no longer exists in the class definition — typically after a deploy that removed or renamed a step — the executor pauses the workflow rather than silently skipping or crashing. This gives operators a chance to notice the mismatch and decide whether to skip, cancel, or deploy a fix.
+There is one more scenario where pause happens automatically. If a workflow references a step name that no longer exists in the class definition — typically after a deploy that removed or renamed a step — the executor pauses the workflow rather than silently skipping or crashing.
+
+This is not a limitation to be worked around. The executor knows the step is gone but not whether the steps after it were ever meant to run, and guessing wrong means performing work the missing step would have prevented. Pausing hands that judgement to someone who has it.
+
+Declare `removed_step :name` when you take a step out and the judgement is recorded ahead of time, so nothing pauses; see [Removing a Step with `removed_step`](#removing-a-step-with-removed_step). For workflows already stranded by a step deleted without one, `resume_at!` is the way back — see [Recovering a Workflow Stranded by a Deleted Step](#recovering-a-workflow-stranded-by-a-deleted-step).
 
 ## Complete Example Workflows
 

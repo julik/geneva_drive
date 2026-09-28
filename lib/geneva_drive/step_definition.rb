@@ -131,6 +131,15 @@ class GenevaDrive::StepDefinition
     false
   end
 
+  # Returns whether this step is a gravestone left by `removed_step`.
+  # Removed steps keep their name resolvable for executions scheduled before
+  # the step was taken out, but are never scheduled and never run.
+  #
+  # @return [Boolean] false for standard steps
+  def removed?
+    false
+  end
+
   # Whether this step parks until a matching signal arrives.
   #
   # @return [Boolean]

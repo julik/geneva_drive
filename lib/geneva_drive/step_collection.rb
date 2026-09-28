@@ -65,30 +65,54 @@ class GenevaDrive::StepCollection
     ordered_steps[position]
   end
 
-  # Returns the next step after the given step name.
+  # Returns the next runnable step after the given step name.
+  #
+  # Steps declared with `removed_step` are stepped over: they hold a position
+  # in the sequence so that executions scheduled before their removal still
+  # resolve, but no execution is ever scheduled for one.
+  #
+  # A nil current_name means "the beginning", so the first runnable step is
+  # returned - which is how the first step of a workflow is chosen.
   #
   # @param current_name [String, Symbol, nil] the current step name
-  # @return [StepDefinition, nil] the next step or nil if at end
+  # @return [StepDefinition, nil] the next runnable step or nil if at end
   def next_after(current_name)
-    return first if current_name.nil?
+    return ordered_steps.find { |s| !s.removed? } if current_name.nil?
 
     current_index = ordered_steps.index { |s| s.name == current_name.to_s }
     return nil unless current_index
 
-    self[current_index + 1]
+    ordered_steps[(current_index + 1)..].find { |s| !s.removed? }
   end
 
-  # Returns the step before the given step name in the ordered sequence.
+  # Returns the previous runnable step before the given step name in the
+  # ordered sequence. Removed steps are stepped over, for the same reason
+  # {#next_after} steps over them.
   #
   # @param current_name [String, Symbol, nil] the current step name
-  # @return [StepDefinition, nil] the previous step or nil if at beginning
+  # @return [StepDefinition, nil] the previous runnable step or nil if at beginning
   def previous_before(current_name)
     return nil if current_name.nil?
 
     current_index = find_index { |s| s.name == current_name.to_s }
     return nil unless current_index && current_index > 0
 
-    self[current_index - 1]
+    ordered_steps[0...current_index].reverse_each.find { |s| !s.removed? }
+  end
+
+  # Returns the steps that can actually run, in order, with `removed_step`
+  # gravestones filtered out.
+  #
+  # @return [Array<StepDefinition>] the runnable step definitions
+  def runnable
+    ordered_steps.reject(&:removed?)
+  end
+
+  # Returns the `removed_step` gravestones, in order.
+  #
+  # @return [Array<StepDefinition>] the removed step definitions
+  def removed
+    ordered_steps.select(&:removed?)
   end
 
   # Checks if a step exists with the given name.

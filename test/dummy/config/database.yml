@@ -1,13 +1,15 @@
-# PostgreSQL configuration for GenevaDrive test suite
+# The test suite runs against SQLite by default so that a fresh clone can run
+# `rake` with no database server. CI overrides this with DATABASE_URL to also
+# exercise PostgreSQL and MySQL.
 default: &default
-  adapter: postgresql
-  encoding: unicode
+  adapter: sqlite3
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  timeout: 5000
 
 development:
   <<: *default
-  database: geneva_drive_development
+  database: storage/development.sqlite3
 
 test:
   <<: *default
-  database: geneva_drive_test
+  database: db/test.sqlite3

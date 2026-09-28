@@ -12,9 +12,14 @@ Gemfile.lock
 
 # Test dummy app
 /test/dummy/db/*.sqlite3
+# Parallel test workers get one database each, suffixed -0/_0 depending on the Rails version
 /test/dummy/db/*.sqlite3-*
+/test/dummy/db/*.sqlite3_*
 /test/dummy/db/migrate/*geneva_drive*.rb
 /test/dummy/db/schema.rb
+/test/dummy/db/.schema_adapter
+# Written by the install generator when the test suite prepares the dummy app
+/test/dummy/config/initializers/geneva_drive.rb
 /test/dummy/log/*.log*
 /test/dummy/storage/
 /test/dummy/tmp/

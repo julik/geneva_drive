@@ -7,30 +7,58 @@ require_relative "../test/dummy/config/environment"
 ActiveRecord::Migrator.migrations_paths = [File.expand_path("../test/dummy/db/migrate", __dir__)]
 ActiveRecord::Migrator.migrations_paths << File.expand_path("../db/migrate", __dir__)
 
-# Ensure GenevaDrive migrations exist and database is prepared.
-# The generator is the single source of truth for migrations.
+# Bring the dummy app's database in line with the migrations the install
+# generator produces, recreating it from scratch whenever it has drifted.
+#
+# Rebuilding rather than migrating forward is deliberate. The generated
+# migrations are gitignored and get fresh timestamps every time they are
+# regenerated, so a database left behind by an earlier generation records
+# versions that no longer exist on disk: every migration reads as pending, and
+# replaying them onto the existing tables just fails on "table already exists".
 unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
   GENEVA_DRIVE_TEST_DB_PREPARED = true
 
   dummy_root = File.expand_path("../test/dummy", __dir__)
-  migrations = Dir.glob("#{dummy_root}/db/migrate/*geneva_drive*.rb")
-  tables_exist = begin
-    ActiveRecord::Base.connection.table_exists?("geneva_drive_workflows")
-  rescue
-    false
-  end
+  schema_file = File.join(dummy_root, "db/schema.rb")
+  # db/schema.rb is adapter-specific - a PostgreSQL dump carries jsonb columns
+  # SQLite cannot load - and parallelize() builds every worker database out of
+  # it, so the dump has to be rebuilt when the adapter under test changes. That
+  # is not recorded anywhere in the dump itself, hence the stamp beside it.
+  adapter_stamp = File.join(dummy_root, "db/.schema_adapter")
+  adapter = ActiveRecord::Base.connection_db_config.adapter
 
-  if migrations.empty? && !tables_exist
+  # The generator is the single source of truth for migrations.
+  if Dir.glob("#{dummy_root}/db/migrate/*geneva_drive*.rb").empty?
     puts "Generating GenevaDrive migrations..."
     Dir.chdir(dummy_root) do
       system("bin/rails", "generate", "geneva_drive:install", "--skip") || abort("Failed to generate migrations")
-      system("bin/rails", "db:migrate") || abort("Failed to run migrations")
     end
-  elsif migrations.any? && !tables_exist
-    puts "Running pending migrations..."
+  end
+
+  on_disk = Dir.glob("#{dummy_root}/db/migrate/*.rb").map { |path| File.basename(path)[/\A\d+/] }
+  applied = begin
+    ActiveRecord::Base.connection.select_values("SELECT version FROM schema_migrations").map(&:to_s)
+  rescue
+    [] # No database, or no schema_migrations in it yet
+  end
+  dumped_for = File.exist?(adapter_stamp) ? File.read(adapter_stamp).strip : nil
+
+  if (on_disk - applied).any? || !File.exist?(schema_file) || dumped_for != adapter
+    puts "Recreating the #{adapter} test database..."
+    # db:migrate seeds an empty database from db/schema.rb before applying
+    # anything, so the outdated dump has to go first - otherwise it recreates
+    # exactly the tables the migrations are about to create.
+    File.delete(schema_file) if File.exist?(schema_file)
+    # bin/rails cannot drop a database this process still holds a connection to.
+    ActiveRecord::Base.connection_handler.clear_all_connections!
     Dir.chdir(dummy_root) do
-      system("bin/rails", "db:prepare") || abort("Failed to prepare database")
+      # One bin/rails per task, deliberately. Asking a single process to drop,
+      # recreate and migrate carries its column cache across the drop, and the
+      # schema it then dumps silently loses column defaults.
+      system("bin/rails", "db:drop") || abort("Failed to drop the test database")
+      system("bin/rails", "db:prepare") || abort("Failed to recreate the test database")
     end
+    File.write(adapter_stamp, adapter)
   end
 end
 

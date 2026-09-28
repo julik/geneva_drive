@@ -16,7 +16,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 3.4.4
+          ruby-version-file: .ruby-version
           bundler-cache: true
 
       - name: Lint code for consistent style
@@ -31,12 +31,15 @@ jobs:
       fail-fast: false
       matrix:
         rails:
-          - rails_7
-          - rails_8
+          - rails_7_2
+          - rails_8_0
+          - rails_8_1
         database:
           - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
           - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
-          - { name: 'SQLite', url: 'sqlite3:test/dummy/db/test.sqlite3' }
+          # Absolute path: test_helper shells out to bin/rails from test/dummy, so a
+          # relative sqlite path would resolve to a different file in that subprocess.
+          - { name: 'SQLite', url: 'sqlite3:${{ github.workspace }}/test/dummy/db/test.sqlite3' }
 
     services:
       postgres:
@@ -66,8 +69,10 @@ jobs:
           --health-retries 5
 
     steps:
+      # Must run before setup-ruby: bundler-cache builds the pg and mysql2 native
+      # extensions, which need the client headers.
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev default-libmysqlclient-dev
 
       - name: Checkout code
         uses: actions/checkout@v7
@@ -75,7 +80,7 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 3.4.4
+          ruby-version-file: .ruby-version
           bundler-cache: true
 
       - name: Run tests
@@ -83,4 +88,4 @@ jobs:
         env:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
-        run: bundle exec ruby -Itest bin/test
+        run: bundle exec rake test

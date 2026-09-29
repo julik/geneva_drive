@@ -83,6 +83,11 @@ bin/matrix rails_8_1        # one Rails version, all engines
 bin/matrix rails_8_1 mysql  # one cell
 ```
 
+Engines are `sqlite`, `postgres`, `mysql` and `mariadb`. MariaDB is worth
+running whenever a migration touches a JSON column: it has no JSON type, so it
+is the one engine where `geneva_drive_json_column` picks LONGTEXT and the
+encoding happens in the model instead of the adapter.
+
 CI runs this same script, one cell per job, so a green `bin/matrix` and a green
 build mean the same thing. The Rails versions come from `gemfiles/*.gemfile`
 on both sides, so a new appraisal is picked up without editing either.

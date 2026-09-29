@@ -67,6 +67,21 @@ if ActiveSupport::TestCase.respond_to?(:fixture_paths=)
   ActiveSupport::TestCase.fixtures :all
 end
 
+# Rails 8.1 clears Active Record's connections before forking the parallel test
+# workers. 7.2 and 8.0 fork with them still open, and a libpq connection
+# inherited across the fork takes the child down with a segfault in
+# PG::Connection#connect_start as it opens its own - a race, so it only bites
+# some of the time, which makes it maddening rather than merely broken. Where
+# upstream has no pre-fork hook to register on, wrap the fork point itself.
+unless ActiveSupport::Testing::Parallelization.respond_to?(:before_fork_hook)
+  ActiveSupport::Testing::Parallelization.prepend(Module.new do
+    def start
+      ActiveRecord::Base.connection_handler.clear_all_connections!
+      super
+    end
+  end)
+end
+
 # Test helper methods
 class ActiveSupport::TestCase
   # Run tests in parallel with specified workers

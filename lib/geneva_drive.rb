@@ -39,6 +39,7 @@ module GenevaDrive
   autoload :FlowControl, "geneva_drive/flow_control"
   autoload :StepDefinition, "geneva_drive/step_definition"
   autoload :ResumableStepDefinition, "geneva_drive/resumable_step_definition"
+  autoload :RemovedStepDefinition, "geneva_drive/removed_step_definition"
   autoload :StepCollection, "geneva_drive/step_collection"
   autoload :Workflow, "geneva_drive/workflow"
   autoload :StepExecution, "geneva_drive/step_execution"

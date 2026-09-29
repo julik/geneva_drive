@@ -206,6 +206,92 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       step_def
     end
 
+    # Marks a step as removed, leaving a gravestone in the position the step
+    # used to occupy.
+    #
+    # Deleting a `step` outright is unsafe while workflows are in flight.
+    # Executions scheduled under the old name find no definition when their
+    # job runs, and the workflow pauses with {StepNotDefinedError} - stuck
+    # until an operator intervenes. The gem cannot recover from this on its
+    # own: it knows the step is gone, but not whether the work it did still
+    # needs doing, and not which of the remaining steps would have run had it
+    # executed. Only the author of the removal knows that.
+    #
+    # `removed_step` is how that knowledge gets written down. Declaring it
+    # where the step used to be says "this step no longer needs to happen,
+    # carry on past it", and the gem can then act without guessing:
+    #
+    # - Executions already scheduled for the name resolve, are skipped, and
+    #   the workflow proceeds to the next runnable step.
+    # - Scheduling never spools a new execution for the name again.
+    # - `before_step:` / `after_step:` references to it keep working.
+    #
+    # Ship the `removed_step`, let in-flight workflows drain past it, then
+    # delete the line once {.removed_steps_in_flight} comes back empty.
+    #
+    # A removed step takes a name and nothing else. There is nothing to
+    # configure about a step that does not run.
+    #
+    # @param name [String, Symbol] the name of the step that was removed
+    # @return [RemovedStepDefinition] the gravestone
+    #
+    # @example Taking a step out of a live workflow
+    #   class PaymentWorkflow < GenevaDrive::Workflow
+    #     step :authorize do
+    #       # ...
+    #     end
+    #
+    #     removed_step :capture_payment
+    #
+    #     step :send_receipt do
+    #       # ...
+    #     end
+    #   end
+    def removed_step(name)
+      raise ArgumentError, "removed_step requires a step name" if name.nil?
+
+      caller_loc = caller_locations(1, 1).first
+      call_location = caller_loc ? [caller_loc.path, caller_loc.lineno] : nil
+
+      step_name = prepare_step_registration!(name, {})
+
+      step_def = GenevaDrive::RemovedStepDefinition.new(
+        name: step_name,
+        call_location: call_location
+      )
+
+      _step_definitions << step_def
+
+      step_def
+    end
+
+    # Returns the names of this workflow's removed steps that step execution
+    # rows still reference, so a `removed_step` gravestone is only deleted
+    # once nothing can land on it any more.
+    #
+    # Each name maps to the number of rows still referencing it. An empty
+    # hash means every in-flight workflow has drained past the removal and
+    # the `removed_step` lines can go.
+    #
+    # Rows belonging to finished and canceled workflows are ignored - they
+    # will never execute again.
+    #
+    # @return [Hash{String => Integer}] removed step names to referencing row counts
+    #
+    # @example
+    #   PaymentWorkflow.removed_steps_in_flight
+    #   # => {"capture_payment" => 3}
+    def removed_steps_in_flight
+      removed_names = steps.removed.map(&:name)
+      return {} if removed_names.empty?
+
+      GenevaDrive::StepExecution
+        .where(step_name: removed_names)
+        .where(workflow_id: where.not(state: %w[finished canceled]).select(:id))
+        .group(:step_name)
+        .count
+    end
+
     # Defines a blanket cancellation condition for the workflow.
     # Checked before every step execution.
     #
@@ -566,6 +652,73 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
     # No scheduled execution exists - create one for the next step
     step_def = steps.named(next_step_name)
+
+    # The step this workflow is pointed at can be gone from the code - that is
+    # what paused it in the first place if it paused with StepNotDefinedError.
+    # Say so plainly instead of dying on nil deeper in create_step_execution,
+    # and name the way out.
+    unless step_def
+      raise GenevaDrive::StepNotDefinedError.new(
+        "Cannot resume #{self.class.name} ##{id}: step '#{next_step_name}' is no longer defined in " \
+        "#{self.class.name}. Pick the step to continue from with resume_at!(:step_name) - the steps " \
+        "still defined are #{steps.runnable.map(&:name).join(", ")} - or cancel! the workflow. To stop " \
+        "future removals from stranding workflows this way, leave a removed_step :#{next_step_name} " \
+        "gravestone in place of the deleted step.",
+        step_execution: nil,
+        workflow: self
+      )
+    end
+
+    create_step_execution(step_def, wait: nil)
+  end
+
+  # Resumes a paused workflow at a specific step, instead of at whatever step
+  # it was pointed at when it paused.
+  #
+  # This is the operator's escape hatch for a workflow stranded on a step that
+  # no longer exists - the step was deleted without leaving a
+  # {GenevaDrive::Workflow.removed_step} gravestone, so the workflow paused
+  # with {StepNotDefinedError} and plain {#resume!} has nowhere to go.
+  #
+  # Where to land is deliberately a human decision. A deleted step's position
+  # in the sequence says nothing about whether the steps that follow it were
+  # ever meant to run: a `capture_payment` that normally ends the workflow by
+  # calling `finished!` sits directly before `refund`, and nothing in the
+  # database distinguishes "carry on" from "stop here". Only the person who
+  # removed the step knows which, so this method asks them.
+  #
+  # Any stray scheduled execution is canceled first, so the workflow continues
+  # from the named step and nowhere else.
+  #
+  # @param step_name [String, Symbol] the step to continue from
+  # @return [StepExecution] the created step execution
+  # @raise [InvalidStateError] if the workflow is not paused
+  # @raise [StepNotDefinedError] if the named step is not defined, or is a removed_step
+  #
+  # @example Continue a stranded workflow past a deleted step
+  #   workflow = GenevaDrive::Workflow.find(id)
+  #   workflow.resume_at!(:send_receipt)
+  def resume_at!(step_name)
+    raise GenevaDrive::InvalidStateError, "Cannot resume a #{state} workflow" unless state == "paused"
+
+    step_def = steps.named(step_name.to_s)
+
+    if step_def.nil? || step_def.removed?
+      reason = step_def ? "a removed_step" : "not defined"
+      raise GenevaDrive::StepNotDefinedError.new(
+        "Cannot resume #{self.class.name} ##{id} at '#{step_name}': that step is #{reason} in " \
+        "#{self.class.name}. The steps it can be resumed at are #{steps.runnable.map(&:name).join(", ")}.",
+        step_execution: nil,
+        workflow: self
+      )
+    end
+
+    logger.info("Resuming paused workflow at step #{step_def.name.inspect} (was pointed at #{next_step_name.inspect})")
+
+    with_lock do
+      update!(state: "ready", current_step_name: nil, transitioned_at: nil)
+    end
+
     create_step_execution(step_def, wait: nil)
   end
 
@@ -920,7 +1073,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #
   # @return [void]
   def log_workflow_created
-    step_count = self.class.step_definitions.size
+    step_count = steps.runnable.size
     logger.info("Created workflow with #{step_count} step(s) defined")
   end
 
@@ -928,7 +1081,10 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   #
   # @return [StepExecution, nil] the created step execution
   def schedule_first_step!
-    first_step = self.class.step_definitions.first
+    # next_after(nil) means "from the beginning" and honours both the
+    # before_step:/after_step: ordering and removed_step gravestones, neither
+    # of which the raw _step_definitions array knows about.
+    first_step = steps.next_after(nil)
     unless first_step
       logger.info("No steps defined, finishing workflow immediately")
       return finish_workflow!
@@ -981,6 +1137,18 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # @return [StepExecution] the same execution (rescheduled if a signal matched)
   def rendezvous_waiting_execution!(step_execution)
     step_def = step_execution.step_definition
+
+    # The step was removed while this execution sat parked. It waits for an
+    # event that nothing will ever match now, so release it here rather than
+    # leaving it parked for good.
+    if step_def&.removed?
+      logger.info("Step #{step_execution.step_name} was parked but is now a removed_step — releasing it and continuing")
+
+      step_execution.mark_skipped!
+      settle_signal_for_skipped!(step_execution)
+      return schedule_next_step!
+    end
+
     matcher = step_def&.signal_matcher
 
     if matcher

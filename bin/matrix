@@ -9,7 +9,10 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
-RAILS_VERSIONS=${1:-"rails_7_2 rails_8_0 rails_8_1"}
+# The gemfiles are generated from Appraisals, which makes them the one place
+# the supported Rails versions are written down. CI reads the same list off
+# them, so neither side can drift from the other.
+RAILS_VERSIONS=${1:-$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | tr '\n' ' ')}
 ENGINES=${2:-"sqlite postgres mysql"}
 
 for engine in $ENGINES; do
@@ -19,11 +22,17 @@ for engine in $ENGINES; do
   esac
 done
 
-case " $ENGINES " in
-  *" postgres "*|*" mysql "*)
-    docker compose up -d --wait || exit 1
-    ;;
-esac
+# Only the engines actually asked for - CI runs one cell per job and should not
+# be pulling a MySQL image to test against PostgreSQL.
+services=""
+for engine in $ENGINES; do
+  case "$engine" in
+    postgres|mysql) services="$services $engine" ;;
+  esac
+done
+if [ -n "$services" ]; then
+  docker compose up -d --wait $services || exit 1
+fi
 
 # Compose publishes to an ephemeral host port, so ask it which one it got.
 port_of() {

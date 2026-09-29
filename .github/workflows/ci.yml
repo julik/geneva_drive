@@ -22,55 +22,38 @@ jobs:
       - name: Lint code for consistent style
         run: bundle exec standardrb
 
+  # The appraisal gemfiles are generated from Appraisals, so they are the one
+  # place the supported Rails versions are written down. bin/matrix defaults to
+  # the same list, which is what keeps a local run and CI testing the same set.
+  appraisals:
+    name: "Work out the appraisal list"
+    runs-on: ubuntu-latest
+    outputs:
+      rails: ${{ steps.list.outputs.rails }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: List the appraisals
+        id: list
+        run: |
+          rails=$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | jq -R . | jq -sc .)
+          echo "rails=$rails" >> "$GITHUB_OUTPUT"
+          echo "Appraisals: $rails"
+
   test:
-    name: "Tests (${{ matrix.rails }}, ${{ matrix.database.name }})"
+    name: "Tests (${{ matrix.rails }}, ${{ matrix.database }})"
+    needs: appraisals
     runs-on: ubuntu-latest
     env:
+      # Job-level so that setup-ruby's bundler-cache keys on the right lockfile.
+      # bin/matrix sets the same value per cell.
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.rails }}.gemfile
     strategy:
       fail-fast: false
       matrix:
-        rails:
-          - rails_7_2
-          - rails_8_0
-          - rails_8_1
-        database:
-          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
-          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
-          # No URL at all: the dummy app already defaults to SQLite and works out
-          # its own path relative to Rails.root, which stays correct inside the
-          # bin/rails subprocess test_helper shells out to. Spelling it out here
-          # is not an option either - the matrix is evaluated before the job has
-          # a workspace, so github.workspace is empty and the absolute path came
-          # out as /test/dummy/db/...
-          - { name: 'SQLite', url: '' }
-
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: geneva_drive_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: geneva_drive_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        rails: ${{ fromJSON(needs.appraisals.outputs.rails) }}
+        database: [sqlite, postgres, mysql]
 
     steps:
       # Must run before setup-ruby: bundler-cache builds the pg and mysql2 native
@@ -87,13 +70,10 @@ jobs:
           ruby-version-file: .ruby-version
           bundler-cache: true
 
+      # One cell of the same script a local run uses, rather than a second
+      # description of the matrix here: it starts the one engine it needs out of
+      # compose.yaml, asks compose which port it got, and builds the
+      # DATABASE_URL - or leaves it unset for SQLite. test_helper.rb then
+      # generates the migrations and prepares the database.
       - name: Run tests
-        # test_helper.rb auto-generates migrations and prepares the database
-        env:
-          RAILS_ENV: test
-          DATABASE_URL: ${{ matrix.database.url }}
-        run: |
-          # An empty DATABASE_URL is still a set DATABASE_URL as far as Rails is
-          # concerned, and the SQLite leg wants it genuinely absent.
-          if [ -z "${DATABASE_URL:-}" ]; then unset DATABASE_URL; fi
-          bundle exec rake test
+        run: bin/matrix "${{ matrix.rails }}" "${{ matrix.database }}"

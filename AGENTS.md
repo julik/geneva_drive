@@ -75,13 +75,17 @@ This is the newest released Rails on SQLite, which is what the dummy app
 defaults to - no database server needed. A bare `rake` runs standardrb on top.
 
 **Run the whole matrix locally** (every Rails appraisal against every database
-engine CI covers). It brings up `compose.yaml` for PostgreSQL and MySQL:
+engine). It starts whichever `compose.yaml` engines it needs:
 
 ```bash
 bin/matrix                  # all of it
 bin/matrix rails_8_1        # one Rails version, all engines
 bin/matrix rails_8_1 mysql  # one cell
 ```
+
+CI runs this same script, one cell per job, so a green `bin/matrix` and a green
+build mean the same thing. The Rails versions come from `gemfiles/*.gemfile`
+on both sides, so a new appraisal is picked up without editing either.
 
 Each engine keeps its artifacts - schema dump, SQLite files - in its own
 `test/dummy/db/<adapter>/`, so switching between them needs no cleanup.

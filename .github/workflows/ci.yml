@@ -37,9 +37,13 @@ jobs:
         database:
           - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
           - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
-          # Absolute path: test_helper shells out to bin/rails from test/dummy, so a
-          # relative sqlite path would resolve to a different file in that subprocess.
-          - { name: 'SQLite', url: 'sqlite3:${{ github.workspace }}/test/dummy/db/sqlite3/test.sqlite3' }
+          # No URL at all: the dummy app already defaults to SQLite and works out
+          # its own path relative to Rails.root, which stays correct inside the
+          # bin/rails subprocess test_helper shells out to. Spelling it out here
+          # is not an option either - the matrix is evaluated before the job has
+          # a workspace, so github.workspace is empty and the absolute path came
+          # out as /test/dummy/db/...
+          - { name: 'SQLite', url: '' }
 
     services:
       postgres:
@@ -88,4 +92,8 @@ jobs:
         env:
           RAILS_ENV: test
           DATABASE_URL: ${{ matrix.database.url }}
-        run: bundle exec rake test
+        run: |
+          # An empty DATABASE_URL is still a set DATABASE_URL as far as Rails is
+          # concerned, and the SQLite leg wants it genuinely absent.
+          if [ -z "${DATABASE_URL:-}" ]; then unset DATABASE_URL; fi
+          bundle exec rake test

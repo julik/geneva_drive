@@ -30,9 +30,10 @@ port_of() {
   docker compose port "$1" "$2" | sed 's/.*://'
 }
 
+# SQLite gets no DATABASE_URL, exactly as in CI: the dummy app defaults to it
+# and resolves its own path relative to Rails.root.
 url_for() {
   case "$1" in
-    sqlite)   echo "sqlite3:$PWD/test/dummy/db/sqlite3/test.sqlite3" ;;
     postgres) echo "postgresql://postgres:postgres@127.0.0.1:$(port_of postgres 5432)/geneva_drive_test" ;;
     mysql)    echo "mysql2://root:root@127.0.0.1:$(port_of mysql 3306)/geneva_drive_test?encoding=utf8mb4" ;;
   esac
@@ -46,7 +47,12 @@ for rails in $RAILS_VERSIONS; do
   BUNDLE_GEMFILE=$gemfile bundle check >/dev/null 2>&1 || BUNDLE_GEMFILE=$gemfile bundle install || exit 1
   for engine in $ENGINES; do
     echo "==> $rails / $engine"
-    if BUNDLE_GEMFILE=$gemfile RAILS_ENV=test DATABASE_URL="$(url_for "$engine")" bundle exec rake test; then
+    if [ "$engine" = sqlite ]; then
+      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test bundle exec rake test
+    else
+      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test DATABASE_URL="$(url_for "$engine")" bundle exec rake test
+    fi
+    if [ $? -eq 0 ]; then
       results+=("ok    $rails / $engine")
     else
       results+=("FAIL  $rails / $engine")

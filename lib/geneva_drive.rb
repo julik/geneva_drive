@@ -50,6 +50,7 @@ module GenevaDrive
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
   autoload :JobOptions, "geneva_drive/job_options"
   autoload :CombinedExceptionPolicy, "geneva_drive/combined_exception_policy"
+  autoload :JsonColumn, "geneva_drive/json_column"
   autoload :MigrationHelpers, "geneva_drive/migration_helpers"
   autoload :TestHelpers, "geneva_drive/test_helpers"
 

@@ -1,0 +1,38 @@
+# Local CI: the same database engines the CI matrix runs against, so that a
+# failure that only happens on one of them can be reproduced without pushing.
+# `bin/matrix` brings this up and runs the suite against every engine; plain
+# `rake` needs none of it, since the dummy app defaults to SQLite.
+#
+# The published ports are deliberately unpinned - Docker picks a free one and
+# bin/matrix asks `docker compose port` for it. A hardcoded host port collides
+# with whatever else the machine happens to be running, and a database server
+# already on the host keeps its own port either way.
+name: geneva_drive
+
+services:
+  postgres:
+    image: postgres:14
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: geneva_drive_test
+    ports:
+      - "5432"
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "postgres"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  mysql:
+    image: mysql:8.0
+    environment:
+      MYSQL_ROOT_PASSWORD: root
+      MYSQL_DATABASE: geneva_drive_test
+    ports:
+      - "3306"
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-uroot", "-proot"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

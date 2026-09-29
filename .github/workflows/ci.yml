@@ -16,58 +16,50 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 3.4.4
+          ruby-version-file: .ruby-version
           bundler-cache: true
 
       - name: Lint code for consistent style
         run: bundle exec standardrb
 
+  # The appraisal gemfiles are generated from Appraisals, so they are the one
+  # place the supported Rails versions are written down. bin/matrix defaults to
+  # the same list, which is what keeps a local run and CI testing the same set.
+  appraisals:
+    name: "Work out the appraisal list"
+    runs-on: ubuntu-latest
+    outputs:
+      rails: ${{ steps.list.outputs.rails }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: List the appraisals
+        id: list
+        run: |
+          rails=$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | jq -R . | jq -sc .)
+          echo "rails=$rails" >> "$GITHUB_OUTPUT"
+          echo "Appraisals: $rails"
+
   test:
-    name: "Tests (${{ matrix.rails }}, ${{ matrix.database.name }})"
+    name: "Tests (${{ matrix.rails }}, ${{ matrix.database }})"
+    needs: appraisals
     runs-on: ubuntu-latest
     env:
+      # Job-level so that setup-ruby's bundler-cache keys on the right lockfile.
+      # bin/matrix sets the same value per cell.
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.rails }}.gemfile
     strategy:
       fail-fast: false
       matrix:
-        rails:
-          - rails_7
-          - rails_8
-        database:
-          - { name: 'PostgreSQL', url: 'postgresql://postgres:postgres@localhost:5432/geneva_drive_test' }
-          - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
-          - { name: 'SQLite', url: 'sqlite3:test/dummy/db/test.sqlite3' }
-
-    services:
-      postgres:
-        image: postgres:14
-        env:
-          POSTGRES_USER: postgres
-          POSTGRES_PASSWORD: postgres
-          POSTGRES_DB: geneva_drive_test
-        ports:
-          - 5432:5432
-        options: >-
-          --health-cmd pg_isready
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: root
-          MYSQL_DATABASE: geneva_drive_test
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd "mysqladmin ping"
-          --health-interval 10s
-          --health-timeout 5s
-          --health-retries 5
+        rails: ${{ fromJSON(needs.appraisals.outputs.rails) }}
+        database: [sqlite, postgres, mysql]
 
     steps:
+      # Must run before setup-ruby: bundler-cache builds the pg and mysql2 native
+      # extensions, which need the client headers.
       - name: Install packages
-        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev default-libmysqlclient-dev
 
       - name: Checkout code
         uses: actions/checkout@v7
@@ -75,12 +67,13 @@ jobs:
       - name: Set up Ruby
         uses: ruby/setup-ruby@v1
         with:
-          ruby-version: 3.4.4
+          ruby-version-file: .ruby-version
           bundler-cache: true
 
+      # One cell of the same script a local run uses, rather than a second
+      # description of the matrix here: it starts the one engine it needs out of
+      # compose.yaml, asks compose which port it got, and builds the
+      # DATABASE_URL - or leaves it unset for SQLite. test_helper.rb then
+      # generates the migrations and prepares the database.
       - name: Run tests
-        # test_helper.rb auto-generates migrations and prepares the database
-        env:
-          RAILS_ENV: test
-          DATABASE_URL: ${{ matrix.database.url }}
-        run: bundle exec ruby -Itest bin/test
+        run: bin/matrix "${{ matrix.rails }}" "${{ matrix.database }}"

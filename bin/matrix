@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# Local CI: run the suite for every Rails appraisal against every database
+# engine the CI matrix covers, so that a one-engine failure can be reproduced
+# without pushing. Brings compose.yaml up first and leaves it running.
+#
+#   bin/matrix                    # the whole matrix
+#   bin/matrix rails_8_1          # one Rails version, all engines
+#   bin/matrix rails_8_1 sqlite   # one cell
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+# The gemfiles are generated from Appraisals, which makes them the one place
+# the supported Rails versions are written down. CI reads the same list off
+# them, so neither side can drift from the other.
+RAILS_VERSIONS=${1:-$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | tr '\n' ' ')}
+ENGINES=${2:-"sqlite postgres mysql"}
+
+for engine in $ENGINES; do
+  case "$engine" in
+    sqlite|postgres|mysql) ;;
+    *) echo "Unknown engine: $engine (pick from sqlite, postgres, mysql)" >&2; exit 1 ;;
+  esac
+done
+
+# Only the engines actually asked for - CI runs one cell per job and should not
+# be pulling a MySQL image to test against PostgreSQL.
+services=""
+for engine in $ENGINES; do
+  case "$engine" in
+    postgres|mysql) services="$services $engine" ;;
+  esac
+done
+if [ -n "$services" ]; then
+  docker compose up -d --wait $services || exit 1
+fi
+
+# Compose publishes to an ephemeral host port, so ask it which one it got.
+port_of() {
+  docker compose port "$1" "$2" | sed 's/.*://'
+}
+
+# SQLite gets no DATABASE_URL, exactly as in CI: the dummy app defaults to it
+# and resolves its own path relative to Rails.root.
+url_for() {
+  case "$1" in
+    postgres) echo "postgresql://postgres:postgres@127.0.0.1:$(port_of postgres 5432)/geneva_drive_test" ;;
+    mysql)    echo "mysql2://root:root@127.0.0.1:$(port_of mysql 3306)/geneva_drive_test?encoding=utf8mb4" ;;
+  esac
+}
+
+failed=0
+results=()
+for rails in $RAILS_VERSIONS; do
+  gemfile="gemfiles/$rails.gemfile"
+  [ -f "$gemfile" ] || { echo "No such appraisal: $gemfile" >&2; exit 1; }
+  BUNDLE_GEMFILE=$gemfile bundle check >/dev/null 2>&1 || BUNDLE_GEMFILE=$gemfile bundle install || exit 1
+  for engine in $ENGINES; do
+    echo "==> $rails / $engine"
+    if [ "$engine" = sqlite ]; then
+      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test bundle exec rake test
+    else
+      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test DATABASE_URL="$(url_for "$engine")" bundle exec rake test
+    fi
+    if [ $? -eq 0 ]; then
+      results+=("ok    $rails / $engine")
+    else
+      results+=("FAIL  $rails / $engine")
+      failed=1
+    fi
+  done
+done
+
+printf '\n'
+printf '%s\n' "${results[@]}"
+exit $failed

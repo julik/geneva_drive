@@ -1,13 +1,43 @@
-# PostgreSQL configuration for GenevaDrive test suite
+<%
+  # Everything the database tasks write under db/ is adapter-specific, the
+  # schema dump above all: parallelize() builds every worker database out of
+  # that dump, and a PostgreSQL one carries jsonb columns SQLite cannot load.
+  # CI points DATABASE_URL at a different engine per leg, so each engine gets
+  # its own corner of db/ and the legs stop overwriting each other's artifacts.
+  #
+  # This has to be resolved here rather than in an initializer - db:prepare and
+  # the other database tasks hang off :load_config, which never runs those.
+  url = ENV["DATABASE_URL"]
+  adapter = if url
+    ActiveRecord::DatabaseConfigurations::ConnectionUrlResolver.new(url).to_hash[:adapter]
+  else
+    "sqlite3"
+  end
+  artifacts = "db/#{adapter}"
+
+  # The dump is keyed by Rails minor on top of that: it is written as
+  # `ActiveRecord::Schema[8.1].define`, and 7.2 refuses to load a version it
+  # has never heard of. The databases themselves are not version-specific -
+  # the migrations produce the same DDL - so only the dump gets the suffix.
+  schema_dump = "#{adapter}/schema-#{Rails::VERSION::MAJOR}.#{Rails::VERSION::MINOR}.rb"
+
+  # Rails only creates db/ itself, not the subdirectory the dump lives in.
+  require "fileutils"
+  FileUtils.mkdir_p(Rails.root.join(artifacts))
+%>
+# The test suite runs against SQLite by default so that a fresh clone can run
+# `rake` with no database server. CI - and `bin/matrix` locally - override this
+# with DATABASE_URL to also exercise PostgreSQL and MySQL.
 default: &default
-  adapter: postgresql
-  encoding: unicode
+  adapter: sqlite3
   pool: <%= ENV.fetch("RAILS_MAX_THREADS") { 5 } %>
+  timeout: 5000
+  schema_dump: <%= schema_dump %>
 
 development:
   <<: *default
-  database: geneva_drive_development
+  database: storage/development.sqlite3
 
 test:
   <<: *default
-  database: geneva_drive_test
+  database: <%= artifacts %>/test.sqlite3

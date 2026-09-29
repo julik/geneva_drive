@@ -11,10 +11,13 @@ Gemfile.lock
 /.yardoc/
 
 # Test dummy app
-/test/dummy/db/*.sqlite3
-/test/dummy/db/*.sqlite3-*
+# Every database task writes into db/<adapter>/ - schema dump, SQLite files and
+# the one-per-parallel-worker copies of them. See test/dummy/config/database.yml.
+/test/dummy/db/*/
+!/test/dummy/db/migrate/
 /test/dummy/db/migrate/*geneva_drive*.rb
-/test/dummy/db/schema.rb
+# Written by the install generator when the test suite prepares the dummy app
+/test/dummy/config/initializers/geneva_drive.rb
 /test/dummy/log/*.log*
 /test/dummy/storage/
 /test/dummy/tmp/
@@ -37,3 +40,7 @@ additional_reference/
 
 # Built gems
 /pkg/
+
+# Scratch directory - keep the directory, ignore everything in it
+/tmp/*
+!/tmp/.keep

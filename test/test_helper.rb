@@ -19,13 +19,10 @@ unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
   GENEVA_DRIVE_TEST_DB_PREPARED = true
 
   dummy_root = File.expand_path("../test/dummy", __dir__)
-  schema_file = File.join(dummy_root, "db/schema.rb")
-  # db/schema.rb is adapter-specific - a PostgreSQL dump carries jsonb columns
-  # SQLite cannot load - and parallelize() builds every worker database out of
-  # it, so the dump has to be rebuilt when the adapter under test changes. That
-  # is not recorded anywhere in the dump itself, hence the stamp beside it.
-  adapter_stamp = File.join(dummy_root, "db/.schema_adapter")
-  adapter = ActiveRecord::Base.connection_db_config.adapter
+  db_config = ActiveRecord::Base.connection_db_config
+  # Adapter-specific, and deliberately so - see the comment in the dummy app's
+  # config/database.yml. Ask Rails for the path rather than rebuilding it here.
+  schema_file = ActiveRecord::Tasks::DatabaseTasks.schema_dump_path(db_config)
 
   # The generator is the single source of truth for migrations.
   if Dir.glob("#{dummy_root}/db/migrate/*geneva_drive*.rb").empty?
@@ -41,11 +38,10 @@ unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
   rescue
     [] # No database, or no schema_migrations in it yet
   end
-  dumped_for = File.exist?(adapter_stamp) ? File.read(adapter_stamp).strip : nil
 
-  if (on_disk - applied).any? || !File.exist?(schema_file) || dumped_for != adapter
-    puts "Recreating the #{adapter} test database..."
-    # db:migrate seeds an empty database from db/schema.rb before applying
+  if (on_disk - applied).any? || !File.exist?(schema_file)
+    puts "Recreating the #{db_config.adapter} test database..."
+    # db:migrate seeds an empty database from the schema dump before applying
     # anything, so the outdated dump has to go first - otherwise it recreates
     # exactly the tables the migrations are about to create.
     File.delete(schema_file) if File.exist?(schema_file)
@@ -58,7 +54,6 @@ unless defined?(GENEVA_DRIVE_TEST_DB_PREPARED)
       system("bin/rails", "db:drop") || abort("Failed to drop the test database")
       system("bin/rails", "db:prepare") || abort("Failed to recreate the test database")
     end
-    File.write(adapter_stamp, adapter)
   end
 end
 

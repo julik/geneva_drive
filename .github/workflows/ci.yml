@@ -39,7 +39,7 @@ jobs:
           - { name: 'MySQL', url: 'mysql2://root:root@127.0.0.1:3306/geneva_drive_test?encoding=utf8mb4' }
           # Absolute path: test_helper shells out to bin/rails from test/dummy, so a
           # relative sqlite path would resolve to a different file in that subprocess.
-          - { name: 'SQLite', url: 'sqlite3:${{ github.workspace }}/test/dummy/db/test.sqlite3' }
+          - { name: 'SQLite', url: 'sqlite3:${{ github.workspace }}/test/dummy/db/sqlite3/test.sqlite3' }
 
     services:
       postgres:

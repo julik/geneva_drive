@@ -68,8 +68,23 @@ This is a Rails engine. Tests run against a dummy Rails app in `test/dummy/`.
 **Run all tests:**
 
 ```bash
-bundle exec ruby -Ilib:test -e "Dir.glob('test/**/*_test.rb').each { |f| require_relative f }"
+bundle exec rake test
 ```
+
+This is the newest released Rails on SQLite, which is what the dummy app
+defaults to - no database server needed. A bare `rake` runs standardrb on top.
+
+**Run the whole matrix locally** (every Rails appraisal against every database
+engine CI covers). It brings up `compose.yaml` for PostgreSQL and MySQL:
+
+```bash
+bin/matrix                  # all of it
+bin/matrix rails_8_1        # one Rails version, all engines
+bin/matrix rails_8_1 mysql  # one cell
+```
+
+Each engine keeps its artifacts - schema dump, SQLite files - in its own
+`test/dummy/db/<adapter>/`, so switching between them needs no cleanup.
 
 **Run a specific test file:**
 

@@ -20,6 +20,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
 
   require_relative "step_execution/metadata_accessor"
   include MetadataAccessor
+  include GenevaDrive::JsonColumn
 
   # Step execution states as enum with string values
   # Provides: scheduled?, in_progress?, etc. predicates
@@ -162,7 +163,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
         end
       end
 
-      serialized
+      encode_json_column(:cursor, serialized)
     end
   end
 
@@ -250,7 +251,7 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
   def cursor_value
     return nil unless self.class.resumable_columns?
     return nil if cursor.blank?
-    ActiveJob::Arguments.deserialize([cursor]).first
+    ActiveJob::Arguments.deserialize([self.class.decode_json_column(:cursor, cursor)]).first
   end
 
   # Sets the cursor value for resumable steps.

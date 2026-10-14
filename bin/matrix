@@ -13,12 +13,12 @@ cd "$(dirname "$0")/.."
 # the supported Rails versions are written down. CI reads the same list off
 # them, so neither side can drift from the other.
 RAILS_VERSIONS=${1:-$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | tr '\n' ' ')}
-ENGINES=${2:-"sqlite postgres mysql"}
+ENGINES=${2:-"sqlite postgres mysql mariadb"}
 
 for engine in $ENGINES; do
   case "$engine" in
-    sqlite|postgres|mysql) ;;
-    *) echo "Unknown engine: $engine (pick from sqlite, postgres, mysql)" >&2; exit 1 ;;
+    sqlite|postgres|mysql|mariadb) ;;
+    *) echo "Unknown engine: $engine (pick from sqlite, postgres, mysql, mariadb)" >&2; exit 1 ;;
   esac
 done
 
@@ -27,7 +27,7 @@ done
 services=""
 for engine in $ENGINES; do
   case "$engine" in
-    postgres|mysql) services="$services $engine" ;;
+    postgres|mysql|mariadb) services="$services $engine" ;;
   esac
 done
 if [ -n "$services" ]; then
@@ -45,6 +45,7 @@ url_for() {
   case "$1" in
     postgres) echo "postgresql://postgres:postgres@127.0.0.1:$(port_of postgres 5432)/geneva_drive_test" ;;
     mysql)    echo "mysql2://root:root@127.0.0.1:$(port_of mysql 3306)/geneva_drive_test?encoding=utf8mb4" ;;
+    mariadb)  echo "mysql2://root:root@127.0.0.1:$(port_of mariadb 3306)/geneva_drive_test?encoding=utf8mb4" ;;
   esac
 }
 
@@ -57,9 +58,9 @@ for rails in $RAILS_VERSIONS; do
   for engine in $ENGINES; do
     echo "==> $rails / $engine"
     if [ "$engine" = sqlite ]; then
-      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test bundle exec rake test
+      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine bundle exec rake test
     else
-      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test DATABASE_URL="$(url_for "$engine")" bundle exec rake test
+      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine DATABASE_URL="$(url_for "$engine")" bundle exec rake test
     fi
     if [ $? -eq 0 ]; then
       results+=("ok    $rails / $engine")

@@ -13,13 +13,18 @@
   else
     "sqlite3"
   end
-  artifacts = "db/#{adapter}"
+
+  # MariaDB and MySQL are both the mysql2 adapter but do not produce the same
+  # dump - MariaDB has no JSON type - so the engine, when the runner names one,
+  # is what the artifacts get filed under.
+  engine = ENV.fetch("GENEVA_DRIVE_ENGINE", adapter)
+  artifacts = "db/#{engine}"
 
   # The dump is keyed by Rails minor on top of that: it is written as
   # `ActiveRecord::Schema[8.1].define`, and 7.2 refuses to load a version it
   # has never heard of. The databases themselves are not version-specific -
   # the migrations produce the same DDL - so only the dump gets the suffix.
-  schema_dump = "#{adapter}/schema-#{Rails::VERSION::MAJOR}.#{Rails::VERSION::MINOR}.rb"
+  schema_dump = "#{engine}/schema-#{Rails::VERSION::MAJOR}.#{Rails::VERSION::MINOR}.rb"
 
   # Rails only creates db/ itself, not the subdirectory the dump lives in.
   require "fileutils"

@@ -36,3 +36,18 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # MariaDB is not MySQL wearing a hat - its JSON type is a LONGTEXT with an
+  # auto-named CHECK constraint, which is what makes `cursor` a problem.
+  mariadb:
+    image: mariadb:11.4
+    environment:
+      MARIADB_ROOT_PASSWORD: root
+      MARIADB_DATABASE: geneva_drive_test
+    ports:
+      - "3306"
+    healthcheck:
+      test: ["CMD", "healthcheck.sh", "--connect", "--innodb_initialized"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

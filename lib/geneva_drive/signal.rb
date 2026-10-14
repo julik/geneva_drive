@@ -25,6 +25,8 @@
 #   workflow.signal!(:payment_confirmed, payload: {amount_cents: 12_500})
 #
 class GenevaDrive::Signal < ActiveRecord::Base
+  include GenevaDrive::JsonColumn
+
   self.table_name = "geneva_drive_signals"
 
   # Signal lifecycle states as enum with string values.
@@ -109,7 +111,7 @@ class GenevaDrive::Signal < ActiveRecord::Base
         end
       end
 
-      serialized
+      encode_json_column(:payload, serialized)
     end
   end
 
@@ -119,7 +121,7 @@ class GenevaDrive::Signal < ActiveRecord::Base
   #
   # @return [Object, nil] the payload
   def payload
-    raw = self[:payload]
+    raw = self.class.decode_json_column(:payload, self[:payload])
     return nil if raw.nil?
 
     value = ActiveJob::Arguments.deserialize([raw]).first

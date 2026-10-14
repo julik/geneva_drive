@@ -48,6 +48,33 @@ module GenevaDrive::MigrationHelpers
     options
   end
 
+  # Column type and options for a column that holds a JSON document.
+  #
+  # PostgreSQL gets jsonb and MySQL gets its native json. MariaDB gets neither:
+  # it has no JSON type at all, `json` there being an alias for LONGTEXT with an
+  # auto-generated CHECK constraint named after the column. Two things go wrong
+  # with that alias. The schema dump comes back as `t.text` plus
+  # `t.check_constraint name: "cursor"`, and loading that dump re-emits the
+  # constraint name unquoted - `cursor` is reserved in MariaDB, so the load dies
+  # on a syntax error, which takes out `db:schema:load` and every parallel test
+  # worker with it. And because Rails types the column as text either way, a
+  # Hash assigned to it is written out as `#inspect` rather than JSON, which the
+  # very same CHECK constraint then rejects. Asking for plain LONGTEXT and doing
+  # the JSON encoding in the model (see GenevaDrive::JsonColumn) sidesteps both.
+  #
+  # @return [Array(Symbol, Hash)] the column type and its options
+  def geneva_drive_json_column
+    adapter = connection.adapter_name.downcase
+
+    if adapter.include?("postgresql")
+      [:jsonb, {}]
+    elsif connection.respond_to?(:mariadb?) && connection.mariadb?
+      [:text, {limit: 4_294_967_295}]
+    else
+      [:json, {}]
+    end
+  end
+
   private
 
   # Collects the id column from every application table (excludes system

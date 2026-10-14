@@ -5,15 +5,11 @@ class AddResumableStepSupportToGenevaDriveStepExecutions < ActiveRecord::Migrati
 
   def change
     unless column_exists?(:geneva_drive_step_executions, :cursor)
-      # Cursor for resumable steps. Use database-native JSON type:
-      # - PostgreSQL: jsonb (indexed, efficient, supports containment queries)
-      # - MySQL 5.7+: json (native validation and storage)
-      # - SQLite: json (Rails handles as TEXT with serialization)
-      if connection.adapter_name.downcase.include?("postgresql")
-        add_column :geneva_drive_step_executions, :cursor, :jsonb
-      else
-        add_column :geneva_drive_step_executions, :cursor, :json
-      end
+      # Cursor for resumable steps. Database-native JSON where there is one -
+      # jsonb on PostgreSQL, json on MySQL and SQLite - and plain LONGTEXT on
+      # MariaDB, which has no JSON type. See geneva_drive_json_column.
+      cursor_type, cursor_options = geneva_drive_json_column
+      add_column :geneva_drive_step_executions, :cursor, cursor_type, **cursor_options
     end
 
     unless column_exists?(:geneva_drive_step_executions, :continues_from_id)

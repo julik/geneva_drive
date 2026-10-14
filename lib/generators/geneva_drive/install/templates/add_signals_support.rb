@@ -34,16 +34,11 @@ class AddSignalsSupportToGenevaDrive < ActiveRecord::Migration[7.2]
       # Lifecycle: pending -> claimed -> consumed
       t.string :state, null: false, default: "pending"
 
-      # Serialized payload. Use the database-native JSON type, same flavor
-      # logic as the resumable step cursor:
-      # - PostgreSQL: jsonb
-      # - MySQL 5.7+: json
-      # - SQLite: json (Rails handles as TEXT with serialization)
-      if adapter.include?("postgresql")
-        t.jsonb :payload
-      else
-        t.json :payload
-      end
+      # Serialized payload, same flavour logic as the resumable step cursor:
+      # jsonb on PostgreSQL, json on MySQL and SQLite, plain LONGTEXT on
+      # MariaDB, which has no JSON type. See geneva_drive_json_column.
+      payload_type, payload_options = geneva_drive_json_column
+      t.column :payload, payload_type, **payload_options
 
       t.datetime :claimed_at
       t.datetime :consumed_at

@@ -7,12 +7,12 @@
 #
 # GenevaDrive.delete_completed_workflows_after = 30.days
 
-# How long a step execution can be in "executing" state before being
+# How long a step execution can be in "in_progress" state before being
 # considered stuck. This typically happens when a worker process crashes
 # mid-execution. The HousekeepingJob will recover these based on the
 # stuck_recovery_action setting.
 #
-# GenevaDrive.stuck_executing_threshold = 1.hour
+# GenevaDrive.stuck_in_progress_threshold = 1.hour
 
 # How long a step execution can be past its scheduled_for time while
 # still in "scheduled" state before being considered stuck. This can
@@ -38,6 +38,22 @@
 # raises GenevaDrive::CursorTooLargeError. Set to nil to disable the check.
 #
 # GenevaDrive.max_cursor_size = 128.kilobytes
+
+# Maximum size in bytes of a signal payload once serialized to JSON.
+# A payload describes an event (an order id, an amount, a decision), not the
+# data the step is going to work on - that belongs on the hero. Exceeding the
+# limit raises GenevaDrive::SignalPayloadTooLargeError from Workflow#signal!,
+# before anything is persisted. Set to nil to disable the check.
+#
+# GenevaDrive.max_signal_payload_size = 128.kilobytes
+
+# How long a step execution may sit in the "waiting" state before
+# housekeeping counts it in the geneva_drive.waiting_overdue gauge.
+# Waiting indefinitely is legitimate, so this is not a timeout - it keeps
+# a stalled rendezvous from going unnoticed. Alert on the overdue gauge.
+# Set to nil to disable the gauge.
+#
+# GenevaDrive.waiting_visibility_threshold = 7.days
 
 # Whether to defer job enqueueing until after the database transaction commits.
 # In production this ensures step execution records are visible to job workers

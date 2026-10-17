@@ -85,6 +85,8 @@ If your application uses UUID primary keys, the migrations will detect this and 
 
 Note that you don't want to mix integer IDs and UUIDs in the same application. geneva_drive uses a polymorphic relation for the `hero` of the workflow, which has a typed `hero_id` column. You will thus want either all of your models to be used as heroes to have UUID primary keys or bigint primary keys, but not mix the two.
 
+String primary keys (`id: :string`, for example with `primary_key_type: :string` in your generator config) are detected too: `hero_id` is then created as a string column, while the geneva_drive tables themselves keep bigint ids. If detection picks the wrong type for your heroes, edit the `hero_id` column in the generated workflows migration before running it.
+
 > [!WARNING]
 > If you are using UUIDs, we also strongly recommend adopting a lexicographically ordered UUID flavour, at least for the geneva_drive tables. Such flavours include [UUIDv7](https://github.com/seouri/rails-uuid-pk) and [tou](https://github.com/cheddar-me/tou) - you will want your primary keys to be pre-sorted for using the admin effectively, as well as for efficient `find_each` usage with the geneva_drive tables.
 

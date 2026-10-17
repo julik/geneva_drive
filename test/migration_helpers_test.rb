@@ -62,6 +62,68 @@ class MigrationHelpersTest < ActiveSupport::TestCase
     assert_equal :bigint, build_migration(columns).geneva_drive_key_type
   end
 
+  test "keeps :bigint for the gem tables when the app uses string ids" do
+    columns = [
+      FakeColumn.new(name: "id", sql_type: "varchar", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "varchar", default_function: nil)
+    ]
+    assert_equal :bigint, build_migration(columns).geneva_drive_key_type
+  end
+
+  # --- geneva_drive_hero_key_type ---
+
+  test "hero key type is :bigint when there are no application tables" do
+    assert_equal :bigint, build_migration.geneva_drive_hero_key_type
+  end
+
+  test "hero key type is :bigint when most tables use integer ids" do
+    columns = [
+      FakeColumn.new(name: "id", sql_type: "bigint", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "integer", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "varchar", default_function: nil)
+    ]
+    assert_equal :bigint, build_migration(columns).geneva_drive_hero_key_type
+  end
+
+  test "hero key type is :uuid when most tables use uuid ids" do
+    columns = [
+      FakeColumn.new(name: "id", sql_type: "uuid", default_function: "gen_random_uuid()"),
+      FakeColumn.new(name: "id", sql_type: "char(36)", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "bigint", default_function: nil)
+    ]
+    assert_equal :uuid, build_migration(columns).geneva_drive_hero_key_type
+  end
+
+  test "hero key type is :string for string ids of any length" do
+    ["varchar", "varchar(255)", "character varying", "char(26)", "text"].each do |sql_type|
+      columns = [FakeColumn.new(name: "id", sql_type: sql_type, default_function: nil)]
+      assert_equal :string, build_migration(columns).geneva_drive_hero_key_type, "for #{sql_type}"
+    end
+  end
+
+  test "hero key type is :string when uuid and string ids together outnumber integer ids" do
+    columns = [
+      FakeColumn.new(name: "id", sql_type: "uuid", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "varchar", default_function: nil),
+      FakeColumn.new(name: "id", sql_type: "bigint", default_function: nil)
+    ]
+    assert_equal :string, build_migration(columns).geneva_drive_hero_key_type
+  end
+
+  test "hero key type is :string for an id: :string table on SQLite" do
+    connection = ActiveRecord::Base.connection
+    skip "SQLite only" unless connection.adapter_name.downcase.include?("sqlite")
+
+    begin
+      connection.create_table(:string_id_heroes, id: :string)
+      id_column = connection.columns(:string_id_heroes).find { |c| c.name == "id" }
+      assert_equal "varchar", id_column.sql_type # no length, which the uuid regex used to miss
+      assert_equal :string, build_migration([id_column]).geneva_drive_hero_key_type
+    ensure
+      connection.drop_table(:string_id_heroes, if_exists: true)
+    end
+  end
+
   # --- geneva_drive_table_options ---
 
   test "returns empty hash for bigint key type" do

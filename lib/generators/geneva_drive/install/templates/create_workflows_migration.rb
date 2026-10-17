@@ -12,7 +12,7 @@ class CreateGenevaDriveWorkflows < ActiveRecord::Migration[7.2]
 
       # Polymorphic association to the hero of the workflow (optional)
       t.string :hero_type
-      t.column :hero_id, geneva_drive_key_type
+      t.column :hero_id, geneva_drive_hero_key_type
 
       # State machine
       t.string :state, null: false, default: "ready", index: true

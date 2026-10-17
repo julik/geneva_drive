@@ -9,13 +9,17 @@
 #
 #     def change
 #       create_table :geneva_drive_workflows, **geneva_drive_table_options do |t|
-#         t.references :hero, polymorphic: true, type: geneva_drive_key_type
+#         t.references :hero, polymorphic: true, type: geneva_drive_hero_key_type
 #         # ...
 #       end
 #     end
 #   end
 #
 module GenevaDrive::MigrationHelpers
+  UUID_SQL_TYPE = /uuid|char\(36\)|varchar\(36\)/
+  # SQLite reports `id: :string` as a bare "varchar", without a length
+  STRING_SQL_TYPE = /char|text|clob/
+
   # Detects the appropriate key type for GenevaDrive tables.
   # Returns :uuid if the schema predominantly uses UUIDs, otherwise :bigint.
   #
@@ -25,10 +29,36 @@ module GenevaDrive::MigrationHelpers
       id_columns = _geneva_drive_app_id_columns
       return :bigint if id_columns.empty?
 
-      uuid_count = id_columns.count { |col| col.sql_type.downcase.match?(/uuid|char\(36\)|varchar\(36\)/) }
+      uuid_count = id_columns.count { |col| col.sql_type.downcase.match?(UUID_SQL_TYPE) }
       other_count = id_columns.size - uuid_count
 
       (uuid_count > other_count) ? :uuid : :bigint
+    end
+  end
+
+  # Detects the column type for `hero_id` on the workflows table. Unlike
+  # {#geneva_drive_key_type}, this also recognizes string primary keys of any
+  # length (`varchar`, `char(n)`, `text`), so that heroes with string ids do not
+  # get a `hero_id` that casts their ids to integers.
+  #
+  # Returns :uuid if the schema predominantly uses UUIDs, :string if it predominantly
+  # uses UUIDs and string ids taken together, otherwise :bigint.
+  #
+  # @return [Symbol] :uuid, :string or :bigint
+  def geneva_drive_hero_key_type
+    @_geneva_drive_hero_key_type ||= begin
+      sql_types = _geneva_drive_app_id_columns.map { |col| col.sql_type.downcase }
+      uuid_count = sql_types.count { |t| t.match?(UUID_SQL_TYPE) }
+      string_count = sql_types.count { |t| !t.match?(UUID_SQL_TYPE) && t.match?(STRING_SQL_TYPE) }
+      integer_count = sql_types.size - uuid_count - string_count
+
+      if uuid_count > string_count + integer_count
+        :uuid
+      elsif uuid_count + string_count > integer_count
+        :string # a string column holds UUIDs just as well
+      else
+        :bigint
+      end
     end
   end
 
@@ -96,7 +126,7 @@ module GenevaDrive::MigrationHelpers
   def _geneva_drive_dominant_uuid_default
     id_columns = _geneva_drive_app_id_columns
     uuid_defaults = id_columns.filter_map do |col|
-      next unless col.sql_type.downcase.match?(/uuid|char\(36\)|varchar\(36\)/)
+      next unless col.sql_type.downcase.match?(UUID_SQL_TYPE)
       col.default_function
     end
 

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+## [0.9.0]
+
 - Run on Sidekiq without Active Job. `GenevaDrive.dispatcher = :sidekiq` pushes every step as `GenevaDrive::SidekiqPerformStepJob`, a plain `Sidekiq::Job` carrying the step execution id, through `Sidekiq::Client`. Client middleware applies, the jid lands in `job_id`, and jobs are tagged with the workflow class. Supported are Sidekiq 7.3 and later 7.x, and 8.x; with any other version the dispatcher raises at boot. The default dispatcher is still `:active_job`.
 - Sidekiq retries are off for step jobs, since exception policies already decide reattempts. The step's exception is still raised, so Sidekiq's error handlers report it.
 - The Sidekiq dispatcher pushes synchronously, bypassing `Sidekiq.transactional_push!`, which would defer the push a second time from inside GenevaDrive's own after-commit callback - the double deferral already fixed for Solid Queue.

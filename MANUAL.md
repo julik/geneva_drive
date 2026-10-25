@@ -1696,6 +1696,16 @@ GenevaDrive.dispatcher = :sidekiq
 
 That is the whole switch. Every step of every workflow is now pushed as a `GenevaDrive::SidekiqPerformStepJob` — a plain `Sidekiq::Job` — through `Sidekiq::Client`, with no Active Job in between. Set it in an initializer, so that it is in place before any workflow class loads: job options are checked against the dispatcher when a workflow class is defined.
 
+We support **Sidekiq 7.3 and later 7.x, and Sidekiq 8.x** — OSS, Pro and Enterprise alike — and test against both majors on every supported Rails. Sidekiq 9 is not supported until we have tested it. With any other version loaded, `GenevaDrive.dispatcher = :sidekiq` raises at boot, naming the version it found.
+
+#### When you do not set it at all
+
+If you never set `GenevaDrive.dispatcher`, we pick one the first time it is needed. When a supported Sidekiq is loaded and Active Job is not pointed at some other real backend — its adapter is unset, `:async`, `:inline`, `:test` or `:sidekiq` — every job ends up in Sidekiq anyway, so we push step jobs there natively. With the adapter set to anything else, say `:solid_queue` or `:good_job`, we stay on Active Job. The choice is written to the Rails log at info level.
+
+`:test` and `:inline` count as "not another backend" on purpose: Rails forces the `:test` adapter in the test environment whatever your app configures, and your test suite should pick the same dispatcher production does. That also means an app with Sidekiq in its bundle *and* a different backend configured only in `production.rb` would pick Sidekiq in tests and Active Job in production — if that is you, set the dispatcher explicitly.
+
+When we pick Sidekiq on our own, `priority:` in job options is logged and ignored rather than rejected, so an app that never asked for the Sidekiq dispatcher does not fail to boot over an option Active Job's Sidekiq adapter was ignoring anyway. Set `GenevaDrive.dispatcher = :sidekiq` explicitly to get the strict check.
+
 ### What the jobs look like
 
 A step job carries one argument, the step execution id, which is a plain integer (or string, with UUID keys) and therefore passes Sidekiq's strict argument checks. It is tagged `geneva_drive` plus the workflow class name, so the Busy page and Enterprise's historical metrics can be read per workflow:
@@ -1859,6 +1869,8 @@ end
 The fake queue ignores `at`, so steps with `wait:` run as soon as you drain.
 
 ### Switching an existing app over
+
+If your app runs Active Job on the Sidekiq adapter and has not set a dispatcher, upgrading GenevaDrive switches it over for you (see [When you do not set it at all](#when-you-do-not-set-it-at-all)). Tests that assert on enqueued `PerformStepJob`s will notice; either move them to `GenevaDrive::SidekiqPerformStepJob` with Sidekiq's fake mode, or set `GenevaDrive.dispatcher = :active_job` to keep things as they were.
 
 Changing the dispatcher only affects jobs pushed from then on. `PerformStepJob`s already queued through Active Job keep running on whatever adapter delivered them, and new steps go out as native Sidekiq jobs. Deploy the change, let the Active Job queue drain, and that is the migration.
 

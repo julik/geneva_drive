@@ -199,12 +199,71 @@ module GenevaDrive
     # Set it in an initializer, before any workflow class loads: step job
     # options are validated against it when a workflow class is defined.
     #
+    # Left unset, it is picked once, on first use. If a supported Sidekiq
+    # (see SidekiqDispatcher::SUPPORTED_SIDEKIQ_VERSIONS) is loaded and
+    # Active Job is not pointed at some other real backend - its adapter is
+    # unset, `:async`, `:inline`, `:test` or `:sidekiq` - the jobs end up in
+    # Sidekiq either way, so we push them there natively. Otherwise we use
+    # Active Job. `:test` and `:inline` count as "not another backend"
+    # because Rails forces `:test` in the test environment whatever the app
+    # configures, and the test suite should pick what production picks.
+    #
     # @example Run step jobs as native Sidekiq jobs
     #   GenevaDrive.dispatcher = :sidekiq
     #
     # @return [#enqueue_step, #validate_job_options!]
     def dispatcher
-      @dispatcher ||= GenevaDrive::ActiveJobDispatcher.new
+      @dispatcher ||= default_dispatcher
+    end
+
+    # Active Job adapters that do not stop us from picking Sidekiq on our own.
+    # @api private
+    SIDEKIQ_COMPATIBLE_ADAPTERS = %w[sidekiq async inline test].freeze
+
+    # @return [#enqueue_step, #validate_job_options!] the dispatcher used when
+    #   none was set explicitly
+    # @api private
+    def default_dispatcher
+      adapter = configured_active_job_adapter_name
+      sidekiq_loaded = defined?(::Sidekiq::Client) && defined?(::Sidekiq::Job)
+      other_backend = adapter && !SIDEKIQ_COMPATIBLE_ADAPTERS.include?(adapter)
+
+      return GenevaDrive::ActiveJobDispatcher.new if !sidekiq_loaded || other_backend
+
+      unless GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?
+        Rails.logger&.info(
+          "GenevaDrive: Sidekiq #{GenevaDrive::SidekiqDispatcher.sidekiq_version} is loaded, but the Sidekiq " \
+          "dispatcher supports #{GenevaDrive::SidekiqDispatcher::SUPPORTED_SIDEKIQ_VERSIONS} - staying on Active Job."
+        )
+        return GenevaDrive::ActiveJobDispatcher.new
+      end
+
+      Rails.logger&.info(
+        "GenevaDrive: pushing step jobs to Sidekiq natively, since Sidekiq is loaded and the " \
+        "Active Job adapter is #{adapter ? adapter.inspect : "not configured"}. " \
+        "Set GenevaDrive.dispatcher to :active_job or :sidekiq to choose explicitly."
+      )
+      # Lenient about priority: an app that never asked for Sidekiq must not
+      # fail to boot over an option Active Job's Sidekiq adapter ignored anyway.
+      GenevaDrive::SidekiqDispatcher.new(reject_priority: false)
+    end
+
+    # @return [String, nil] the adapter name from config.active_job, e.g. "sidekiq"
+    # @api private
+    def configured_active_job_adapter_name
+      config = Rails.application&.config
+      adapter = config.respond_to?(:active_job) ? config.active_job.queue_adapter : nil
+
+      case adapter
+      when nil
+        nil
+      when Symbol, String
+        adapter.to_s
+      else
+        # An adapter instance or class, e.g. ActiveJob::QueueAdapters::SidekiqAdapter
+        klass = adapter.is_a?(Module) ? adapter : adapter.class
+        klass.name.to_s.demodulize.delete_suffix("Adapter").underscore
+      end
     end
 
     # @param value [Symbol, #enqueue_step] `:active_job`, `:sidekiq`, or a
@@ -219,7 +278,7 @@ module GenevaDrive
       when :sidekiq, "sidekiq"
         GenevaDrive::SidekiqDispatcher.new
       when nil
-        nil
+        nil # picked again on next use, see #default_dispatcher
       else
         unless value.respond_to?(:enqueue_step) && value.respond_to?(:validate_job_options!)
           raise ArgumentError,

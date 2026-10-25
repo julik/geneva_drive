@@ -33,4 +33,4 @@ gem "appraisal"
 
 # The native Sidekiq dispatcher is optional at runtime but tested here.
 # Its tests run in Sidekiq::Testing fake mode and need no Redis.
-gem "sidekiq", ">= 7.0"
+gem "sidekiq", ">= 7.3", "< 9" # keep in line with SidekiqDispatcher::SUPPORTED_SIDEKIQ_VERSIONS

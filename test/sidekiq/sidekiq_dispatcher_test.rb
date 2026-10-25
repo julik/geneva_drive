@@ -82,9 +82,6 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
 
     GenevaDrive.dispatcher = :active_job
     assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
-
-    GenevaDrive.dispatcher = nil
-    assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher, "nil falls back to the default"
   end
 
   test "dispatcher= rejects objects that cannot enqueue steps" do
@@ -238,6 +235,66 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     assert workflow.reload.finished?
   end
 
+  test "an unset dispatcher picks Sidekiq when Active Job is not pointed at another backend" do
+    [nil, :async, :inline, :test, :sidekiq, "sidekiq", ActiveJob::QueueAdapters::AsyncAdapter.new].each do |adapter|
+      with_active_job_adapter(adapter) do
+        GenevaDrive.dispatcher = nil
+        assert_kind_of GenevaDrive::SidekiqDispatcher, GenevaDrive.dispatcher, "with adapter #{adapter.inspect}"
+      end
+    end
+  end
+
+  test "an unset dispatcher keeps Active Job when it is pointed at another backend" do
+    [:solid_queue, :good_job, :resque, "delayed_job"].each do |adapter|
+      with_active_job_adapter(adapter) do
+        GenevaDrive.dispatcher = nil
+        assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher, "with adapter #{adapter.inspect}"
+      end
+    end
+  end
+
+  test "a Sidekiq dispatcher picked automatically ignores priority instead of raising" do
+    with_active_job_adapter(:sidekiq) do
+      GenevaDrive.dispatcher = nil
+      assert_nothing_raised do
+        Class.new(GenevaDrive::Workflow) { set_step_job_options priority: 5 }
+      end
+    end
+  end
+
+  test "an explicit dispatcher wins over detection" do
+    with_active_job_adapter(:sidekiq) do
+      GenevaDrive.dispatcher = :active_job
+      assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
+    end
+  end
+
+  test "the supported Sidekiq versions are 7.3 up to, not including, 9" do
+    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("7.3.0")
+    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("8.1.7")
+    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("7.2.4")
+    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("6.5.12")
+    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("9.0.0")
+    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?(Sidekiq::VERSION), "the bundled Sidekiq must be supported"
+  end
+
+  test "the Sidekiq dispatcher refuses an unsupported Sidekiq" do
+    GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
+      error = assert_raises(LoadError) { GenevaDrive::SidekiqDispatcher.new }
+      assert_match(/6\.5\.12/, error.message)
+      assert_match(/>= 7\.3/, error.message)
+    end
+  end
+
+  test "an unset dispatcher keeps Active Job on an unsupported Sidekiq" do
+    with_active_job_adapter(:sidekiq) do
+      GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
+        GenevaDrive.dispatcher = nil
+        assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
+      end
+    end
+  end
+
   test "the engine wires Sidekiq's quiet event to the shutdown request" do
     initializer = GenevaDrive::Engine.instance.initializers.find { |i| i.name == "geneva_drive.sidekiq_lifecycle" }
     assert initializer, "expected the lifecycle initializer to exist"
@@ -253,5 +310,16 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     refute GenevaDrive.exit_requested?
     events.fetch(:quiet).call
     assert GenevaDrive.exit_requested?
+  end
+
+  private
+
+  def with_active_job_adapter(adapter)
+    config = Rails.application.config.active_job
+    previous = config.queue_adapter
+    config.queue_adapter = adapter
+    yield
+  ensure
+    config.queue_adapter = previous
   end
 end

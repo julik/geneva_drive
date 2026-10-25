@@ -50,6 +50,8 @@ If your app writes `Sidekiq::Job` classes rather than Active Job ones, steps can
 GenevaDrive.dispatcher = :sidekiq
 ```
 
+If you do not set it, GenevaDrive picks Sidekiq by itself when Sidekiq is loaded and Active Job is not configured for some other backend. Supported: Sidekiq 7.3 and later 7.x, and 8.x, including Pro and Enterprise.
+
 Step jobs then run as `GenevaDrive::SidekiqPerformStepJob`, a plain Sidekiq job with Sidekiq retries switched off (exception policies decide reattempts), and housekeeping can be scheduled as `GenevaDrive::SidekiqHousekeepingJob`. See "Running on Sidekiq" in the manual for the details, including rolling restarts, Batches and rate limiters.
 
 

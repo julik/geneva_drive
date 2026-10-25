@@ -30,18 +30,43 @@
 #
 # @see GenevaDrive.dispatcher
 class GenevaDrive::SidekiqDispatcher
+  # The Sidekiq versions we test against and support: 7.3 and later 7.x, and 8.x.
+  # 9.0 is excluded until we have tested it - Sidekiq majors change APIs we use.
+  SUPPORTED_SIDEKIQ_VERSIONS = Gem::Requirement.new(">= 7.3", "< 9")
+
+  # @return [String] the loaded Sidekiq's version
+  def self.sidekiq_version
+    ::Sidekiq::VERSION
+  end
+
+  # @param version [String]
+  # @return [Boolean] whether that Sidekiq version is supported
+  def self.supported_sidekiq_version?(version = sidekiq_version)
+    SUPPORTED_SIDEKIQ_VERSIONS.satisfied_by?(Gem::Version.new(version))
+  end
+
   # @param job_class [Class, nil] a Sidekiq::Job that performs step executions,
   #   GenevaDrive::SidekiqPerformStepJob by default
   # @param client [#push, nil] the client to push with; one is built per push
   #   by default, which is what Sidekiq does itself
-  # @raise [LoadError] if Sidekiq is not loaded
-  def initialize(job_class: nil, client: nil)
+  # @param reject_priority [Boolean] raise on `priority:` (the default), or
+  #   log a warning and ignore it - used when GenevaDrive picked this
+  #   dispatcher on its own
+  # @raise [LoadError] if Sidekiq is not loaded, or is not a supported version
+  def initialize(job_class: nil, client: nil, reject_priority: true)
     unless defined?(::Sidekiq::Client)
       raise LoadError, "GenevaDrive::SidekiqDispatcher needs the sidekiq gem. Add it to your Gemfile."
     end
 
+    unless self.class.supported_sidekiq_version?
+      raise LoadError,
+        "GenevaDrive::SidekiqDispatcher supports Sidekiq #{SUPPORTED_SIDEKIQ_VERSIONS}, " \
+        "but Sidekiq #{self.class.sidekiq_version} is loaded. Use GenevaDrive.dispatcher = :active_job with this Sidekiq."
+    end
+
     @job_class = job_class
     @client = client
+    @reject_priority = reject_priority
   end
 
   # @return [Class] the Sidekiq::Job class step jobs are pushed as
@@ -79,13 +104,16 @@ class GenevaDrive::SidekiqDispatcher
   # @param options [Hash{Symbol=>Object}]
   # @param context [String]
   # @return [void]
-  # @raise [GenevaDrive::StepConfigurationError] if `priority` is given
+  # @raise [GenevaDrive::StepConfigurationError] if `priority` is given and
+  #   the dispatcher was built with `reject_priority: true`
   def validate_job_options!(options, context:)
     return if options[:priority].nil?
 
-    raise GenevaDrive::StepConfigurationError,
-      "#{context} sets job_options[:priority], but Sidekiq has no job priority - it has queues with weights. " \
+    message = "#{context} sets job_options[:priority], but Sidekiq has no job priority - it has queues with weights. " \
       "Put the steps that must run first on a queue with a higher weight, e.g. `queue: :workflows_urgent`."
+    raise GenevaDrive::StepConfigurationError, message if @reject_priority
+
+    Rails.logger&.warn("GenevaDrive: ignoring priority. #{message}")
   end
 
   private

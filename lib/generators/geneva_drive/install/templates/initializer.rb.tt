@@ -6,6 +6,10 @@
 # - :sidekiq pushes GenevaDrive::SidekiqPerformStepJob, a plain Sidekiq::Job,
 #   straight through Sidekiq::Client - for apps that write Sidekiq jobs rather
 #   than Active Job ones. Schedule GenevaDrive::SidekiqHousekeepingJob then.
+#   Supports Sidekiq 7.3 and later 7.x, and 8.x.
+#
+# Left unset, GenevaDrive uses :sidekiq when Sidekiq is loaded and Active Job
+# is not configured for another backend, and :active_job otherwise.
 #
 # GenevaDrive.dispatcher = :active_job
 

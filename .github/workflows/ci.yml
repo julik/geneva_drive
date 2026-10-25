@@ -46,7 +46,7 @@ jobs:
     needs: appraisals
     runs-on: ubuntu-latest
     env:
-      # Job-level so that setup-ruby's bundler-cache keys on the right lockfile.
+      # Job-level so that setup-ruby's bundler-cache locks and keys on the right gemfile.
       # bin/matrix sets the same value per cell.
       BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.rails }}.gemfile
     strategy:

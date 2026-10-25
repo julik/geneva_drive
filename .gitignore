@@ -2,6 +2,8 @@
 /.bundle/
 /vendor/bundle
 Gemfile.lock
+# Appraisal recommends committing the generated gemfiles but not their lockfiles
+/gemfiles/*.gemfile.lock
 
 # LLM
 /.claude/

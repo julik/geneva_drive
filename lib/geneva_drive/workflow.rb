@@ -1117,7 +1117,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     workflow_logger = logger
 
     run_after_commit do
-      dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: true)
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger)
     end
   end
 
@@ -1184,7 +1184,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # INSERT to a second "after commit" that never fires (the double-deferral bug).
     # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
     run_after_commit do
-      dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: false)
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger)
     end
 
     step_execution
@@ -1234,7 +1234,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       workflow_logger = logger
 
       run_after_commit do
-        dispatch_step_job(successor_id, job_options, logger: workflow_logger, record_job_id: true)
+        dispatch_step_job(successor_id, job_options, logger: workflow_logger)
       end
 
       successor
@@ -1284,7 +1284,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       # bug). See the extensive comment in PerformStepJob for the full explanation.
       # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
       run_after_commit do
-        dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: true)
+        dispatch_step_job(execution_id, job_options, logger: workflow_logger)
       end
 
       step_execution
@@ -1321,25 +1321,23 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Hands a step execution to the configured dispatcher (GenevaDrive.dispatcher)
-  # and, when asked, writes the returned job id onto the execution for
-  # debugging. Always called from inside run_after_commit.
+  # and writes the returned job id onto the execution, so that the job can be
+  # found from the row. Always called from inside run_after_commit.
   #
   # @param execution_id [Integer, String] the step execution to perform
   # @param job_options [Hash] merged, validated job options
   # @param logger [Logger] the workflow logger captured before the commit
-  # @param record_job_id [Boolean] whether to write job_id back to the row
   # @return [void]
-  def dispatch_step_job(execution_id, job_options, logger:, record_job_id:)
+  def dispatch_step_job(execution_id, job_options, logger:)
     job_id = GenevaDrive.dispatcher.enqueue_step(execution_id, job_options, workflow_class_name: self.class.name)
 
     logger.debug("Enqueued step job with job_id=#{job_id} for step execution #{execution_id}")
 
-    if record_job_id
-      # A separate statement, outside any transaction - the job may already be running
-      GenevaDrive::StepExecution
-        .where(id: execution_id)
-        .update_all(job_id: job_id)
-    end
+    # A separate statement, outside any transaction - the job may already be running.
+    # resume! re-enqueues an existing execution, so this overwrites the old job's id.
+    GenevaDrive::StepExecution
+      .where(id: execution_id)
+      .update_all(job_id: job_id)
   end
 
   # Runs a block either after all transactions commit or immediately.

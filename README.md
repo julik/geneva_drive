@@ -41,6 +41,17 @@ geneva_drive_housekeeping:
   class: "GenevaDrive::HousekeepingJob"
 ```
 
+### Sidekiq without Active Job
+
+If your app writes `Sidekiq::Job` classes rather than Active Job ones, steps can be pushed to Sidekiq directly:
+
+```ruby
+# config/initializers/geneva_drive.rb
+GenevaDrive.dispatcher = :sidekiq
+```
+
+Step jobs then run as `GenevaDrive::SidekiqPerformStepJob`, a plain Sidekiq job with Sidekiq retries switched off (exception policies decide reattempts), and housekeeping can be scheduled as `GenevaDrive::SidekiqHousekeepingJob`. See "Running on Sidekiq" in the manual for the details, including rolling restarts, Batches and rate limiters.
+
 
 
 ## Usage
@@ -172,7 +183,7 @@ class PremiumWorkflow < BaseWorkflow
 end
 ```
 
-Step job options override workflow defaults when the step is initially enqueued, reattempted, or resumed. Options are passed directly to Active Job's `set` method.
+Step job options override workflow defaults when the step is initially enqueued, reattempted, or resumed. With the default dispatcher, options are passed directly to Active Job's `set` method.
 
 ### Hero Deletion Handling
 

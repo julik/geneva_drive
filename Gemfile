@@ -30,3 +30,7 @@ gem "minitest", "< 5.26"
 
 # Multi-version testing
 gem "appraisal"
+
+# The native Sidekiq dispatcher is optional at runtime but tested here.
+# Its tests run in Sidekiq::Testing fake mode and need no Redis.
+gem "sidekiq", ">= 7.0"

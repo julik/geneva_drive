@@ -13,6 +13,8 @@
 #   PerformStepJob.perform_now(step_execution.id)
 #
 class GenevaDrive::PerformStepJob < ActiveJob::Base
+  include GenevaDrive::StepExecutionLookup
+
   # == CRITICAL: Prevent double-deferral of job enqueueing ==
   #
   # GenevaDrive already defers job enqueueing using `ActiveRecord.after_all_transactions_commit`
@@ -82,40 +84,5 @@ class GenevaDrive::PerformStepJob < ActiveJob::Base
 
     logger.debug("PerformStepJob starting execution for step #{step_execution_id}")
     GenevaDrive::Executor.execute!(step_execution, logger: logger)
-  end
-
-  private
-
-  # Retries the step execution lookup briefly to handle the (unlikely) case where
-  # the job is picked up before the step execution's transaction is visible to this
-  # database connection.
-  #
-  # This is a defense-in-depth measure. The primary protection against visibility
-  # issues is the combination of:
-  #   1. `after_all_transactions_commit` in Workflow#create_step_execution, which ensures
-  #      `perform_later` is only called after the step execution row is committed
-  #   2. `enqueue_after_transaction_commit = :never` (above), which ensures the queue
-  #      adapter INSERT happens synchronously, not deferred into a dead callback
-  #
-  # However, this retry handles additional edge cases:
-  #   - Database replication lag (read replica hasn't caught up with the writer)
-  #   - Future code paths that might call perform_later inside a transaction
-  #   - Any other visibility delay between the commit and the job worker's read
-  #
-  # The 500ms total window (5 x 100ms) is generous enough to handle typical
-  # replication lag while being short enough to fail fast if the record truly
-  # doesn't exist (e.g. it was already deleted by cleanup).
-  #
-  # @param id [Integer, String] the step execution ID to look up
-  # @param attempts [Integer] maximum number of lookup attempts
-  # @param delay [Float] seconds to sleep between attempts
-  # @return [GenevaDrive::StepExecution, nil] the step execution or nil if not found
-  def find_step_execution(id, attempts: 5, delay: 0.1)
-    attempts.times do |i|
-      record = GenevaDrive::StepExecution.find_by(id: id)
-      return record if record
-      sleep(delay) if i < attempts - 1
-    end
-    nil
   end
 end

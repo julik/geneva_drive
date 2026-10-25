@@ -702,7 +702,7 @@ A step is interrupted when any of these happen:
 
 - `max_iterations:` is reached (`resumable_step :import, max_iterations: 10_000`)
 - `max_runtime:` is exceeded (`resumable_step :import, max_runtime: 5.minutes`)
-- The job queue signals shutdown (e.g. Sidekiq stopping)
+- The job queue signals shutdown (Sidekiq going quiet or stopping — see [Shutdowns and rolling restarts](#shutdowns-and-rolling-restarts))
 - The workflow is paused or canceled externally
 - The step calls `skip_to!` or `suspend!` explicitly
 
@@ -1585,7 +1585,7 @@ We recommend using a queue adapter that co-commits with your database:
 
 Co-committing matters because GenevaDrive relies on transactional guarantees. When a step completes and schedules the next step, both the state change and the job enqueue should be atomic. With co-committing adapters, if the transaction rolls back, the job is never enqueued.
 
-With non-transactional adapters (Sidekiq, Resque), there's a small window where the job is enqueued but the transaction hasn't committed. GenevaDrive handles this gracefully — the job will see the step execution in the wrong state and skip it — but you may see occasional log warnings.
+With a non-transactional adapter such as Resque, or Sidekiq behind Active Job, the job and the database are two systems, and the step execution row is what makes that safe: GenevaDrive enqueues only after the row has committed, and housekeeping re-enqueues any execution whose job got lost on the way. If your app writes Sidekiq jobs rather than Active Job ones, you do not have to go through Active Job at all — see [Running on Sidekiq](#running-on-sidekiq).
 
 ### Inline Enqueueing for Bulk Operations
 
@@ -1623,7 +1623,7 @@ The method is thread-safe and won't affect other concurrent requests.
 
 ### Custom Job Options
 
-You can override the Active Job settings used to enqueue a workflow's step jobs at three levels: for the entire workflow class, for an individual step, or for a specific workflow instance. All three accept the same keys that Active Job's `set` method understands: `:queue`, `:priority`, `:wait`, and `:wait_until`. Unknown keys are rejected at configuration time so that typos surface immediately instead of silently falling back to defaults.
+You can override the Active Job settings used to enqueue a workflow's step jobs at three levels: for the entire workflow class, for an individual step, or for a specific workflow instance. All three accept the same keys that Active Job's `set` method understands: `:queue`, `:priority`, `:wait`, and `:wait_until`. (On the Sidekiq dispatcher `:priority` is rejected, since Sidekiq has none — see [Queues instead of priorities](#queues-instead-of-priorities).) Unknown keys are rejected at configuration time so that typos surface immediately instead of silently falling back to defaults.
 
 ```ruby
 class HighPriorityWorkflow < GenevaDrive::Workflow
@@ -1635,7 +1635,7 @@ class HighPriorityWorkflow < GenevaDrive::Workflow
 end
 ```
 
-Options merge from lowest to highest precedence: **class defaults** (`set_step_job_options`) are overridden by **per-instance options** (`workflow.step_job_options = {...}`), which are in turn overridden by **per-step options** (`step ..., job_options: {...}`). The merged hash is passed straight to `PerformStepJob.set(...)` for every enqueue of that step, including reattempts and resume re-enqueueing.
+Options merge from lowest to highest precedence: **class defaults** (`set_step_job_options`) are overridden by **per-instance options** (`workflow.step_job_options = {...}`), which are in turn overridden by **per-step options** (`step ..., job_options: {...}`). The merged hash is handed to the dispatcher — with the default one, straight to `PerformStepJob.set(...)` — for every enqueue of that step, including reattempts and resume re-enqueueing.
 
 Per-instance options are stored in the workflow's `metadata` column, so they survive across step boundaries and are excluded from the dedupe uniqueness check — two workflows for the same hero cannot coexist just because their job options differ.
 
@@ -1683,6 +1683,185 @@ Workflows that have already extracted their artifact can now drain through `:pro
 
 The same pattern is useful whenever a later step releases a scarce resource (disk, external quota, a database lock) that earlier steps consume: give the release-work a higher priority than the acquire-work.
 
+## Running on Sidekiq
+
+Plenty of Rails apps never adopted Active Job. They have a `app/sidekiq` directory full of `include Sidekiq::Job` classes, a Sidekiq Pro or Enterprise license, a Web UI the on-call engineer knows by heart, and a set of client middleware that encrypts arguments or deduplicates pushes. For those apps, "steps run through Active Job" means a second job system bolted onto the first: another serialization format, another set of retry semantics, and jobs in the Busy page called `Sidekiq::ActiveJob::Wrapper` instead of anything you recognise.
+
+GenevaDrive does not actually need much from a job system. The step execution row is the durable record of what has to happen next; the job is only a wake-up call that carries the row's id. So we ship a dispatcher that pushes that wake-up call to Sidekiq directly:
+
+```ruby
+# config/initializers/geneva_drive.rb
+GenevaDrive.dispatcher = :sidekiq
+```
+
+That is the whole switch. Every step of every workflow is now pushed as a `GenevaDrive::SidekiqPerformStepJob` — a plain `Sidekiq::Job` — through `Sidekiq::Client`, with no Active Job in between. Set it in an initializer, so that it is in place before any workflow class loads: job options are checked against the dispatcher when a workflow class is defined.
+
+### What the jobs look like
+
+A step job carries one argument, the step execution id, which is a plain integer (or string, with UUID keys) and therefore passes Sidekiq's strict argument checks. It is tagged `geneva_drive` plus the workflow class name, so the Busy page and Enterprise's historical metrics can be read per workflow:
+
+```ruby
+{
+  "class" => "GenevaDrive::SidekiqPerformStepJob",
+  "args" => [48213],
+  "queue" => "default",
+  "retry" => false,
+  "tags" => ["geneva_drive", "SubscriptionRenewalWorkflow"]
+}
+```
+
+While a step runs, the workflow id, step name and step execution id are added to `Sidekiq::Context`, so Sidekiq's own log lines for that job carry them. The jid is written to the step execution's `job_id`, the same as the Active Job id is with the default dispatcher, so you can go from a row in the database to the job in the Web UI and back.
+
+A step with `wait:` is pushed with an `at` timestamp and waits in Sidekiq's Scheduled set; a step that is due now goes straight onto its queue.
+
+### Retries belong to the step, not the job
+
+Sidekiq's default is to retry a failing job 25 times over three weeks. The step job switches that off with `retry: false`, and this is deliberate.
+
+GenevaDrive already decides what happens when a step raises: that is what [exception policies](#exception-handling) are for. A policy might reattempt the step in five minutes, pause the workflow for a human, or cancel it. Every one of those outcomes is committed to the step execution row before the job finishes. A reattempt is a *new* step execution with a job of its own. If Sidekiq also retried the original job, the retry would find the execution already settled and do nothing — so all a Sidekiq retry would add is ghost entries in the Retry set, and a Web UI that disagrees with the workflow about what failed.
+
+The exception is still raised out of the job once the executor has committed the step's state, so Sidekiq's error handlers — Sentry, Honeybadger, AppSignal, whatever you have configured — report it exactly as for any other failing job. Because the job is not retried, Sidekiq's death handlers see it too. Treat that as "this job is done", not "this workflow is dead": the step execution row is the ledger, and the workflow's state is the answer to "is this broken?".
+
+### Why we bypass transactional push
+
+If your app calls `Sidekiq.transactional_push!`, every `perform_async` is deferred until the surrounding Active Record transaction commits. That is a good default for application jobs, and the dispatcher deliberately does not use it.
+
+GenevaDrive already defers its push: it hands the step to the dispatcher from an `after_all_transactions_commit` callback, once the step execution row is visible to other connections. That callback runs after the SQL `COMMIT`, but possibly while the transaction is still unwinding on the Ruby side. A second deferral registered from inside it can be dropped on the floor — the step execution then has no job and sits in `scheduled` until housekeeping notices, 15 minutes later by default. We hit exactly this with Solid Queue (it is described at length in `PerformStepJob`), and the remedy is the same here: since we are already past the commit, push synchronously. The dispatcher builds its own `Sidekiq::Client` for that.
+
+Client middleware still runs on that push, so argument encryption, Enterprise unique jobs, and your own middleware all see GenevaDrive's jobs like any others. `Sidekiq::Client.via` sharding is honoured as well.
+
+### Queues instead of priorities
+
+Sidekiq has no job priority. It has queues, and a process works its queues either in strict order or by weight. So under the Sidekiq dispatcher `job_options: {priority: ...}` raises `StepConfigurationError` when the workflow class loads, rather than being silently ignored. `queue:`, `wait:` and `wait_until:` work as usual.
+
+The backlog problem from [Custom Job Options](#custom-job-options) — 50,000 fresh `:extract` steps crowding out the `:process` and `:cleanup` steps that free up disk — is solved with a queue that is worked first:
+
+```ruby
+class RubygemsWorkflow < GenevaDrive::Workflow
+  step :extract do
+    # Download a large tarball to local disk
+  end
+
+  step :process, job_options: {queue: :workflows_drain} do
+    # Do work on the extracted data
+  end
+
+  step :cleanup, job_options: {queue: :workflows_drain} do
+    # Delete the on-disk artifact
+  end
+end
+```
+
+```yaml
+# config/sidekiq.yml
+:queues:
+  - [workflows_drain, 5]
+  - [default, 1]
+```
+
+With weights, the drain queue is picked five times as often as `default`; list the queues without weights and Sidekiq works them strictly in order, so `default` only gets attention once the drain queue is empty.
+
+### Your own job class
+
+To carry options of your own — a dedicated queue, extra tags, Enterprise's `unique_for`, Pro's `expires_in` — subclass the step job and hand the subclass to the dispatcher:
+
+```ruby
+# app/sidekiq/workflow_step_job.rb
+class WorkflowStepJob < GenevaDrive::SidekiqPerformStepJob
+  sidekiq_options queue: "workflows", tags: ["geneva_drive", "billing"]
+end
+
+# config/initializers/geneva_drive.rb
+Rails.application.config.to_prepare do
+  GenevaDrive.dispatcher = GenevaDrive::SidekiqDispatcher.new(job_class: WorkflowStepJob)
+end
+```
+
+Keep `retry: false` on the subclass for the reasons above. A queue set through `job_options:` on a workflow or step still wins over the class's queue.
+
+### Shutdowns and rolling restarts
+
+When Sidekiq is told to stop — or to go quiet, which is what Enterprise rolling restarts and most deploy scripts do first — it fires its `:quiet` event. GenevaDrive's engine subscribes to it whichever dispatcher you use, including Active Job on the Sidekiq adapter. From that moment every [resumable step](#resumable-steps) running in the process checkpoints its cursor at the end of the current iteration and hands off to a successor execution, which the next process picks up from where this one stopped.
+
+That only helps if an iteration is short enough to finish before Sidekiq gives up waiting, which is 25 seconds by default (`-t`). So the rule of thumb is: a step must either finish well within the shutdown timeout, or be a `resumable_step` whose single iteration does. A plain step that is still running when the timeout expires is killed; Sidekiq puts its job back on the queue (Sidekiq Pro's `super_fetch` does this even after a hard crash), but the step execution stays `in_progress` until housekeeping recovers it after `stuck_in_progress_threshold`.
+
+Sidekiq 7.3 has iterable jobs of its own, and the two are worth comparing if you are deciding where a long iteration should live:
+
+| | `Sidekiq::IterableJob` | GenevaDrive `resumable_step` |
+|---|---|---|
+| Where the cursor lives | Redis, flushed about every 5 seconds and on error | the step execution row, written by `checkpoint!` or on every iteration |
+| After a crash | resumes from the last Redis flush | resumes from the last checkpoint, in the database your work writes to |
+| On shutdown | raises `Interrupted` and re-enqueues the same job | completes the execution as `continued` and schedules a successor |
+| What you can see | the job in the Web UI | every chunk as its own step execution, with the cursor it stopped at |
+
+### Pro and Enterprise features
+
+Several Sidekiq features fit workflows naturally.
+
+**Batches (Pro)** fan work out; [signals](#waiting-for-signals) bring the result back into a workflow. Park a step on a signal, run the batch, and let the batch's success callback deliver it:
+
+```ruby
+class InvoiceRunWorkflow < GenevaDrive::Workflow
+  step :render_invoices do
+    batch = Sidekiq::Batch.new
+    batch.description = "Invoices for #{hero.billing_period}"
+    batch.on(:success, InvoiceRunCallbacks, "workflow_id" => id)
+    batch.jobs do
+      hero.accounts.find_each { |account| RenderInvoiceJob.perform_async(account.id, hero.id) }
+    end
+  end
+
+  step :send_invoices, wait_for: :invoices_rendered do
+    InvoiceMailer.batch_ready(hero).deliver_later
+  end
+end
+
+class InvoiceRunCallbacks
+  def on_success(status, options)
+    workflow = GenevaDrive::Workflow.find(options["workflow_id"])
+    workflow.signal!(:invoices_rendered, idempotency_key: status.bid)
+  end
+end
+```
+
+The batch id makes the signal idempotent, so a callback Sidekiq delivers twice is harmless.
+
+**Rate limiters (Enterprise)** raise `Sidekiq::Limiter::OverLimit` when the limit is hit. Inside a step, turn that into a reattempt instead of a failure:
+
+```ruby
+class CrmSyncWorkflow < GenevaDrive::Workflow
+  CRM_LIMIT = Sidekiq::Limiter.window("crm-api", 100, :minute, wait_timeout: 0)
+
+  on_exception Sidekiq::Limiter::OverLimit, action: :reattempt!, wait: 1.minute, report: :never
+
+  step :push_contact do
+    CRM_LIMIT.within_limit { CrmClient.upsert_contact(hero) }
+  end
+end
+```
+
+**Periodic jobs (Enterprise)** and **sidekiq-cron** can schedule housekeeping through `GenevaDrive::SidekiqHousekeepingJob` — see [Running Housekeeping](#running-housekeeping).
+
+### Testing
+
+The [test helpers](#test-helpers) drive the executor directly, so `speedrun_workflow` and friends work the same with either dispatcher. To exercise the real push path, use Sidekiq's fake mode and drain the step job:
+
+```ruby
+test "renewal runs end to end through Sidekiq" do
+  workflow = SubscriptionRenewalWorkflow.create!(hero: subscriptions(:annual))
+
+  GenevaDrive::SidekiqPerformStepJob.drain
+
+  assert workflow.reload.finished?
+end
+```
+
+The fake queue ignores `at`, so steps with `wait:` run as soon as you drain.
+
+### Switching an existing app over
+
+Changing the dispatcher only affects jobs pushed from then on. `PerformStepJob`s already queued through Active Job keep running on whatever adapter delivered them, and new steps go out as native Sidekiq jobs. Deploy the change, let the Active Job queue drain, and that is the migration.
+
 ## Housekeeping
 
 ### The Housekeeping Job
@@ -1722,6 +1901,24 @@ GoodJob::Cron.schedule(
 
 # Or enqueue manually
 GenevaDrive::HousekeepingJob.perform_later
+```
+
+On Sidekiq without Active Job, schedule `GenevaDrive::SidekiqHousekeepingJob` instead. It runs the same code in-process:
+
+```ruby
+# Sidekiq Enterprise periodic jobs
+Sidekiq.configure_server do |config|
+  config.periodic do |mgr|
+    mgr.register("*/30 * * * *", "GenevaDrive::SidekiqHousekeepingJob")
+  end
+end
+
+# sidekiq-cron
+Sidekiq::Cron::Job.create(
+  name: "GenevaDrive housekeeping",
+  cron: "*/30 * * * *",
+  class: "GenevaDrive::SidekiqHousekeepingJob"
+)
 ```
 
 ## Testing

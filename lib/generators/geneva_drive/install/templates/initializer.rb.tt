@@ -8,9 +8,8 @@
 #   than Active Job ones. Schedule GenevaDrive::SidekiqHousekeepingJob then.
 #   Supports Sidekiq 7.3 and later 7.x, and 8.x.
 #
-<% if sidekiq_dispatcher? -%>
-# Sidekiq was loaded and Active Job was not set up for another backend when
-# this file was generated, so step jobs go to Sidekiq natively.
+<% if GenevaDrive::SidekiqDispatcher.recommended? -%>
+# Active Job was set up for Sidekiq when this file was generated.
 GenevaDrive.dispatcher = :sidekiq
 <% else -%>
 # GenevaDrive.dispatcher = :active_job

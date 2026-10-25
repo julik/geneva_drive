@@ -15,9 +15,8 @@ class GenevaDrive::ActiveJobDispatcher
   # @param step_execution_id [Integer, String] the step execution to perform
   # @param job_options [Hash] validated `queue`, `priority`, `wait`, `wait_until`
   # @param workflow_class_name [String, nil] unused here
-  # @param step_name [String, nil] unused here
   # @return [String, nil] the Active Job job_id, or nil if the enqueue was aborted
-  def enqueue_step(step_execution_id, job_options, workflow_class_name: nil, step_name: nil)
+  def enqueue_step(step_execution_id, job_options, workflow_class_name: nil)
     job = GenevaDrive::PerformStepJob.set(**job_options).perform_later(step_execution_id)
     # perform_later returns false, not nil, when a callback aborts the enqueue
     return nil unless job

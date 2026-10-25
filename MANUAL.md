@@ -1700,13 +1700,13 @@ We support **Sidekiq 7.3 and later 7.x, and Sidekiq 8.x** — OSS, Pro and Enter
 
 #### What the installer picks
 
-`bin/rails generate geneva_drive:install` looks at your app once, when it writes `config/initializers/geneva_drive.rb`. If a supported Sidekiq is loaded and Active Job is not set up for some other real backend — its adapter is unset, `:async`, `:inline`, `:test` or `:sidekiq` — every job your app enqueues ends up in Sidekiq anyway, so the initializer gets an uncommented `GenevaDrive.dispatcher = :sidekiq` with a note saying why. With the adapter set to anything else, say `:solid_queue` or `:good_job`, the line stays commented out and steps go through Active Job.
+When `bin/rails generate geneva_drive:install` writes `config/initializers/geneva_drive.rb`, it checks Active Job's adapter once. If the adapter is `:sidekiq` and a supported Sidekiq is loaded, the initializer gets an uncommented `GenevaDrive.dispatcher = :sidekiq`. Otherwise the line stays commented out. An unset adapter does not count: the generator runs in development, and an app that leaves development on `:async` may well run Solid Queue in production.
 
-We decide this at install time rather than at boot on purpose. A dispatcher picked at boot would change underneath an app that is already running workflows, just because someone bumped the gem — and it might pick differently in development and production. A line in an initializer is something you can read, diff and change. Without one, the dispatcher is always `:active_job`.
+Nothing is detected at boot. Without that line the dispatcher is `:active_job`, so upgrading the gem never switches an app that is already running workflows.
 
 ### What the jobs look like
 
-A step job carries one argument, the step execution id, which is a plain integer (or string, with UUID keys) and therefore passes Sidekiq's strict argument checks. It is tagged `geneva_drive` plus the workflow class name, so the Busy page and Enterprise's historical metrics can be read per workflow:
+A step job carries one argument, the step execution id, which is a plain integer (or string, with UUID keys) and therefore passes Sidekiq's strict argument checks. It is tagged `geneva_drive` plus the workflow class name, and the Web UI shows those tags next to each job:
 
 ```ruby
 {
@@ -1785,13 +1785,15 @@ Rails.application.config.to_prepare do
 end
 ```
 
+The `to_prepare` block is there because `WorkflowStepJob` lives in `app/`, and Rails does not let an initializer autoload it. `to_prepare` runs after the initializers but before eager loading, so workflow classes still see the dispatcher when they are defined. In development it also runs again on every code reload, so the dispatcher picks up the reloaded class. The plain `GenevaDrive.dispatcher = :sidekiq` needs none of this, as it refers to nothing in `app/`.
+
 Keep `retry: false` on the subclass for the reasons above. A queue set through `job_options:` on a workflow or step still wins over the class's queue.
 
 ### Shutdowns and rolling restarts
 
 When Sidekiq is told to stop — or to go quiet, which is what Enterprise rolling restarts and most deploy scripts do first — it fires its `:quiet` event. GenevaDrive's engine subscribes to it whichever dispatcher you use, including Active Job on the Sidekiq adapter. From that moment every [resumable step](#resumable-steps) running in the process checkpoints its cursor at the end of the current iteration and hands off to a successor execution, which the next process picks up from where this one stopped.
 
-That only helps if an iteration is short enough to finish before Sidekiq gives up waiting, which is 25 seconds by default (`-t`). So the rule of thumb is: a step must either finish well within the shutdown timeout, or be a `resumable_step` whose single iteration does. A plain step that is still running when the timeout expires is killed; Sidekiq puts its job back on the queue (Sidekiq Pro's `super_fetch` does this even after a hard crash), but the step execution stays `in_progress` until housekeeping recovers it after `stuck_in_progress_threshold`.
+That only helps if an iteration is short enough to finish before Sidekiq gives up waiting, which is 25 seconds by default (`-t`). So the rule of thumb is: a step must either finish well within the shutdown timeout, or be a `resumable_step` whose single iteration does. A plain step that is still running when the timeout expires is killed; Sidekiq puts its job back on the queue (Sidekiq Pro's `super_fetch` does this even after a hard crash), but the step execution stays `in_progress`. When the re-delivered job arrives, the executor sees an execution that is no longer `scheduled` and skips it as a duplicate. Housekeeping then recovers the execution once it has been `in_progress` for longer than `stuck_in_progress_threshold`.
 
 Sidekiq 7.3 has iterable jobs of its own, and the two are worth comparing if you are deciding where a long iteration should live:
 
@@ -1868,7 +1870,7 @@ The fake queue ignores `at`, so steps with `wait:` run as soon as you drain.
 
 ### Switching an existing app over
 
-Upgrading GenevaDrive leaves your dispatcher alone. Nothing is detected at boot, and when you re-run the installer to pick up new migrations it asks before overwriting an initializer you already have - answer no, or pass `--skip`. To switch, add `GenevaDrive.dispatcher = :sidekiq` yourself. Tests that assert on enqueued `PerformStepJob`s will then need to look for `GenevaDrive::SidekiqPerformStepJob` in Sidekiq's fake mode instead.
+Upgrading GenevaDrive leaves your dispatcher alone. When you re-run the installer to pick up new migrations, it asks before overwriting the initializer you already have - answer no, or pass `--skip`. To switch, add `GenevaDrive.dispatcher = :sidekiq` yourself. Tests that assert on enqueued `PerformStepJob`s will then need to look for `GenevaDrive::SidekiqPerformStepJob` in Sidekiq's fake mode instead.
 
 Changing the dispatcher only affects jobs pushed from then on. `PerformStepJob`s already queued through Active Job keep running on whatever adapter delivered them, and new steps go out as native Sidekiq jobs. Deploy the change, let the Active Job queue drain, and that is the migration.
 

@@ -54,7 +54,7 @@ module GenevaDrive
   autoload :MigrationHelpers, "geneva_drive/migration_helpers"
   autoload :TestHelpers, "geneva_drive/test_helpers"
 
-  # Dispatchers - what turns "this step execution should run" into a job
+  # Dispatchers
   autoload :ActiveJobDispatcher, "geneva_drive/dispatchers/active_job_dispatcher"
   autoload :SidekiqDispatcher, "geneva_drive/dispatchers/sidekiq_dispatcher"
 
@@ -187,22 +187,10 @@ module GenevaDrive
       Thread.current[:geneva_drive_inline_enqueue] = previous
     end
 
-    # The dispatcher turns "this step execution should run now, or at this
-    # time" into a job on your queue. GenevaDrive ships two:
-    #
-    # - `:active_job` (the default) enqueues GenevaDrive::PerformStepJob
-    #   through Active Job, so it runs on whatever adapter the app uses.
-    # - `:sidekiq` pushes GenevaDrive::SidekiqPerformStepJob, a plain
-    #   Sidekiq::Job, straight through Sidekiq::Client - for apps that write
-    #   Sidekiq jobs rather than Active Job ones.
-    #
-    # Set it in an initializer, before any workflow class loads: step job
-    # options are validated against it when a workflow class is defined.
-    #
-    # `bin/rails generate geneva_drive:install` writes `:sidekiq` into the
-    # initializer when it finds Sidekiq running the app's jobs (see
-    # SidekiqDispatcher.recommended?). Left unset, it is always `:active_job`,
-    # so an existing app never changes dispatcher just by upgrading.
+    # Turns "this step execution should run" into a job: `:active_job` (the
+    # default, see ActiveJobDispatcher) or `:sidekiq` (see SidekiqDispatcher).
+    # Set it in an initializer, before any workflow class loads, since step
+    # job options are validated against it when a workflow class is defined.
     #
     # @example Run step jobs as native Sidekiq jobs
     #   GenevaDrive.dispatcher = :sidekiq
@@ -215,16 +203,13 @@ module GenevaDrive
     # @param value [Symbol, #enqueue_step] `:active_job`, `:sidekiq`, or a
     #   dispatcher object
     # @return [void]
-    # @raise [ArgumentError] for an unknown symbol or an object that cannot
-    #   enqueue steps
+    # @raise [ArgumentError] for anything else
     def dispatcher=(value)
       @dispatcher = case value
-      when :active_job, "active_job"
+      when :active_job
         GenevaDrive::ActiveJobDispatcher.new
-      when :sidekiq, "sidekiq"
+      when :sidekiq
         GenevaDrive::SidekiqDispatcher.new
-      when nil
-        nil
       else
         unless value.respond_to?(:enqueue_step) && value.respond_to?(:validate_job_options!)
           raise ArgumentError,

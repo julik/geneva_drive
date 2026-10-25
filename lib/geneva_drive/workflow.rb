@@ -312,10 +312,8 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       _cancel_conditions << block if block_given?
     end
 
-    # Sets job options for step execution jobs.
-    # Options are handed to the dispatcher - with the default one, to Active
-    # Job's set method. The Sidekiq dispatcher takes `queue`, `wait` and
-    # `wait_until`, and rejects `priority`.
+    # Sets job options for step execution jobs. See GenevaDrive::JobOptions
+    # for the keys allowed, and the dispatcher for how they are applied.
     #
     # @param options [Hash] job options (queue, priority, etc.)
     # @return [void]
@@ -1119,7 +1117,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     workflow_logger = logger
 
     run_after_commit do
-      dispatch_step_job(execution_id, step_execution.step_name, job_options, logger: workflow_logger, record_job_id: true)
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: true)
     end
   end
 
@@ -1186,7 +1184,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # INSERT to a second "after commit" that never fires (the double-deferral bug).
     # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
     run_after_commit do
-      dispatch_step_job(execution_id, step_execution.step_name, job_options, logger: workflow_logger, record_job_id: false)
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: false)
     end
 
     step_execution
@@ -1236,7 +1234,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       workflow_logger = logger
 
       run_after_commit do
-        dispatch_step_job(successor_id, predecessor.step_name, job_options, logger: workflow_logger, record_job_id: true)
+        dispatch_step_job(successor_id, job_options, logger: workflow_logger, record_job_id: true)
       end
 
       successor
@@ -1286,7 +1284,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       # bug). See the extensive comment in PerformStepJob for the full explanation.
       # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
       run_after_commit do
-        dispatch_step_job(execution_id, step_definition.name, job_options, logger: workflow_logger, record_job_id: true)
+        dispatch_step_job(execution_id, job_options, logger: workflow_logger, record_job_id: true)
       end
 
       step_execution
@@ -1327,18 +1325,12 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # debugging. Always called from inside run_after_commit.
   #
   # @param execution_id [Integer, String] the step execution to perform
-  # @param step_name [String] its step, for the dispatcher's tags
   # @param job_options [Hash] merged, validated job options
   # @param logger [Logger] the workflow logger captured before the commit
   # @param record_job_id [Boolean] whether to write job_id back to the row
   # @return [void]
-  def dispatch_step_job(execution_id, step_name, job_options, logger:, record_job_id:)
-    job_id = GenevaDrive.dispatcher.enqueue_step(
-      execution_id,
-      job_options,
-      workflow_class_name: self.class.name,
-      step_name: step_name.to_s
-    )
+  def dispatch_step_job(execution_id, job_options, logger:, record_job_id:)
+    job_id = GenevaDrive.dispatcher.enqueue_step(execution_id, job_options, workflow_class_name: self.class.name)
 
     logger.debug("Enqueued step job with job_id=#{job_id} for step execution #{execution_id}")
 

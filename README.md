@@ -50,7 +50,7 @@ If your app writes `Sidekiq::Job` classes rather than Active Job ones, steps can
 GenevaDrive.dispatcher = :sidekiq
 ```
 
-The install generator writes this line for you when Sidekiq is loaded and Active Job is not configured for some other backend. Without it, steps go through Active Job, so upgrading never switches an existing app. Supported: Sidekiq 7.3 and later 7.x, and 8.x, including Pro and Enterprise.
+The install generator writes this line for you when Active Job is already set up for Sidekiq. Supported: Sidekiq 7.3 and later 7.x, and 8.x, including Pro and Enterprise.
 
 Step jobs then run as `GenevaDrive::SidekiqPerformStepJob`, a plain Sidekiq job with Sidekiq retries switched off (exception policies decide reattempts), and housekeeping can be scheduled as `GenevaDrive::SidekiqHousekeepingJob`. See "Running on Sidekiq" in the manual for the details, including rolling restarts, Batches and rate limiters.
 

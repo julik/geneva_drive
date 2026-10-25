@@ -3,13 +3,14 @@
 require "test_helper"
 require "minitest/mock"
 
-# Fake mode keeps pushed jobs in memory, per job class, so none of this needs
-# Redis. Sidekiq 8 has a new API for it; 7 only has the old require.
-if Sidekiq.respond_to?(:testing!)
-  Sidekiq.testing!(:fake)
-else
+# Sidekiq 8 has a new testing API; 7 only has the old require, which also
+# switches fake mode on globally. Fake mode is toggled per test below.
+begin
+  require "sidekiq/test_api"
+rescue LoadError
   require "sidekiq/testing"
 end
+Sidekiq::Testing.disable!
 Sidekiq.logger.level = Logger::WARN
 
 class SidekiqDispatcherTest < ActiveSupport::TestCase
@@ -61,7 +62,9 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     end
   end
 
+  # Fake mode keeps pushed jobs in memory, per job class, so none of this needs Redis.
   setup do
+    Sidekiq::Testing.fake!
     @previous_dispatcher = GenevaDrive.dispatcher
     GenevaDrive.dispatcher = :sidekiq
     Sidekiq::Job.clear_all
@@ -73,6 +76,7 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     GenevaDrive.dispatcher = @previous_dispatcher
     GenevaDrive.reset_exit_request!
     Sidekiq::Job.clear_all
+    Sidekiq::Testing.disable!
     Thread.current[:sidekiq_steps] = nil
   end
 
@@ -84,11 +88,12 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
   end
 
-  test "dispatcher= rejects objects that cannot enqueue steps" do
+  test "dispatcher= rejects anything that cannot enqueue steps" do
     error = assert_raises(ArgumentError) { GenevaDrive.dispatcher = :resque }
     assert_match(/:active_job, :sidekiq/, error.message)
 
     assert_raises(ArgumentError) { GenevaDrive.dispatcher = Object.new }
+    assert_raises(ArgumentError) { GenevaDrive.dispatcher = nil }
   end
 
   test "creating a workflow pushes a native Sidekiq job for the first step" do
@@ -159,7 +164,9 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     end
   end
 
-  test "pushes bypass the client_class that Sidekiq.transactional_push! installs" do
+  test "pushes skip the client_class that perform_async would use" do
+    # Sidekiq.transactional_push! works by installing a client_class. We push
+    # through Sidekiq::Client directly, so it never sees our jobs.
     RecordingClient.pushes = []
     options = Sidekiq.default_job_options
     previous = options["client_class"]
@@ -171,18 +178,20 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
       previous ? options["client_class"] = previous : options.delete("client_class")
     end
 
-    assert_empty RecordingClient.pushes, "the transaction-aware client would defer the push a second time"
+    assert_empty RecordingClient.pushes
     assert_equal 1, GenevaDrive::SidekiqPerformStepJob.jobs.size
   end
 
-  test "a custom job class and client can be supplied" do
-    RecordingClient.pushes = []
+  test "a custom job class can be supplied" do
     custom_job = Class.new(GenevaDrive::SidekiqPerformStepJob) do
       sidekiq_options queue: "workflows", tags: ["billing"]
     end
-    GenevaDrive.dispatcher = GenevaDrive::SidekiqDispatcher.new(job_class: custom_job, client: RecordingClient.new)
+    GenevaDrive.dispatcher = GenevaDrive::SidekiqDispatcher.new(job_class: custom_job)
 
-    TwoStepWorkflow.create!(hero: @user)
+    RecordingClient.pushes = []
+    Sidekiq::Client.stub(:new, RecordingClient.new) do
+      TwoStepWorkflow.create!(hero: @user)
+    end
 
     item = RecordingClient.pushes.sole
     assert_equal custom_job, item["class"]
@@ -235,48 +244,51 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     assert workflow.reload.finished?
   end
 
-  test "Sidekiq is recommended when Active Job is not pointed at another backend" do
-    [nil, :async, :inline, :test, :sidekiq, "sidekiq", ActiveJob::QueueAdapters::AsyncAdapter.new].each do |adapter|
+  test "Sidekiq is recommended when Active Job is pointed at Sidekiq" do
+    sidekiq_adapter = Class.new { def self.name = "ActiveJob::QueueAdapters::SidekiqAdapter" }
+    [:sidekiq, "sidekiq", sidekiq_adapter.new].each do |adapter|
       assert GenevaDrive::SidekiqDispatcher.recommended?(adapter), "with adapter #{adapter.inspect}"
     end
   end
 
-  test "Sidekiq is not recommended when Active Job is pointed at another backend" do
-    [:solid_queue, :good_job, :resque, "delayed_job"].each do |adapter|
+  test "Sidekiq is not recommended for any other adapter, or none" do
+    # Unset is the common case in development, where the generator runs, even
+    # for apps that use Solid Queue in production.
+    [nil, :async, :inline, :test, :solid_queue, :good_job, ActiveJob::QueueAdapters::AsyncAdapter.new].each do |adapter|
       refute GenevaDrive::SidekiqDispatcher.recommended?(adapter), "with adapter #{adapter.inspect}"
     end
   end
 
   test "an unset dispatcher is Active Job even where Sidekiq would be recommended" do
     with_active_job_adapter(:sidekiq) do
-      GenevaDrive.dispatcher = nil
+      GenevaDrive.instance_variable_set(:@dispatcher, nil)
       assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
     end
   end
 
   test "the supported Sidekiq versions are 7.3 up to, not including, 9" do
-    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("7.3.0")
-    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("8.1.7")
-    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("7.2.4")
-    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("6.5.12")
-    refute GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?("9.0.0")
-    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?(Sidekiq::VERSION), "the bundled Sidekiq must be supported"
+    supported = GenevaDrive::SidekiqDispatcher::SUPPORTED_SIDEKIQ_VERSIONS
+    %w[7.3.0 7.3.10 8.0.0 8.1.7].each { |v| assert supported.satisfied_by?(Gem::Version.new(v)), v }
+    %w[6.5.12 7.2.4 9.0.0].each { |v| refute supported.satisfied_by?(Gem::Version.new(v)), v }
+    assert GenevaDrive::SidekiqDispatcher.supported_sidekiq_version?, "the bundled Sidekiq must be supported"
   end
 
   test "the Sidekiq dispatcher refuses an unsupported Sidekiq" do
-    GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
-      error = assert_raises(LoadError) { GenevaDrive::SidekiqDispatcher.new }
-      assert_match(/6\.5\.12/, error.message)
+    GenevaDrive::SidekiqDispatcher.stub(:supported_sidekiq_version?, false) do
+      error = assert_raises(ArgumentError) { GenevaDrive::SidekiqDispatcher.new }
+      assert_match(Sidekiq::VERSION, error.message)
       assert_match(/>= 7\.3/, error.message)
     end
   end
 
   test "Sidekiq is not recommended when the loaded version is unsupported" do
-    GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
+    GenevaDrive::SidekiqDispatcher.stub(:supported_sidekiq_version?, false) do
       refute GenevaDrive::SidekiqDispatcher.recommended?(:sidekiq)
     end
   end
 
+  # Runs the initializer block against a stand-in config; a real `sidekiq`
+  # boot is not part of the suite.
   test "the engine wires Sidekiq's quiet event to the shutdown request" do
     initializer = GenevaDrive::Engine.instance.initializers.find { |i| i.name == "geneva_drive.sidekiq_lifecycle" }
     assert initializer, "expected the lifecycle initializer to exist"

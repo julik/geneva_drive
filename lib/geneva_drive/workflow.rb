@@ -312,8 +312,8 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       _cancel_conditions << block if block_given?
     end
 
-    # Sets job options for step execution jobs.
-    # Options are passed to ActiveJob's set method.
+    # Sets job options for step execution jobs. See GenevaDrive::JobOptions
+    # for the keys allowed, and the dispatcher for how they are applied.
     #
     # @param options [Hash] job options (queue, priority, etc.)
     # @return [void]
@@ -1104,7 +1104,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     signal
   end
 
-  # Enqueues the PerformStepJob for an execution that dispatch just flipped
+  # Enqueues the step job for an execution that dispatch just flipped
   # from waiting to scheduled. Uses the same enqueue discipline (merged job
   # options, after-commit deferral, job_id writeback) as create_step_execution.
   #
@@ -1117,15 +1117,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     workflow_logger = logger
 
     run_after_commit do
-      job = GenevaDrive::PerformStepJob
-        .set(**job_options)
-        .perform_later(execution_id)
-
-      workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for woken step execution #{execution_id}")
-
-      GenevaDrive::StepExecution
-        .where(id: execution_id)
-        .update_all(job_id: job.job_id)
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger)
     end
   end
 
@@ -1190,12 +1182,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     # PerformStepJob sets `enqueue_after_transaction_commit = :never` -- without it,
     # ActiveJob/SolidQueue would see the transaction as "open" and defer the queue
     # INSERT to a second "after commit" that never fires (the double-deferral bug).
+    # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
     run_after_commit do
-      job = GenevaDrive::PerformStepJob
-        .set(**job_options)
-        .perform_later(execution_id)
-
-      workflow_logger.debug("Enqueued job #{job.job_id} for step execution #{execution_id}")
+      dispatch_step_job(execution_id, job_options, logger: workflow_logger)
     end
 
     step_execution
@@ -1245,15 +1234,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       workflow_logger = logger
 
       run_after_commit do
-        job = GenevaDrive::PerformStepJob
-          .set(**job_options)
-          .perform_later(successor_id)
-
-        workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for successor execution ##{successor_id}")
-
-        GenevaDrive::StepExecution
-          .where(id: successor_id)
-          .update_all(job_id: job.job_id)
+        dispatch_step_job(successor_id, job_options, logger: workflow_logger)
       end
 
       successor
@@ -1301,17 +1282,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
       # without it, ActiveJob/SolidQueue would see the transaction as "open" and defer
       # the queue INSERT to a second "after commit" that never fires (the double-deferral
       # bug). See the extensive comment in PerformStepJob for the full explanation.
+      # SidekiqDispatcher bypasses Sidekiq's transactional push for the same reason.
       run_after_commit do
-        job = GenevaDrive::PerformStepJob
-          .set(**job_options)
-          .perform_later(execution_id)
-
-        workflow_logger.debug("Enqueued PerformStepJob with job_id=#{job.job_id} for step execution #{execution_id}")
-
-        # Update job_id for debugging purposes (this is a separate transaction)
-        GenevaDrive::StepExecution
-          .where(id: execution_id)
-          .update_all(job_id: job.job_id)
+        dispatch_step_job(execution_id, job_options, logger: workflow_logger)
       end
 
       step_execution
@@ -1347,6 +1320,26 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     nil
   end
 
+  # Hands a step execution to the configured dispatcher (GenevaDrive.dispatcher)
+  # and writes the returned job id onto the execution, so that the job can be
+  # found from the row. Always called from inside run_after_commit.
+  #
+  # @param execution_id [Integer, String] the step execution to perform
+  # @param job_options [Hash] merged, validated job options
+  # @param logger [Logger] the workflow logger captured before the commit
+  # @return [void]
+  def dispatch_step_job(execution_id, job_options, logger:)
+    job_id = GenevaDrive.dispatcher.enqueue_step(execution_id, job_options, workflow_class_name: self.class.name)
+
+    logger.debug("Enqueued step job with job_id=#{job_id} for step execution #{execution_id}")
+
+    # A separate statement, outside any transaction - the job may already be running.
+    # resume! re-enqueues an existing execution, so this overwrites the old job's id.
+    GenevaDrive::StepExecution
+      .where(id: execution_id)
+      .update_all(job_id: job_id)
+  end
+
   # Runs a block either after all transactions commit or immediately.
   #
   # The behavior depends on GenevaDrive.enqueues_deferred?, which checks:
@@ -1360,7 +1353,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # In tests (enqueue_after_commit = false), or inside a
   # without_deferred_enqueues block, the block runs immediately.
   #
-  # @yield the block to run (typically contains perform_later call)
+  # @yield the block to run (typically hands a step to the dispatcher)
   # @return [void]
   def run_after_commit(&block)
     if GenevaDrive.enqueues_deferred?

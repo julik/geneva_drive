@@ -1079,11 +1079,13 @@ class GenevaDrive::Executor
 
   # Checks if the job should exit (e.g., Sidekiq shutdown).
   #
+  # The process-wide flag is raised by Sidekiq's :quiet event (see the
+  # engine). Asking Sidekiq::CLI directly does not work: the CLI has no
+  # stopping? of its own, only its launcher does.
+  #
   # @return [Boolean]
   def job_should_exit?
-    Thread.current[:geneva_drive_should_exit] ||
-      (defined?(Sidekiq) && Sidekiq.const_defined?(:CLI) &&
-       Sidekiq::CLI.instance&.stopping?)
+    Thread.current[:geneva_drive_should_exit] || GenevaDrive.exit_requested?
   end
 
   # Checks if the workflow has been externally paused or canceled.

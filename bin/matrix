@@ -12,7 +12,7 @@ cd "$(dirname "$0")/.."
 # The gemfiles are generated from Appraisals, which makes them the one place
 # the supported Rails versions are written down. CI reads the same list off
 # them, so neither side can drift from the other.
-RAILS_VERSIONS=${1:-$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | tr '\n' ' ')}
+RAILS_VERSIONS=${1:-$(ls gemfiles/rails_*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | tr '\n' ' ')}
 ENGINES=${2:-"sqlite postgres mysql mariadb"}
 
 for engine in $ENGINES; do

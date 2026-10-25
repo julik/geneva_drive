@@ -89,8 +89,20 @@ is the one engine where `geneva_drive_json_column` picks LONGTEXT and the
 encoding happens in the model instead of the adapter.
 
 CI runs this same script, one cell per job, so a green `bin/matrix` and a green
-build mean the same thing. The Rails versions come from `gemfiles/*.gemfile`
-on both sides, so a new appraisal is picked up without editing either.
+build mean the same thing. The Rails versions come from `gemfiles/rails_*.gemfile`
+on both sides, so a new Rails appraisal is picked up without editing either.
+
+**Run the Sidekiq tests.** Sidekiq is optional at runtime, so it is only in the
+`sidekiq_7` and `sidekiq_8` appraisals, which run just the Sidekiq tests, on
+SQLite. With a Redis to point at, the end-to-end tests run too:
+
+```bash
+BUNDLE_GEMFILE=gemfiles/sidekiq_8.gemfile \
+  GENEVA_DRIVE_SIDEKIQ_REDIS_URL=redis://localhost:6379/14 \
+  bundle exec rake test:sidekiq
+```
+
+CI runs the same in `.github/workflows/sidekiq.yml`.
 
 Each engine keeps its artifacts - schema dump, SQLite files - in its own
 `test/dummy/db/<adapter>/`, so switching between them needs no cleanup.

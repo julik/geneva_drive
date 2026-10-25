@@ -54,9 +54,16 @@ module GenevaDrive
   autoload :MigrationHelpers, "geneva_drive/migration_helpers"
   autoload :TestHelpers, "geneva_drive/test_helpers"
 
+  # Dispatchers
+  autoload :ActiveJobDispatcher, "geneva_drive/dispatchers/active_job_dispatcher"
+  autoload :SidekiqDispatcher, "geneva_drive/dispatchers/sidekiq_dispatcher"
+
   # Jobs
+  autoload :StepExecutionLookup, "geneva_drive/jobs/step_execution_lookup"
   autoload :PerformStepJob, "geneva_drive/jobs/perform_step_job"
   autoload :HousekeepingJob, "geneva_drive/jobs/housekeeping_job"
+  autoload :SidekiqPerformStepJob, "geneva_drive/jobs/sidekiq_perform_step_job"
+  autoload :SidekiqHousekeepingJob, "geneva_drive/jobs/sidekiq_housekeeping_job"
 
   class << self
     # How long to keep completed workflows before cleanup.
@@ -178,6 +185,62 @@ module GenevaDrive
       yield
     ensure
       Thread.current[:geneva_drive_inline_enqueue] = previous
+    end
+
+    # Turns "this step execution should run" into a job: `:active_job` (the
+    # default, see ActiveJobDispatcher) or `:sidekiq` (see SidekiqDispatcher).
+    # Set it in an initializer, before any workflow class loads, since step
+    # job options are validated against it when a workflow class is defined.
+    #
+    # @example Run step jobs as native Sidekiq jobs
+    #   GenevaDrive.dispatcher = :sidekiq
+    #
+    # @return [#enqueue_step, #validate_job_options!]
+    def dispatcher
+      @dispatcher ||= GenevaDrive::ActiveJobDispatcher.new
+    end
+
+    # @param value [Symbol, #enqueue_step] `:active_job`, `:sidekiq`, or a
+    #   dispatcher object
+    # @return [void]
+    # @raise [ArgumentError] for anything else
+    def dispatcher=(value)
+      @dispatcher = case value
+      when :active_job
+        GenevaDrive::ActiveJobDispatcher.new
+      when :sidekiq
+        GenevaDrive::SidekiqDispatcher.new
+      else
+        unless value.respond_to?(:enqueue_step) && value.respond_to?(:validate_job_options!)
+          raise ArgumentError,
+            "GenevaDrive.dispatcher must be :active_job, :sidekiq, or an object responding to " \
+            "enqueue_step and validate_job_options! (got #{value.inspect})"
+        end
+        value
+      end
+    end
+
+    # Tells resumable steps running in this process to hand off at their next
+    # iteration boundary. Wired to Sidekiq's :quiet event by the engine, which
+    # fires on TSTP and at the start of every shutdown. Process-wide, unlike
+    # the thread-local flag the executor also honours.
+    #
+    # @return [void]
+    # @api private
+    def request_exit!
+      @exit_requested = true
+    end
+
+    # @return [Boolean] whether the host process asked running work to stop
+    # @api private
+    def exit_requested?
+      @exit_requested == true
+    end
+
+    # @return [void]
+    # @api private
+    def reset_exit_request!
+      @exit_requested = false
     end
 
     # Returns true if job enqueueing should be deferred to after transaction commit.

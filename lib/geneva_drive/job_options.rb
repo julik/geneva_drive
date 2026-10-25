@@ -1,6 +1,6 @@
 # frozen_string_literal: true
 
-# Validation helper for Active Job option hashes passed through the workflow DSL
+# Validation helper for step job option hashes passed through the workflow DSL
 # (`set_step_job_options`, `step(job_options: ...)`, and `workflow.step_job_options=`).
 #
 # Active Job itself silently ignores unknown keys in `set` — a typo like
@@ -8,7 +8,9 @@
 # priority. This helper enforces the known key set so misconfigurations surface
 # at definition time, or at assignment time for per-instance overrides.
 #
-# The allowed keys mirror what `ActiveJob::Core#set` actually consumes.
+# The allowed keys mirror what `ActiveJob::Core#set` actually consumes. The
+# configured dispatcher then gets a say: the Sidekiq one rejects `priority`,
+# which Sidekiq has no notion of.
 #
 # @api private
 module GenevaDrive::JobOptions
@@ -25,7 +27,8 @@ module GenevaDrive::JobOptions
   #   (e.g. "Step 'foo'" or "MyWorkflow.step_job_options")
   # @return [Hash{Symbol=>Object}] symbolized copy safe to pass to `.set`
   # @raise [GenevaDrive::StepConfigurationError] if options can't be coerced to
-  #   a Hash, contains unknown keys, or has values of the wrong type
+  #   a Hash, contains unknown keys, has values of the wrong type, or uses a
+  #   key the configured dispatcher cannot honour
   def self.validate!(options, context:)
     hash = begin
       options.to_h
@@ -44,6 +47,7 @@ module GenevaDrive::JobOptions
     end
 
     symbolized.each { |k, v| validate_value!(k, v, context) }
+    GenevaDrive.dispatcher.validate_job_options!(symbolized, context: context)
     symbolized
   end
 

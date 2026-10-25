@@ -37,7 +37,7 @@ jobs:
       - name: List the appraisals
         id: list
         run: |
-          rails=$(ls gemfiles/*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | jq -R . | jq -sc .)
+          rails=$(ls gemfiles/rails_*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | jq -R . | jq -sc .)
           echo "rails=$rails" >> "$GITHUB_OUTPUT"
           echo "Appraisals: $rails"
 

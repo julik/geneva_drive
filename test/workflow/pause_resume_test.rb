@@ -284,6 +284,21 @@ class PauseResumeTest < ActiveSupport::TestCase
     end
   end
 
+  test "resume! records the re-enqueued job's id on the execution" do
+    workflow = WaitingWorkflow.create!(hero: @user)
+    perform_next_step(workflow)
+    execution = workflow.step_executions.find_by!(step_name: "step_two", state: "scheduled")
+    original_job_id = execution.job_id
+    assert original_job_id
+
+    workflow.pause!
+    workflow.resume!
+
+    assert_equal execution.id, workflow.current_execution.id
+    refute_equal original_job_id, execution.reload.job_id,
+      "the row must point at the job resume! pushed, not the one that may already have run"
+  end
+
   # Scenario: Resume with SCHEDULED execution now OVERDUE
   #
   # Workflow was paused, time passed, the scheduled time went by.

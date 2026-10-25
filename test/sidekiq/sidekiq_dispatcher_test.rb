@@ -235,36 +235,21 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     assert workflow.reload.finished?
   end
 
-  test "an unset dispatcher picks Sidekiq when Active Job is not pointed at another backend" do
+  test "Sidekiq is recommended when Active Job is not pointed at another backend" do
     [nil, :async, :inline, :test, :sidekiq, "sidekiq", ActiveJob::QueueAdapters::AsyncAdapter.new].each do |adapter|
-      with_active_job_adapter(adapter) do
-        GenevaDrive.dispatcher = nil
-        assert_kind_of GenevaDrive::SidekiqDispatcher, GenevaDrive.dispatcher, "with adapter #{adapter.inspect}"
-      end
+      assert GenevaDrive::SidekiqDispatcher.recommended?(adapter), "with adapter #{adapter.inspect}"
     end
   end
 
-  test "an unset dispatcher keeps Active Job when it is pointed at another backend" do
+  test "Sidekiq is not recommended when Active Job is pointed at another backend" do
     [:solid_queue, :good_job, :resque, "delayed_job"].each do |adapter|
-      with_active_job_adapter(adapter) do
-        GenevaDrive.dispatcher = nil
-        assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher, "with adapter #{adapter.inspect}"
-      end
+      refute GenevaDrive::SidekiqDispatcher.recommended?(adapter), "with adapter #{adapter.inspect}"
     end
   end
 
-  test "a Sidekiq dispatcher picked automatically ignores priority instead of raising" do
+  test "an unset dispatcher is Active Job even where Sidekiq would be recommended" do
     with_active_job_adapter(:sidekiq) do
       GenevaDrive.dispatcher = nil
-      assert_nothing_raised do
-        Class.new(GenevaDrive::Workflow) { set_step_job_options priority: 5 }
-      end
-    end
-  end
-
-  test "an explicit dispatcher wins over detection" do
-    with_active_job_adapter(:sidekiq) do
-      GenevaDrive.dispatcher = :active_job
       assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
     end
   end
@@ -286,12 +271,9 @@ class SidekiqDispatcherTest < ActiveSupport::TestCase
     end
   end
 
-  test "an unset dispatcher keeps Active Job on an unsupported Sidekiq" do
-    with_active_job_adapter(:sidekiq) do
-      GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
-        GenevaDrive.dispatcher = nil
-        assert_kind_of GenevaDrive::ActiveJobDispatcher, GenevaDrive.dispatcher
-      end
+  test "Sidekiq is not recommended when the loaded version is unsupported" do
+    GenevaDrive::SidekiqDispatcher.stub(:sidekiq_version, "6.5.12") do
+      refute GenevaDrive::SidekiqDispatcher.recommended?(:sidekiq)
     end
   end
 

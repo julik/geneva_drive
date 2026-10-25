@@ -45,15 +45,48 @@ class GenevaDrive::SidekiqDispatcher
     SUPPORTED_SIDEKIQ_VERSIONS.satisfied_by?(Gem::Version.new(version))
   end
 
+  # Active Job adapters under which every job ends up in Sidekiq anyway.
+  # Unset means :async, which loses jobs on restart - no backend at all.
+  SIDEKIQ_COMPATIBLE_ADAPTERS = %w[sidekiq async inline test].freeze
+
+  # Whether an app looks like it runs its jobs on Sidekiq: a supported
+  # Sidekiq is loaded, and Active Job is not configured for some other real
+  # backend. The install generator asks this once, to decide what to write
+  # into the initializer. Nothing consults it at runtime, so upgrading the
+  # gem never switches an existing app's dispatcher.
+  #
+  # @param adapter [Symbol, String, Object, nil] Active Job's configured
+  #   adapter, from `config.active_job.queue_adapter` by default
+  # @return [Boolean]
+  def self.recommended?(adapter = Rails.application&.config&.active_job&.queue_adapter)
+    return false unless defined?(::Sidekiq::Client) && defined?(::Sidekiq::Job)
+    return false unless supported_sidekiq_version?
+
+    name = adapter_name(adapter)
+    name.nil? || SIDEKIQ_COMPATIBLE_ADAPTERS.include?(name)
+  end
+
+  # @param adapter [Symbol, String, Object, nil] an adapter name, class or instance
+  # @return [String, nil] e.g. "sidekiq" for ActiveJob::QueueAdapters::SidekiqAdapter
+  # @api private
+  def self.adapter_name(adapter)
+    case adapter
+    when nil
+      nil
+    when Symbol, String
+      adapter.to_s
+    else
+      klass = adapter.is_a?(Module) ? adapter : adapter.class
+      klass.name.to_s.demodulize.delete_suffix("Adapter").underscore
+    end
+  end
+
   # @param job_class [Class, nil] a Sidekiq::Job that performs step executions,
   #   GenevaDrive::SidekiqPerformStepJob by default
   # @param client [#push, nil] the client to push with; one is built per push
   #   by default, which is what Sidekiq does itself
-  # @param reject_priority [Boolean] raise on `priority:` (the default), or
-  #   log a warning and ignore it - used when GenevaDrive picked this
-  #   dispatcher on its own
   # @raise [LoadError] if Sidekiq is not loaded, or is not a supported version
-  def initialize(job_class: nil, client: nil, reject_priority: true)
+  def initialize(job_class: nil, client: nil)
     unless defined?(::Sidekiq::Client)
       raise LoadError, "GenevaDrive::SidekiqDispatcher needs the sidekiq gem. Add it to your Gemfile."
     end
@@ -66,7 +99,6 @@ class GenevaDrive::SidekiqDispatcher
 
     @job_class = job_class
     @client = client
-    @reject_priority = reject_priority
   end
 
   # @return [Class] the Sidekiq::Job class step jobs are pushed as
@@ -104,16 +136,13 @@ class GenevaDrive::SidekiqDispatcher
   # @param options [Hash{Symbol=>Object}]
   # @param context [String]
   # @return [void]
-  # @raise [GenevaDrive::StepConfigurationError] if `priority` is given and
-  #   the dispatcher was built with `reject_priority: true`
+  # @raise [GenevaDrive::StepConfigurationError] if `priority` is given
   def validate_job_options!(options, context:)
     return if options[:priority].nil?
 
-    message = "#{context} sets job_options[:priority], but Sidekiq has no job priority - it has queues with weights. " \
+    raise GenevaDrive::StepConfigurationError,
+      "#{context} sets job_options[:priority], but Sidekiq has no job priority - it has queues with weights. " \
       "Put the steps that must run first on a queue with a higher weight, e.g. `queue: :workflows_urgent`."
-    raise GenevaDrive::StepConfigurationError, message if @reject_priority
-
-    Rails.logger&.warn("GenevaDrive: ignoring priority. #{message}")
   end
 
   private

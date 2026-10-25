@@ -78,6 +78,16 @@ module GenevaDrive
       def create_initializer
         template "initializer.rb.tt", "config/initializers/geneva_drive.rb"
       end
+
+      private
+
+      # Decided once, here, rather than at boot, so that upgrading the gem
+      # never changes the dispatcher of an app that is already running.
+      #
+      # @return [Boolean] whether to write `GenevaDrive.dispatcher = :sidekiq`
+      def sidekiq_dispatcher?
+        GenevaDrive::SidekiqDispatcher.recommended?
+      end
     end
   end
 end

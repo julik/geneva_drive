@@ -12,7 +12,6 @@ gem "redcarpet"
 gem "sqlite3"
 gem "minitest", "< 5.26"
 gem "appraisal"
-gem "sidekiq", "~> 8.0"
 gem "rails", "~> 8.0.0"
 gem "mysql2"
 

@@ -1,0 +1,50 @@
+name: Sidekiq
+
+# The Sidekiq dispatcher's own tests, kept out of the main matrix: Sidekiq is
+# optional at runtime, so it is only bundled by the sidekiq_* appraisals. Each
+# runs `rake test:sidekiq` on SQLite against a real Redis, which is what the
+# end-to-end tests in test/sidekiq/sidekiq_redis_test.rb need.
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: "Tests (${{ matrix.appraisal }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # sidekiq_7: Sidekiq 7.3 on Rails 7.2. sidekiq_8: Sidekiq 8 on Rails 8.1.
+        appraisal: [sidekiq_7, sidekiq_8]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.appraisal }}.gemfile
+      GENEVA_DRIVE_SIDEKIQ_REDIS_URL: redis://localhost:6379/0
+    services:
+      redis:
+        image: redis:7
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version-file: .ruby-version
+          bundler-cache: true
+
+      - name: Run the Sidekiq tests
+        run: bundle exec rake test:sidekiq

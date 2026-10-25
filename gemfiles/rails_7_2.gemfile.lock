@@ -232,8 +232,6 @@ GEM
       rbs (>= 4.0.0)
       tsort
     redcarpet (3.6.1)
-    redis-client (0.31.0)
-      connection_pool
     regexp_parser (2.13.0)
     reline (0.7.0)
       io-console (~> 0.5)
@@ -257,12 +255,6 @@ GEM
       rubocop-ast (>= 1.47.1, < 2.0)
     ruby-progressbar (1.13.0)
     securerandom (0.4.1)
-    sidekiq (7.3.10)
-      base64
-      connection_pool (>= 2.3.0, < 3)
-      logger
-      rack (>= 2.2.4, < 3.3)
-      redis-client (>= 0.23.0, < 1)
     sqlite3 (2.9.6-aarch64-linux-gnu)
     sqlite3 (2.9.6-aarch64-linux-musl)
     sqlite3 (2.9.6-arm-linux-gnu)
@@ -322,7 +314,6 @@ DEPENDENCIES
   puma
   rails (~> 7.2.0)
   redcarpet
-  sidekiq (~> 7.3)
   sqlite3
   standard (~> 1.0)
   yard

@@ -3,6 +3,9 @@
 require "test_helper"
 require "minitest/mock"
 
+# Sidekiq is only in the sidekiq_* appraisals; run these with `rake test:sidekiq`
+return unless defined?(::Sidekiq)
+
 # Sidekiq 8 has a new testing API; 7 only has the old require, which also
 # switches fake mode on globally. Fake mode is toggled per test below.
 begin

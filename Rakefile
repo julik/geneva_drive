@@ -23,6 +23,20 @@ task :test do
   ruby "-Itest", "bin/test"
 end
 
+# The Sidekiq dispatcher's tests, and the installer that recommends it. Sidekiq
+# is only bundled by the sidekiq_* appraisals, so run this under one of them:
+#
+#   BUNDLE_GEMFILE=gemfiles/sidekiq_8.gemfile bundle exec rake test:sidekiq
+#
+# Set GENEVA_DRIVE_SIDEKIQ_REDIS_URL to include the tests against a real Redis.
+namespace :test do
+  desc "Run the Sidekiq tests (needs a sidekiq_* appraisal)"
+  task :sidekiq do
+    abort "Sidekiq is not in this bundle - use BUNDLE_GEMFILE=gemfiles/sidekiq_8.gemfile" unless Gem.loaded_specs["sidekiq"]
+    ruby "-Itest", "bin/test", "test/sidekiq", "test/generators"
+  end
+end
+
 # The root Gemfile resolves to the newest released Rails and the dummy app
 # defaults to SQLite, so a plain `rake` is the "latest Rails on SQLite" run.
 # The appraisal gemfiles cover the older Rails minors, and CI additionally

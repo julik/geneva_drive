@@ -1696,7 +1696,7 @@ GenevaDrive.dispatcher = :sidekiq
 
 That is the whole switch. Every step of every workflow is now pushed as a `GenevaDrive::SidekiqPerformStepJob` — a plain `Sidekiq::Job` — through `Sidekiq::Client`, with no Active Job in between. Set it in an initializer, so that it is in place before any workflow class loads: job options are checked against the dispatcher when a workflow class is defined.
 
-We support **Sidekiq 7.3 and later 7.x, and Sidekiq 8.x** — OSS, Pro and Enterprise alike — and test against both majors on every supported Rails. Sidekiq 9 is not supported until we have tested it. With any other version loaded, `GenevaDrive.dispatcher = :sidekiq` raises at boot, naming the version it found.
+We support **Sidekiq 7.3 and later 7.x, and Sidekiq 8.x** — OSS, Pro and Enterprise alike — and test the oldest supported Sidekiq on the oldest supported Rails and the newest on the newest, against a real Redis. Sidekiq 9 is not supported until we have tested it. With any other version loaded, `GenevaDrive.dispatcher = :sidekiq` raises at boot, naming the version it found.
 
 #### What the installer picks
 

@@ -20,6 +20,8 @@ class InstallGeneratorTest < Rails::Generators::TestCase
   end
 
   test "writes the Sidekiq dispatcher when Active Job is set up for Sidekiq" do
+    skip "Sidekiq is only in the sidekiq_* appraisals" unless defined?(::Sidekiq)
+
     with_active_job_adapter(:sidekiq) { run_generator }
 
     assert_file "config/initializers/geneva_drive.rb" do |content|

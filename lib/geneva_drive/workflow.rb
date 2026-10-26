@@ -1005,8 +1005,10 @@ class GenevaDrive::Workflow < ActiveRecord::Base
 
   # Returns per-instance step job options stored in metadata.
   # These are merged with the class-level options when enqueuing step jobs,
-  # with instance options taking precedence.
+  # with instance options taking precedence over class defaults. Per-step
+  # `job_options:` take final precedence over both class and instance options.
   #
+  # @see file:MANUAL.md#Custom_Job_Options Custom Job Options
   # @return [Hash] symbolized job options (e.g. `{ queue: :high, priority: 5 }`)
   def step_job_options
     (read_metadata("step_job_options") || {}).symbolize_keys
@@ -1016,6 +1018,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   # Stored as part of the workflow's metadata column so they persist and
   # survive across step boundaries.
   #
+  # @see file:MANUAL.md#Custom_Job_Options Custom Job Options
   # @param options [Hash, nil] job options to store
   # @return [void]
   def step_job_options=(options)

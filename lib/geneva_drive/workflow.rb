@@ -536,7 +536,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
   end
 
   # Returns whether this workflow is in an ongoing (non-terminal) state.
+  # Ongoing states are +ready+, +performing+, and +paused+; +finished+ and +canceled+ are terminal.
   #
+  # @see file:MANUAL.md#workflow-states Workflow states and transitions
   # @return [Boolean]
   def ongoing?
     !finished? && !canceled?

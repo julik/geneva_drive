@@ -721,29 +721,29 @@ class GenevaDrive::Executor
   end
 
   # Handles exceptions that occur during pre-condition evaluation (cancel_if, skip_if).
-  # Builds a resolution policy, applies it, and returns the original exception
+  # Builds a resolution policy, applies it, and returns the resolved exception
   # to be re-raised after the transaction commits.
   #
   # @param error [Exception] the exception that occurred
   # @param step_def [StepDefinition] the step definition
-  # @return [Exception] the original exception to be re-raised
+  # @return [Exception] the step or policy exception to be re-raised
   def handle_precondition_exception(error, step_def)
     logger.error("Pre-condition evaluation failed: #{error.class} - #{error.message}")
 
     result = apply_resolution_policy(error, step_def)
-    report_exception(error, result)
+    report_exception(result[:error], result)
     apply_policy_result(result, reattempt_reason: "precondition")
 
-    error
+    result[:error]
   end
 
   # Handles unexpected exceptions that occur during prepare_execution before
   # the step actually runs (e.g., NameError when hero_type references a
   # non-existent class).
-  # Returns the original exception to be re-raised after the transaction commits.
+  # Returns the step or policy exception to be re-raised after the transaction commits.
   #
   # @param error [Exception] the exception that occurred
-  # @return [Exception] the original exception to be re-raised
+  # @return [Exception] the step or policy exception to be re-raised
   def handle_prepare_exception(error)
     logger.error("Unexpected exception during prepare_execution: #{error.class} - #{error.message}")
 
@@ -754,10 +754,9 @@ class GenevaDrive::Executor
       nil
     end
 
-    step_execution.update!(error_attributes_for(error))
-
     result = apply_resolution_policy(error, step_def)
-    report_exception(error, result)
+    step_execution.update!(error_attributes_for(result[:error]))
+    report_exception(result[:error], result)
     if result[:action] == :reattempt
       apply_policy_result(result, reattempt_reason: "exception_policy")
     else
@@ -765,7 +764,7 @@ class GenevaDrive::Executor
       apply_prepare_policy_result(result)
     end
 
-    error
+    result[:error]
   end
 
   # Handles successful step completion.
@@ -794,19 +793,19 @@ class GenevaDrive::Executor
   end
 
   # Handles a captured exception based on the resolved exception policy.
-  # Returns the original exception to be re-raised after the transaction commits.
+  # Returns the step or policy exception to be re-raised after the transaction commits.
   #
   # @param context [Hash] captured exception context
-  # @return [Exception] the original exception to be re-raised
+  # @return [Exception] the step or policy exception to be re-raised
   def handle_captured_exception(context)
     error = context[:error]
     step_def = context[:step_def]
 
     result = apply_resolution_policy(error, step_def)
-    report_exception(error, result)
+    report_exception(result[:error], result)
     apply_policy_result(result, reattempt_reason: "exception_policy")
 
-    error
+    result[:error]
   end
 
   # Builds a combined exception policy from step-level, class-level, and
@@ -818,7 +817,12 @@ class GenevaDrive::Executor
   def apply_resolution_policy(error, step_def)
     combined = build_resolution_policy(step_def)
     count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    combined.apply(error, reattempt_count: count, workflow: workflow)
+    begin
+      combined.apply(error, reattempt_count: count, workflow: workflow)
+    rescue => policy_error
+      # Never invoke a failing policy again to handle its own error.
+      {action: :pause, error: policy_error, report: :always}
+    end
   end
 
   # Builds a combined exception policy that includes step-level, class-level,

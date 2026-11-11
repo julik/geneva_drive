@@ -1006,6 +1006,8 @@ When a step raises an exception, GenevaDrive resolves the policy in this order:
 4. **Class-level blanket** — use the most recently defined policy with no exception class filter
 5. **Default** — pause the workflow
 
+If an exception handler or retry delay calculation raises, GenevaDrive fails the execution and pauses the workflow instead of invoking the failing policy again. The policy error is recorded, reported even if the policy uses `report: :never`, and re-raised after the failure state commits.
+
 ### Polynomial Retry Backoff
 
 Use `wait: :polynomially_longer` to increase retry delays using the same formula as Active Job:

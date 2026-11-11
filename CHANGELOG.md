@@ -4,6 +4,7 @@
 
 - Support `wait: :polynomially_longer` in exception policies and `reattempt!`, with Active Job's polynomial delay and configured jitter. Backoff is derived from persisted consecutive reattempts for the current step and works with resumable steps without discarding their cursors. Fixed delays and existing retry limits are unchanged.
 - Count retries caused by unexpected preparation errors toward exception-policy retry limits and backoff, preventing endless first-delay retries. Non-retry preparation failures keep their existing failed execution records.
+- Record and report errors raised by exception handlers or retry delay resolution, then re-raise them after committing a failed execution and paused workflow instead of leaving the execution stuck in progress.
 
 ## [0.9.0]
 

@@ -755,14 +755,15 @@ class GenevaDrive::Executor
     end
 
     step_execution.update!(error_attributes_for(error))
-    transition_step!("failed", outcome: "failed")
 
-    combined = build_resolution_policy(step_def)
-    count = consecutive_reattempt_count(step_def&.name || step_execution.step_name)
-    result = combined.apply(error, reattempt_count: count, workflow: workflow)
-    result ||= {action: :pause, error: error}
+    result = apply_resolution_policy(error, step_def)
     report_exception(error, result)
-    apply_prepare_policy_result(result)
+    if result[:action] == :reattempt
+      apply_policy_result(result, reattempt_reason: "exception_policy")
+    else
+      transition_step!("failed", outcome: "failed")
+      apply_prepare_policy_result(result)
+    end
 
     error
   end
@@ -896,7 +897,7 @@ class GenevaDrive::Executor
     end
   end
 
-  # Applies a policy result during the prepare phase.
+  # Applies a non-retry policy result during the prepare phase.
   # In prepare phase, the step has already been transitioned to "failed",
   # so only the workflow state transition is needed.
   #
@@ -904,14 +905,6 @@ class GenevaDrive::Executor
   # @return [void]
   def apply_prepare_policy_result(result)
     case result[:action]
-    when :reattempt
-      logger.info("Prepare exception policy: reattempt!")
-      transition_workflow!("ready")
-      if resumable_step?
-        workflow.create_successor_execution!(step_execution, wait: result[:wait])
-      else
-        workflow.reschedule_current_step!(wait: result[:wait])
-      end
     when :cancel
       logger.info("Prepare exception policy: cancel!")
       transition_workflow!("canceled")

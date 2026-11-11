@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Reattempt caps are now per matched policy. When multiple exception policies are combined - an `on_exception:` array, or the resolution stack of step-level, class-level and default policies - the `max_reattempts` that applies is the matched policy's own, and a policy that did not match the error no longer constrains the result. Previously the *minimum* `max_reattempts` across all policies in the stack acted as a global cap, so one policy with a small budget silently shrank every other policy's: a workflow declaring `max_reattempts: 50` for statement timeouts would stop reattempting after 3 because an unrelated 3-attempt policy sat in the same stack. This is a behavior change - code that relied on the global minimum will now see each policy's full declared budget honored. The reattempt count itself is unchanged: it counts consecutive reattempts of the step regardless of which policy produced them, so alternating error classes are still bounded by each matched policy's cap. `CombinedExceptionPolicy#max_reattempts` still reports the minimum across its constituents, but is informational only.
+
 ## [0.9.0]
 
 - Run on Sidekiq without Active Job. `GenevaDrive.dispatcher = :sidekiq` pushes every step as `GenevaDrive::SidekiqPerformStepJob`, a plain `Sidekiq::Job` carrying the step execution id, through `Sidekiq::Client`. Client middleware applies, the jid lands in `job_id`, and jobs are tagged with the workflow class. Supported are Sidekiq 7.3 and later 7.x, and 8.x; with any other version the dispatcher raises at boot. The default dispatcher is still `:active_job`.

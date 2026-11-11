@@ -1136,9 +1136,9 @@ class RobustApiWorkflow < GenevaDrive::Workflow
 end
 ```
 
-#### Global Reattempt Cap
+#### Reattempt Caps With Multiple Policies
 
-When multiple policies in the array have `max_reattempts:`, GenevaDrive enforces the *minimum* across all of them as a global cap on consecutive reattempts. This prevents runaway retries when different exception types alternate:
+When multiple policies in the array have `max_reattempts:`, each policy's budget applies only to the errors it matches. The cap that is checked is always the *matched* policy's own, and so is the `terminal_action` that fires when it is exhausted:
 
 ```ruby
 step :sync, on_exception: [
@@ -1149,7 +1149,12 @@ step :sync, on_exception: [
 end
 ```
 
-Here the global cap is 3. Even if every failure is a `Timeout::Error` (whose individual policy allows 10), the step stops reattempting after 3 consecutive failures. When the cap is hit, the `terminal_action` of the *matched* policy applies — so if the 4th failure is a `Timeout::Error`, the workflow pauses (the default), but if it's a `RateLimitError`, the workflow cancels.
+Here consecutive `Timeout::Error` failures reattempt up to 10 times and then pause (the default `terminal_action`), while consecutive `RateLimitError` failures reattempt up to 3 times and then cancel. The `RateLimitError` policy's smaller budget never shrinks the `Timeout::Error` policy's.
+
+Note that the reattempt count is per *step*, not per policy: it counts consecutive reattempts regardless of which policy produced them. If different exception types alternate, each policy's cap is checked against that shared count, so alternating failures still terminate once the matched policy's budget is exceeded.
+
+> [!NOTE]
+> Versions up to 0.9.0 enforced the *minimum* `max_reattempts` across all policies in the resolution stack as a global cap, so a sibling policy with a small budget silently shrank every other policy's.
 
 > [!TIP]
 > Store reusable policy arrays as frozen constants so you can share them across workflows:

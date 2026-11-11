@@ -48,6 +48,7 @@ module GenevaDrive
   autoload :IterableStep, "geneva_drive/iterable_step"
   autoload :Executor, "geneva_drive/executor"
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
+  autoload :RetryWait, "geneva_drive/retry_wait"
   autoload :JobOptions, "geneva_drive/job_options"
   autoload :CombinedExceptionPolicy, "geneva_drive/combined_exception_policy"
   autoload :JsonColumn, "geneva_drive/json_column"

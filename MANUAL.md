@@ -1006,6 +1006,22 @@ When a step raises an exception, GenevaDrive resolves the policy in this order:
 4. **Class-level blanket** — use the most recently defined policy with no exception class filter
 5. **Default** — pause the workflow
 
+### Polynomial Retry Backoff
+
+Use `wait: :polynomially_longer` to increase retry delays using the same formula as Active Job:
+
+```ruby
+on_exception Net::ReadTimeout, action: :reattempt!,
+  wait: :polynomially_longer, max_reattempts: 15
+
+# Inside a step or an imperative exception handler:
+reattempt!(wait: :polynomially_longer)
+```
+
+The first delays are approximately 3, 18, and 83 seconds, plus jitter. The formula is `executions**4 + rand * executions**4 * ActiveJob::Base.retry_jitter + 2`, with `executions` starting at 1. The default jitter is 15%. There is no upper delay cap.
+
+The retry count comes from persisted executions of the current step, so it survives worker restarts and starts over after a successful execution or when a different step begins. Exception policies count exception-driven retries; manual `reattempt!` calls also count flow-control retries. Resumable steps keep their cursor and continue in a successor execution with the calculated delay. Normal step `wait:` options still take fixed durations, not retry strategies.
+
 ### Limiting Reattempts
 
 When using `:reattempt!`, limit consecutive reattempts with `max_reattempts:`. This prevents infinite retry loops when an error is persistent:

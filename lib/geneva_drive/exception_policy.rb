@@ -72,7 +72,7 @@ class GenevaDrive::ExceptionPolicy
   # @return [Symbol, nil] the action (:pause!, :cancel!, :reattempt!, :skip!) — nil in imperative mode
   attr_reader :action
 
-  # @return [ActiveSupport::Duration, nil] wait time before reattempt
+  # @return [ActiveSupport::Duration, Symbol, nil] delay or :polynomially_longer before reattempt
   attr_reader :wait
 
   # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
@@ -107,7 +107,7 @@ class GenevaDrive::ExceptionPolicy
   #     (blanket policy). When set, only errors matching the given class(es) trigger this policy
   #     (specific policy). Strings are resolved lazily via +safe_constantize+, so the exception
   #     class does not need to be loaded at definition time.
-  #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
+  #   @param wait [ActiveSupport::Duration, Symbol, nil] delay or :polynomially_longer before reattempt
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause!, :cancel!, or :skip!)
   #   @param report [Symbol] when to report the exception to +Rails.error.report+.
@@ -232,11 +232,16 @@ class GenevaDrive::ExceptionPolicy
   #
   # @see CombinedExceptionPolicy#apply
   def apply(error, reattempt_count:, workflow:)
-    if handler
+    result = if handler
       apply_imperative(error, workflow)
     else
       apply_declarative(error, reattempt_count)
     end
+
+    if result[:action] == :reattempt
+      result[:wait] = GenevaDrive::RetryWait.resolve(result[:wait], reattempt_count: reattempt_count)
+    end
+    result
   end
 
   # Returns this policy wrapped in an Array for uniform iteration.
@@ -328,6 +333,8 @@ class GenevaDrive::ExceptionPolicy
       raise ArgumentError,
         "wait: only makes sense with action: :reattempt!"
     end
+
+    GenevaDrive::RetryWait.validate!(@wait)
 
     if @max_reattempts
       unless @action == :reattempt!

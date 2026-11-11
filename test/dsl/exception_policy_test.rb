@@ -31,6 +31,25 @@ class ExceptionPolicyTest < ActiveSupport::TestCase
     assert_raises(ArgumentError) { GenevaDrive::ExceptionPolicy.new(:cancel!, wait: 5.seconds) }
   end
 
+  test "accepts polynomial retry waits and rejects unknown strategies" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, wait: :polynomially_longer)
+    assert_equal :polynomially_longer, policy.wait
+
+    error = assert_raises(ArgumentError) do
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, wait: :exponentially_longer)
+    end
+    assert_match "Unknown retry wait strategy", error.message
+  end
+
+  test "resolves polynomial waits using the supplied retry count without a workflow" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, wait: :polynomially_longer)
+    result = policy.apply(RuntimeError.new, reattempt_count: 2, workflow: nil)
+
+    assert_equal :reattempt, result[:action]
+    assert_operator result[:wait], :>=, 83.seconds
+    assert_operator result[:wait], :<=, 95.15.seconds
+  end
+
   test "validates max_reattempts only with reattempt!" do
     assert_raises(ArgumentError) { GenevaDrive::ExceptionPolicy.new(:pause!, max_reattempts: 3) }
   end

@@ -149,7 +149,7 @@ module GenevaDrive::FlowControl
   # For resumable steps, by default continues from the current cursor position.
   # Use `rewind: true` to restart the step from the beginning.
   #
-  # @param wait [ActiveSupport::Duration, nil] optional delay before retry
+  # @param wait [ActiveSupport::Duration, Symbol, nil] optional delay or :polynomially_longer before retry
   # @param rewind [Boolean] if true, resets cursor to beginning (resumable steps only)
   # @return [void]
   # @raise [UncaughtThrowError] if called outside of step execution context
@@ -157,9 +157,13 @@ module GenevaDrive::FlowControl
   # @example Retry after rate limit
   #   reattempt!(wait: 5.minutes)
   #
+  # @example Retry with Active Job-style polynomial backoff and jitter
+  #   reattempt!(wait: :polynomially_longer)
+  #
   # @example Retry resumable step from the beginning
   #   reattempt!(rewind: true)
   def reattempt!(wait: nil, rewind: false)
+    GenevaDrive::RetryWait.validate!(wait)
     wait_msg = wait ? " with wait #{wait.inspect}" : ""
     rewind_msg = rewind ? " (rewinding cursor)" : ""
     logger.info("Flow control: reattempt! called from step#{wait_msg}#{rewind_msg}")

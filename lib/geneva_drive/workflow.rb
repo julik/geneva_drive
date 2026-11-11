@@ -351,7 +351,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   Declarative mode — specify an action symbol.
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
     #   @param exception_matchers [Array<Class>] optional exception classes to match
-    #   @param wait [ActiveSupport::Duration, nil] wait before reattempt
+    #   @param wait [ActiveSupport::Duration, Symbol, nil] delay or :polynomially_longer before reattempt
     #   @param max_reattempts [Integer, nil] max consecutive reattempts
     #   @param report [Symbol] when to report the exception to +Rails.error.report+
     #     (+:always+, +:never+, or +:terminal_only+). See {ExceptionPolicy} for details.
@@ -370,6 +370,9 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #
     # @example Blanket default for all exceptions
     #   on_exception :reattempt!, wait: 15.seconds, max_reattempts: 3
+    #
+    # @example Retry transient failures with polynomial backoff
+    #   on_exception Timeout::Error, action: :reattempt!, wait: :polynomially_longer, max_reattempts: 15
     #
     # @example Match specific exception classes
     #   on_exception OAuth2::Error, action: :reattempt!, wait: 15.seconds

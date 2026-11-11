@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Support `wait: :polynomially_longer` in exception policies and `reattempt!`, with Active Job's polynomial delay and configured jitter. Backoff is derived from persisted consecutive reattempts for the current step and works with resumable steps without discarding their cursors. Fixed delays and existing retry limits are unchanged.
+
 ## [0.9.0]
 
 - Run on Sidekiq without Active Job. `GenevaDrive.dispatcher = :sidekiq` pushes every step as `GenevaDrive::SidekiqPerformStepJob`, a plain `Sidekiq::Job` carrying the step execution id, through `Sidekiq::Client`. Client middleware applies, the jid lands in `job_id`, and jobs are tagged with the workflow class. Supported are Sidekiq 7.3 and later 7.x, and 8.x; with any other version the dispatcher raises at boot. The default dispatcher is still `:active_job`.

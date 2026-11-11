@@ -966,12 +966,16 @@ class GenevaDrive::Executor
     attrs
   end
 
-  # Counts consecutive exception-policy reattempts for the current step.
-  # Only counts reattempts caused by exception policies (not flow-control reattempts).
+  # Counts exception-driven retries for policy limits and timing.
   #
   # @param step_name [String] the step name to count reattempts for
-  # @return [Integer] the number of consecutive exception-policy reattempts
+  # @return [Integer] the number of consecutive reattempts
   def consecutive_reattempt_count(step_name)
+    GenevaDrive::StepExecution.count_error_reattempts(consecutive_reattempts(step_name))
+  end
+
+  # History shared by exception-policy retries and manual retries.
+  def consecutive_reattempts(step_name)
     # Find the most recent non-reattempt completion for this step
     # (success, skipped, canceled, failed - anything that isn't a reattempt)
     last_non_reattempt_id = workflow.step_executions
@@ -982,9 +986,7 @@ class GenevaDrive::Executor
 
     # Count reattempts after that point (or all reattempts if no prior success)
     scope = workflow.step_executions.where(step_name: step_name, outcome: "reattempted")
-    scope = scope.where("id > ?", last_non_reattempt_id) if last_non_reattempt_id
-
-    GenevaDrive::StepExecution.count_error_reattempts(scope)
+    last_non_reattempt_id ? scope.where("id > ?", last_non_reattempt_id) : scope
   end
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.
@@ -1016,6 +1018,10 @@ class GenevaDrive::Executor
     when :reattempt
       wait_msg = signal.options[:wait] ? " after #{signal.options[:wait].inspect}" : ""
       logger.info("Processing reattempt signal: rescheduling step#{wait_msg}")
+      wait = signal.options[:wait]
+      if wait == :polynomially_longer
+        wait = GenevaDrive::RetryWait.resolve(wait, reattempt_count: consecutive_reattempts(step_execution.step_name).count)
+      end
       if resumable_step? && signal.options[:rewind]
         logger.info("Rewinding cursor for reattempt")
         step_execution.update!(cursor: nil)
@@ -1024,9 +1030,9 @@ class GenevaDrive::Executor
       write_reattempt_metadata("flow_control")
       transition_workflow!("ready")
       if resumable_step?
-        workflow.create_successor_execution!(step_execution, wait: signal.options[:wait])
+        workflow.create_successor_execution!(step_execution, wait: wait)
       else
-        workflow.reschedule_current_step!(wait: signal.options[:wait])
+        workflow.reschedule_current_step!(wait: wait)
       end
 
     when :skip

@@ -279,22 +279,41 @@ class CombinedExceptionPolicyTest < ActiveSupport::TestCase
     assert_equal :reattempt, result[:action]
   end
 
-  test "apply enforces global reattempt cap across policies" do
-    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10)
+  test "apply honors the matched policy's own reattempt cap, not the minimum across policies" do
+    # A sibling policy with a small budget must not shrink the matched policy's
+    # budget: 50 reattempts of ArgumentError are allowed even though the
+    # TypeError policy would give up after 3.
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 50)
     p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
     combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
 
     result = combined.apply(ArgumentError.new, reattempt_count: 3, workflow: @mock_workflow)
+    assert_equal :reattempt, result[:action]
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 49, workflow: @mock_workflow)
+    assert_equal :reattempt, result[:action]
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 50, workflow: @mock_workflow)
     assert_equal :pause, result[:action]
   end
 
-  test "apply uses terminal_action when global cap exceeded" do
+  test "apply uses the matched policy's terminal_action when its own cap is exceeded" do
     p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 10, terminal_action: :cancel!)
     p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
     combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
 
-    result = combined.apply(ArgumentError.new, reattempt_count: 3, workflow: @mock_workflow)
+    result = combined.apply(ArgumentError.new, reattempt_count: 10, workflow: @mock_workflow)
     assert_equal :cancel, result[:action]
+    assert result[:terminal]
+  end
+
+  test "apply treats a matched policy without max_reattempts as unlimited regardless of siblings" do
+    p1 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError)
+    p2 = GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TypeError, max_reattempts: 3)
+    combined = GenevaDrive::CombinedExceptionPolicy.new([p1, p2])
+
+    result = combined.apply(ArgumentError.new, reattempt_count: 1000, workflow: @mock_workflow)
+    assert_equal :reattempt, result[:action]
   end
 
   test "max_reattempts returns minimum across policies" do

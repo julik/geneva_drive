@@ -80,11 +80,12 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
     end
   end
 
-  # Workflow for testing global cap: min(max_reattempts) across policies
-  class GlobalCapWorkflow < GenevaDrive::Workflow
+  # Workflow for testing per-policy reattempt caps: each matched policy
+  # enforces its own max_reattempts, siblings' budgets do not apply
+  class PerPolicyCapWorkflow < GenevaDrive::Workflow
     POLICIES = [
-      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TransientError, max_reattempts: 10),
-      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: FatalError, max_reattempts: 3, terminal_action: :cancel!)
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: TransientError, max_reattempts: 5),
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: FatalError, max_reattempts: 2, terminal_action: :cancel!)
     ].freeze
 
     step :do_work, on_exception: POLICIES do
@@ -105,7 +106,7 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
     ComposableStepWorkflow.reset!
     ComposableWithFallbackWorkflow.reset!
     ComposableWithClassFallbackWorkflow.reset!
-    GlobalCapWorkflow.reset!
+    PerPolicyCapWorkflow.reset!
     @user = create_user
   end
 
@@ -171,16 +172,16 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
     assert_equal "paused", workflow.state
   end
 
-  # --- Global cap at min(max_reattempts) across policies ---
+  # --- Each matched policy enforces its own max_reattempts ---
 
-  test "global cap uses minimum max_reattempts across all policies in array" do
-    # GlobalCapWorkflow has policies with max_reattempts: 10 and max_reattempts: 3
-    # The global cap should be 3 (the minimum)
-    GlobalCapWorkflow.error_to_raise = TransientError.new("transient")
-    workflow = GlobalCapWorkflow.create!(hero: @user)
+  test "matched policy's full reattempt budget is honored despite a sibling with a smaller one" do
+    # PerPolicyCapWorkflow allows 5 reattempts of TransientError. The sibling
+    # FatalError policy's max_reattempts: 2 must not shrink that budget.
+    PerPolicyCapWorkflow.error_to_raise = TransientError.new("transient")
+    workflow = PerPolicyCapWorkflow.create!(hero: @user)
 
-    # Exhaust 3 reattempts (the global cap)
-    3.times do
+    # Exhaust the TransientError policy's own cap of 5
+    5.times do
       assert_raises(TransientError) do
         GenevaDrive::Executor.execute!(workflow.step_executions.order(:created_at).last)
       end
@@ -188,8 +189,8 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
       assert_equal "ready", workflow.state, "Expected workflow to remain ready after reattempt"
     end
 
-    # 4th attempt should exceed the global cap. The matched policy for TransientError
-    # has terminal_action :pause! (default), so the workflow should be paused.
+    # 6th attempt exceeds the matched policy's cap. Its terminal_action is
+    # :pause! (the default), so the workflow pauses.
     assert_raises(TransientError) do
       GenevaDrive::Executor.execute!(workflow.step_executions.order(:created_at).last)
     end
@@ -198,13 +199,13 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
     assert_equal "paused", workflow.state
   end
 
-  test "terminal_action from the matched policy is used when global cap is hit" do
-    # When FatalError hits the global cap, the matched policy's terminal_action (:cancel!) applies
-    GlobalCapWorkflow.error_to_raise = FatalError.new("fatal")
-    workflow = GlobalCapWorkflow.create!(hero: @user)
+  test "matched policy's own terminal_action fires when its own cap is exceeded" do
+    # When FatalError exhausts its own max_reattempts: 2, its terminal_action (:cancel!) applies
+    PerPolicyCapWorkflow.error_to_raise = FatalError.new("fatal")
+    workflow = PerPolicyCapWorkflow.create!(hero: @user)
 
-    # Exhaust 3 reattempts (the global cap)
-    3.times do
+    # Exhaust the FatalError policy's own cap of 2
+    2.times do
       assert_raises(FatalError) do
         GenevaDrive::Executor.execute!(workflow.step_executions.order(:created_at).last)
       end
@@ -212,7 +213,7 @@ class ComposableExceptionPolicyTest < ActiveSupport::TestCase
       assert_equal "ready", workflow.state, "Expected workflow to remain ready after reattempt"
     end
 
-    # 4th attempt should exceed global cap. FatalError's policy has terminal_action: :cancel!
+    # 3rd attempt exceeds the matched policy's cap. Its terminal_action is :cancel!
     assert_raises(FatalError) do
       GenevaDrive::Executor.execute!(workflow.step_executions.order(:created_at).last)
     end

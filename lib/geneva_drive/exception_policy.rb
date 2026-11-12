@@ -72,8 +72,11 @@ class GenevaDrive::ExceptionPolicy
   # @return [Symbol, nil] the action (:pause!, :cancel!, :reattempt!, :skip!) — nil in imperative mode
   attr_reader :action
 
-  # @return [ActiveSupport::Duration, nil] wait time before reattempt
+  # @return [ActiveSupport::Duration, Symbol, Proc, nil] wait time or backoff strategy before reattempt
   attr_reader :wait
+
+  # @return [Float, nil] jitter factor for symbol-based backoff strategies (0.0 to 1.0, nil = use default 0.15)
+  attr_reader :jitter
 
   # @return [Integer, nil] maximum consecutive reattempts before pausing (nil = unlimited)
   attr_reader :max_reattempts
@@ -99,7 +102,7 @@ class GenevaDrive::ExceptionPolicy
   # Valid report values
   VALID_REPORT_OPTIONS = %i[always never terminal_only].freeze
 
-  # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always)
+  # @overload initialize(action, matching: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always, jitter: 0.15)
   #   Declarative mode — specify action and options.
   #   @param action [Symbol] the flow control action (:pause!, :cancel!, :reattempt!, :skip!)
   #   @param matching [Class, String, #===, Array<Class, String, #===>, nil] exception classes
@@ -107,9 +110,13 @@ class GenevaDrive::ExceptionPolicy
   #     (blanket policy). When set, only errors matching the given class(es) trigger this policy
   #     (specific policy). Strings are resolved lazily via +safe_constantize+, so the exception
   #     class does not need to be loaded at definition time.
-  #   @param wait [ActiveSupport::Duration, nil] wait time before reattempt
+  #   @param wait [ActiveSupport::Duration, Symbol, Proc, nil] wait time or backoff strategy
+  #     before reattempt. Symbol values (e.g. +:polynomially_longer+) use a built-in backoff
+  #     curve from {BackoffStrategies}. Procs receive the 1-based attempt count and return
+  #     a duration.
   #   @param max_reattempts [Integer, nil] max consecutive reattempts (nil = unlimited)
   #   @param terminal_action [Symbol] what to do when max_reattempts is exceeded (:pause!, :cancel!, or :skip!)
+  #   @param jitter [Float] jitter factor for symbol-based backoff strategies (0.0–1.0, default 0.15)
   #   @param report [Symbol] when to report the exception to +Rails.error.report+.
   #     - +:always+ (default) — report every exception regardless of what action is taken
   #     - +:never+ — never report; the exception is expected and handled by the policy
@@ -145,20 +152,27 @@ class GenevaDrive::ExceptionPolicy
   #
   # @example Only report when reattempts are exhausted
   #   ExceptionPolicy.new(:reattempt!, matching: Net::OpenTimeout, max_reattempts: 5, report: :terminal_only)
-  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, report: :always, &block)
+  #
+  # @example Progressive backoff with a built-in strategy
+  #   ExceptionPolicy.new(:reattempt!, wait: :polynomially_longer, max_reattempts: 8)
+  #
+  # @example Custom backoff formula
+  #   ExceptionPolicy.new(:reattempt!, wait: ->(attempts) { (2**attempts).seconds }, max_reattempts: 5)
+  def initialize(action = nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, matching: nil, report: :always, jitter: nil, &block)
     @report = report
     unless VALID_REPORT_OPTIONS.include?(@report)
       raise ArgumentError,
         "report: must be one of #{VALID_REPORT_OPTIONS.join(", ")}, got #{@report.inspect}"
     end
     if block
-      if action || wait || max_reattempts || terminal_action != :pause!
+      if action || wait || max_reattempts || terminal_action != :pause! || jitter
         raise ArgumentError,
-          "Cannot pass action, wait, max_reattempts, or terminal_action when a block is given"
+          "Cannot pass action, wait, max_reattempts, terminal_action, or jitter when a block is given"
       end
       @handler = block
       @action = nil
       @wait = nil
+      @jitter = nil
       @max_reattempts = nil
       @terminal_action = :pause!
     else
@@ -166,6 +180,7 @@ class GenevaDrive::ExceptionPolicy
       @handler = nil
       @action = action
       @wait = wait
+      @jitter = jitter
       @max_reattempts = max_reattempts
       @terminal_action = terminal_action
       validate!
@@ -274,7 +289,9 @@ class GenevaDrive::ExceptionPolicy
   end
 
   # Applies a declarative policy by checking the reattempt limit and returning
-  # the appropriate action.
+  # the appropriate action. The wait value is resolved through
+  # {BackoffStrategies.resolve} so that Symbol strategies and Procs produce
+  # a concrete duration based on the current attempt number.
   #
   # @param error [Exception]
   # @param reattempt_count [Integer]
@@ -284,7 +301,10 @@ class GenevaDrive::ExceptionPolicy
       terminal = terminal_action.to_s.chomp("!").to_sym
       {action: terminal, error: error, report: @report, terminal: true}
     else
-      {action: action.to_s.chomp("!").to_sym, wait: wait, error: error, report: @report}
+      # reattempt_count is the number of reattempts so far, so the reattempt
+      # being decided on now is attempt number reattempt_count + 1 (1-based).
+      resolved_wait = GenevaDrive::BackoffStrategies.resolve(wait, attempts: reattempt_count + 1, jitter: jitter)
+      {action: action.to_s.chomp("!").to_sym, wait: resolved_wait, error: error, report: @report}
     end
   end
 
@@ -327,6 +347,19 @@ class GenevaDrive::ExceptionPolicy
     if @wait && @action != :reattempt!
       raise ArgumentError,
         "wait: only makes sense with action: :reattempt!"
+    end
+
+    if @wait.is_a?(Symbol)
+      unless GenevaDrive::BackoffStrategies::STRATEGIES.key?(@wait)
+        raise ArgumentError,
+          "Unknown backoff strategy: #{@wait.inspect}. " \
+          "Valid strategies: #{GenevaDrive::BackoffStrategies::STRATEGIES.keys.join(", ")}"
+      end
+    end
+
+    if @jitter && !@wait.is_a?(Symbol)
+      raise ArgumentError,
+        "jitter: only makes sense with a Symbol wait (a named backoff strategy)"
     end
 
     if @max_reattempts

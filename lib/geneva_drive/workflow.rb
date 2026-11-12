@@ -351,7 +351,10 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #   Declarative mode — specify an action symbol.
     #   @param action [Symbol] :pause!, :cancel!, :reattempt!, or :skip!
     #   @param exception_matchers [Array<Class>] optional exception classes to match
-    #   @param wait [ActiveSupport::Duration, nil] wait before reattempt
+    #   @param wait [ActiveSupport::Duration, Symbol, Proc, nil] wait before reattempt — a fixed
+    #     duration, a named backoff strategy (e.g. +:polynomially_longer+), or a Proc receiving
+    #     the 1-based attempt count. See {BackoffStrategies}.
+    #   @param jitter [Float, nil] jitter factor for named backoff strategies (0.0–1.0, default 0.15)
     #   @param max_reattempts [Integer, nil] max consecutive reattempts
     #   @param report [Symbol] when to report the exception to +Rails.error.report+
     #     (+:always+, +:never+, or +:terminal_only+). See {ExceptionPolicy} for details.
@@ -387,7 +390,13 @@ class GenevaDrive::Workflow < ActiveRecord::Base
     #
     # @example Report only when reattempts are exhausted
     #   on_exception Timeout::Error, action: :reattempt!, max_reattempts: 5, report: :terminal_only
-    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always, &block)
+    #
+    # @example Progressive backoff with a built-in strategy
+    #   on_exception :reattempt!, wait: :polynomially_longer, max_reattempts: 8
+    #
+    # @example Custom backoff formula
+    #   on_exception :reattempt!, wait: ->(attempts) { (2**attempts).seconds }, max_reattempts: 5
+    def on_exception(*args, action: nil, wait: nil, max_reattempts: nil, terminal_action: :pause!, report: :always, jitter: nil, &block)
       # Separate exception classes from a leading action symbol
       if args.first.is_a?(Symbol)
         raise ArgumentError, "Cannot pass both a positional action and action: keyword" if action
@@ -415,7 +424,7 @@ class GenevaDrive::Workflow < ActiveRecord::Base
         GenevaDrive::ExceptionPolicy.new(report: report, &block)
       else
         raise ArgumentError, "Either an action or a block is required" unless action
-        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action, report: report)
+        GenevaDrive::ExceptionPolicy.new(action, wait: wait, max_reattempts: max_reattempts, terminal_action: terminal_action, report: report, jitter: jitter)
       end
 
       policy.exception_matchers.concat(exception_matchers)

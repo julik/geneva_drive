@@ -49,6 +49,29 @@ namespace :test do
     ENV["GENEVA_DRIVE_ORM"] = "mongoid"
     ruby "-Itest", "bin/test", "test/mongoid"
   end
+
+  # The concurrency proof pack: adversarial thread races against a live
+  # database (see test/proofs/concurrency_proofs.rb). On the SQL side the
+  # proofs need real committed transactions, so they are kept out of the
+  # default suite and run here, against whatever engine DATABASE_URL selects
+  # (SQLite by default, like the main suite). Under a mongoid_* appraisal the
+  # same proofs run against MongoDB instead - they are part of test:mongoid
+  # too, since that suite is already non-transactional.
+  desc "Run the concurrency proof pack against the selected database"
+  task :proofs do
+    mongoid_bundle = File.basename(ENV["BUNDLE_GEMFILE"].to_s).start_with?("mongoid")
+    if ENV["GENEVA_DRIVE_ORM"] == "mongoid" || mongoid_bundle
+      ENV["GENEVA_DRIVE_ORM"] = "mongoid"
+      ruby "-Itest", "bin/test", "test/mongoid/concurrency"
+    else
+      ENV["GENEVA_DRIVE_PROOFS"] = "1"
+      # Every racing thread holds its own connection; the dummy app's pool
+      # follows RAILS_MAX_THREADS (default 5), which is too small for the
+      # eight-way races.
+      ENV["RAILS_MAX_THREADS"] ||= "12"
+      ruby "-Itest", "bin/test", "test/proofs"
+    end
+  end
 end
 
 # The root Gemfile resolves to the newest released Rails and the dummy app

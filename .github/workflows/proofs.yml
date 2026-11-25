@@ -1,0 +1,112 @@
+name: Proof pack
+
+# The concurrency proof pack (`rake test:proofs`): adversarial thread races
+# that demonstrate the transactional guarantees on every supported backend.
+# The SQL cells run the ActiveRecord proofs on the newest Rails appraisal
+# against each database engine, reusing bin/matrix for the engine and
+# DATABASE_URL wiring exactly like ci.yml; the Mongo cells run the same
+# proofs through the Mongoid backend, one per mongoid_* appraisal, like
+# mongoid.yml.
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  # The newest Rails appraisal, read off the generated gemfiles the same way
+  # ci.yml lists all of them - so a new appraisal is picked up without
+  # editing this file.
+  appraisals:
+    name: "Work out the newest Rails appraisal"
+    runs-on: ubuntu-latest
+    outputs:
+      rails: ${{ steps.newest.outputs.rails }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Pick the newest appraisal
+        id: newest
+        run: |
+          rails=$(ls gemfiles/rails_*.gemfile | xargs -n1 basename | sed 's/\.gemfile$//' | sort | tail -n1)
+          echo "rails=$rails" >> "$GITHUB_OUTPUT"
+          echo "Newest appraisal: $rails"
+
+  sql:
+    name: "Proofs (${{ needs.appraisals.outputs.rails }}, ${{ matrix.database }})"
+    needs: appraisals
+    runs-on: ubuntu-latest
+    env:
+      # Job-level so that setup-ruby's bundler-cache locks and keys on the right gemfile.
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ needs.appraisals.outputs.rails }}.gemfile
+    strategy:
+      fail-fast: false
+      matrix:
+        database: [sqlite, postgres, mysql, mariadb]
+
+    steps:
+      # Must run before setup-ruby: bundler-cache builds the pg and mysql2 native
+      # extensions, which need the client headers.
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev default-libmysqlclient-dev
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version-file: .ruby-version
+          bundler-cache: true
+
+      # One cell of the same script ci.yml uses, pointed at the proofs task:
+      # it starts the one engine it needs out of compose.yaml, asks compose
+      # which port it got, and builds the DATABASE_URL - or leaves it unset
+      # for SQLite.
+      - name: Run the proof pack
+        run: MATRIX_RAKE_TASK=test:proofs bin/matrix "${{ needs.appraisals.outputs.rails }}" "${{ matrix.database }}"
+
+  mongo:
+    name: "Proofs (${{ matrix.appraisal }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # mongoid_8: Mongoid 8 on Rails 7.2 components. mongoid_9: Mongoid 9
+        # on whatever Rails the root Gemfile resolves.
+        appraisal: [mongoid_8, mongoid_9]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.appraisal }}.gemfile
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version-file: .ruby-version
+          bundler-cache: true
+
+      # A GitHub service container cannot take command arguments, and the
+      # replica set member must be registered at localhost:27017 - the same
+      # address the host connects to - so start it by hand (as mongoid.yml does).
+      - name: Start MongoDB as a single-node replica set
+        run: |
+          docker run -d --name gd-mongo -p 27017:27017 mongo:8 --replSet rs0
+          for i in $(seq 1 30); do
+            if docker exec gd-mongo mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]}).ok }' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MongoDB replica set did not come up" >&2
+          docker logs gd-mongo >&2
+          exit 1
+
+      - name: Run the proof pack
+        run: bundle exec rake test:proofs

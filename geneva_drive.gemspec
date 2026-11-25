@@ -35,8 +35,12 @@ Gem::Specification.new do |spec|
     (included - generated).select { |path| File.file?(path) }
   end
 
-  # We only need these specific Rails components - not the full rails gem
-  spec.add_dependency "activerecord", ">= 7.2.2"
+  # We only need these specific Rails components - not the full rails gem.
+  # Neither ORM is a hard dependency: the ActiveRecord backend gets
+  # activerecord from Rails itself, and the Mongoid backend
+  # (`require "geneva_drive/mongoid"`) needs the mongoid gem in the app's
+  # Gemfile.
+  spec.add_dependency "activemodel", ">= 7.2.2"
   spec.add_dependency "activejob", ">= 7.2.2"
   spec.add_dependency "activesupport", ">= 7.2.2"
   spec.add_dependency "railties", ">= 7.2.2"

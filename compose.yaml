@@ -51,3 +51,19 @@ services:
       interval: 2s
       timeout: 5s
       retries: 30
+
+  # The Mongoid backend's tests need a replica set - single-node is fine. The
+  # port is pinned, unlike the engines above: the member the healthcheck
+  # registers must be reachable at the same host:port from outside the
+  # container (the driver discovers members by their registered address, and
+  # directConnection=true is not an option - it refuses transactions).
+  mongo:
+    image: mongo:8
+    command: ["--replSet", "rs0"]
+    ports:
+      - "27017:27017"
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "try { rs.status().ok } catch (e) { rs.initiate({_id: \"rs0\", members: [{_id: 0, host: \"localhost:27017\"}]}).ok }"]
+      interval: 2s
+      timeout: 5s
+      retries: 30

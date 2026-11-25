@@ -1,6 +1,9 @@
 # frozen_string_literal: true
 
-# Job that performs housekeeping tasks for GenevaDrive workflows.
+# Job that performs housekeeping tasks for GenevaDrive workflows, sweeping
+# every persistence backend that is loaded (ActiveRecord always when
+# ActiveRecord itself is present; Mongoid once `require "geneva_drive/mongoid"`
+# ran).
 #
 # This job handles two main responsibilities:
 # 1. **Cleanup**: Deletes completed/canceled workflows (with their step executions)
@@ -8,6 +11,11 @@
 # 2. **Recovery**: Recovers stuck step executions that are:
 #    - In "in_progress" state for too long (process crashed)
 #    - In "scheduled" state past their scheduled_for time (job never ran)
+#
+# The ORM-specific queries live on the model classes of each backend
+# (+housekeeping_state_type_counts+, +sweep_terminal_workflows!+,
+# +stuck_in_progress+, +stuck_scheduled+, +counts_by_workflow_type+,
+# +waiting_overdue+); this job owns the orchestration.
 #
 # @example Running the housekeeping job
 #   GenevaDrive::HousekeepingJob.perform_later
@@ -38,10 +46,17 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
       stuck_scheduled_recovered: 0
     }
 
-    cleanup_completed_workflows!(results)
-    recover_stuck_step_executions!(results)
-    report_workflow_gauges!
-    report_waiting_gauges!
+    GenevaDrive.workflow_backends.each do |workflow_class|
+      unless workflow_class.housekeeping_available?
+        logger.info("Skipping housekeeping for #{workflow_class.name} - its storage is not available")
+        next
+      end
+
+      cleanup_completed_workflows!(workflow_class, results)
+      recover_stuck_step_executions!(workflow_class, results)
+      report_workflow_gauges!(workflow_class)
+      report_waiting_gauges!(workflow_class)
+    end
 
     logger.info("Completed: #{results}")
     results
@@ -61,9 +76,10 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # alert on than absolute paused counts (50 paused of 50 is a fire; 50 of
   # 500,000 is noise). All gauges are derived from a single grouped query.
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @return [void]
-  def report_workflow_gauges!
-    counts = GenevaDrive::Workflow.group(:state, :type).count
+  def report_workflow_gauges!(workflow_class)
+    counts = workflow_class.housekeeping_state_type_counts
 
     counts.each_with_object(Hash.new(0)) { |((state, _type), count), totals| totals[state] += count }
       .each do |state, total|
@@ -100,26 +116,29 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # - `geneva_drive.waiting_overdue` - parked longer than
   #   GenevaDrive.waiting_visibility_threshold, total and per class
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @return [void]
-  def report_waiting_gauges!
-    return unless GenevaDrive::StepExecution.signal_columns?
+  def report_waiting_gauges!(workflow_class)
+    step_execution_class = workflow_class.step_execution_class
+    return unless step_execution_class.signal_columns?
 
-    report_waiting_gauge!("geneva_drive.waiting_step_executions", GenevaDrive::StepExecution.waiting)
+    report_waiting_gauge!(workflow_class, "geneva_drive.waiting_step_executions", step_execution_class.waiting)
 
     threshold = GenevaDrive.waiting_visibility_threshold
     return if threshold.blank?
 
-    overdue = GenevaDrive::StepExecution.waiting.where(waiting_since: ..threshold.ago)
-    report_waiting_gauge!("geneva_drive.waiting_overdue", overdue)
+    overdue = step_execution_class.waiting_overdue(threshold.ago)
+    report_waiting_gauge!(workflow_class, "geneva_drive.waiting_overdue", overdue)
   end
 
   # Sets one gauge per workflow class plus an untagged total for the scope.
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @param gauge_name [String] the Measurometer gauge name
-  # @param scope [ActiveRecord::Relation] a step execution scope
+  # @param scope [Enumerable] a step execution scope
   # @return [void]
-  def report_waiting_gauge!(gauge_name, scope)
-    counts = scope.joins(:workflow).group("#{GenevaDrive::Workflow.table_name}.type").count
+  def report_waiting_gauge!(workflow_class, gauge_name, scope)
+    counts = workflow_class.step_execution_class.counts_by_workflow_type(scope)
 
     Measurometer.set_gauge(gauge_name, counts.values.sum)
     counts.each do |type, count|
@@ -128,12 +147,13 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   end
 
   # Cleans up completed/canceled workflows older than the configured threshold.
-  # Uses efficient batched SQL DELETEs - step executions are deleted first via
-  # INNER JOIN, then workflows. Loops until all eligible records are deleted.
+  # The batched deletion itself lives on the workflow model, whose backend
+  # knows the efficient shape (JOINed SQL DELETEs vs. id-batched Mongo deletes).
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @param results [Hash] results hash to update
   # @return [void]
-  def cleanup_completed_workflows!(results)
+  def cleanup_completed_workflows!(workflow_class, results)
     threshold = GenevaDrive.delete_completed_workflows_after
     if threshold.blank?
       logger.info("GenevaDrive.delete_completed_workflows_after is set to nil, so no old workflows will be deleted from the DB for now")
@@ -144,127 +164,16 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
     cutoff_time = threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
 
-    # First pass: delete all step executions for old workflows using INNER JOIN
-    loop do
-      deleted_count = delete_step_executions_batch(cutoff_time, batch_size)
-      logger.info("Deleted #{deleted_count} step executions")
-      results[:step_executions_cleaned_up] += deleted_count
-      break if deleted_count < batch_size
-    end
-
-    # Second pass: delete the signals delivered to old workflows
-    if GenevaDrive::Signal.table_available?
-      loop do
-        deleted_count = delete_signals_batch(cutoff_time, batch_size)
-        logger.info("Deleted #{deleted_count} signals")
-        results[:signals_cleaned_up] += deleted_count
-        break if deleted_count < batch_size
-      end
-    end
-
-    # Third pass: delete the workflows themselves
-    loop do
-      deleted_count = delete_workflows_batch(cutoff_time, batch_size)
-      logger.info("Deleted #{deleted_count} workflows")
-      results[:workflows_cleaned_up] += deleted_count
-      break if deleted_count < batch_size
-    end
+    swept = workflow_class.sweep_terminal_workflows!(cutoff_time, batch_size, logger: logger)
+    results[:workflows_cleaned_up] += swept[:workflows]
+    results[:step_executions_cleaned_up] += swept[:step_executions]
+    results[:signals_cleaned_up] += swept[:signals]
 
     logger.info(
-      "Cleaned up #{results[:workflows_cleaned_up]} workflows, " \
-      "#{results[:step_executions_cleaned_up]} step executions and " \
-      "#{results[:signals_cleaned_up]} signals older than #{cutoff_time}"
+      "Cleaned up #{swept[:workflows]} workflows, " \
+      "#{swept[:step_executions]} step executions and " \
+      "#{swept[:signals]} signals older than #{cutoff_time}"
     )
-  end
-
-  # Deletes a batch of signals belonging to old workflows.
-  #
-  # @param cutoff_time [Time] workflows transitioned before this time are eligible
-  # @param batch_size [Integer] maximum records to delete in this batch
-  # @return [Integer] number of records deleted
-  def delete_signals_batch(cutoff_time, batch_size)
-    GenevaDrive::Signal.connection_pool.with_connection do |conn|
-      signals_table = conn.quote_table_name(GenevaDrive::Signal.table_name)
-      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
-      limit = batch_size.to_i
-
-      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
-      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
-      sql = <<~SQL.squish
-        DELETE FROM #{signals_table}
-        WHERE id IN (
-          SELECT id FROM (
-            SELECT s.id
-            FROM #{signals_table} s
-            INNER JOIN #{workflows_table} w ON w.id = s.workflow_id
-            WHERE w.state IN ('finished', 'canceled')
-            AND w.transitioned_at < ?
-            LIMIT #{limit}
-          ) AS batch_to_delete
-        )
-      SQL
-
-      conn.delete(GenevaDrive::Signal.sanitize_sql([sql, cutoff_time]))
-    end
-  end
-
-  # Deletes a batch of step executions belonging to old workflows.
-  #
-  # @param cutoff_time [Time] workflows transitioned before this time are eligible
-  # @param batch_size [Integer] maximum records to delete in this batch
-  # @return [Integer] number of records deleted
-  def delete_step_executions_batch(cutoff_time, batch_size)
-    GenevaDrive::StepExecution.connection_pool.with_connection do |conn|
-      step_executions_table = conn.quote_table_name(GenevaDrive::StepExecution.table_name)
-      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
-      limit = batch_size.to_i
-
-      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
-      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
-      sql = <<~SQL.squish
-        DELETE FROM #{step_executions_table}
-        WHERE id IN (
-          SELECT id FROM (
-            SELECT se.id
-            FROM #{step_executions_table} se
-            INNER JOIN #{workflows_table} w ON w.id = se.workflow_id
-            WHERE w.state IN ('finished', 'canceled')
-            AND w.transitioned_at < ?
-            LIMIT #{limit}
-          ) AS batch_to_delete
-        )
-      SQL
-
-      conn.delete(GenevaDrive::StepExecution.sanitize_sql([sql, cutoff_time]))
-    end
-  end
-
-  # Deletes a batch of old workflows.
-  #
-  # @param cutoff_time [Time] workflows transitioned before this time are eligible
-  # @param batch_size [Integer] maximum records to delete in this batch
-  # @return [Integer] number of records deleted
-  def delete_workflows_batch(cutoff_time, batch_size)
-    GenevaDrive::Workflow.connection_pool.with_connection do |conn|
-      workflows_table = conn.quote_table_name(GenevaDrive::Workflow.table_name)
-      limit = batch_size.to_i
-
-      # MySQL doesn't support LIMIT in subqueries with IN, so we wrap it in another SELECT
-      # Also, MySQL doesn't handle bind parameters for LIMIT properly, so we interpolate directly
-      sql = <<~SQL.squish
-        DELETE FROM #{workflows_table}
-        WHERE id IN (
-          SELECT id FROM (
-            SELECT id FROM #{workflows_table}
-            WHERE state IN ('finished', 'canceled')
-            AND transitioned_at < ?
-            LIMIT #{limit}
-          ) AS batch_to_delete
-        )
-      SQL
-
-      conn.delete(GenevaDrive::Workflow.sanitize_sql([sql, cutoff_time]))
-    end
   end
 
   # Recovers stuck step executions.
@@ -272,27 +181,28 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # 1. Steps stuck in "in_progress" state (process crashed mid-execution)
   # 2. Steps stuck in "scheduled" state past their scheduled_for time (job never ran)
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @param results [Hash] results hash to update
   # @return [void]
-  def recover_stuck_step_executions!(results)
-    recover_stuck_in_progress!(results)
-    recover_stuck_scheduled!(results)
+  def recover_stuck_step_executions!(workflow_class, results)
+    recover_stuck_in_progress!(workflow_class, results)
+    recover_stuck_scheduled!(workflow_class, results)
   end
 
   # Recovers step executions stuck in "in_progress" state.
   # Loops until all eligible records are processed.
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @param results [Hash] results hash to update
   # @return [void]
-  def recover_stuck_in_progress!(results)
+  def recover_stuck_in_progress!(workflow_class, results)
     # Fix cutoff time at start to ensure recovery completes deterministically
     cutoff_time = GenevaDrive.stuck_in_progress_threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
 
     loop do
-      stuck_executions = GenevaDrive::StepExecution
-        .in_progress
-        .where("started_at < ?", cutoff_time)
+      stuck_executions = workflow_class.step_execution_class
+        .stuck_in_progress(cutoff_time)
         .order(started_at: :asc)
         .limit(batch_size)
         .to_a
@@ -312,17 +222,17 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # Recovers step executions stuck in "scheduled" state past their scheduled_for time.
   # Loops until all eligible records are processed.
   #
+  # @param workflow_class [Class] the backend's workflow model
   # @param results [Hash] results hash to update
   # @return [void]
-  def recover_stuck_scheduled!(results)
+  def recover_stuck_scheduled!(workflow_class, results)
     # Fix cutoff time at start to ensure recovery completes deterministically
     cutoff_time = GenevaDrive.stuck_scheduled_threshold.ago
     batch_size = GenevaDrive.housekeeping_batch_size
 
     loop do
-      stuck_executions = GenevaDrive::StepExecution
-        .scheduled
-        .where("scheduled_for < ?", cutoff_time)
+      stuck_executions = workflow_class.step_execution_class
+        .stuck_scheduled(cutoff_time)
         .order(scheduled_for: :asc)
         .limit(batch_size)
         .to_a
@@ -368,24 +278,26 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # @param workflow [GenevaDrive::Workflow]
   # @return [void]
   def reattempt_step_execution!(step_execution, workflow)
-    # with_lock automatically reloads the record before yielding
+    # with_lock automatically reloads the record before yielding. No `return`
+    # inside the lock: on MongoDB a non-local exit out of the lock transaction
+    # aborts it instead of committing.
     workflow.with_lock do
       step_execution.with_lock do
         # Only recover if still stuck
-        return unless step_execution.scheduled? || step_execution.in_progress?
+        if step_execution.scheduled? || step_execution.in_progress?
+          step_execution.update!(
+            state: "completed",
+            outcome: "recovered",
+            completed_at: Time.current
+          )
 
-        step_execution.update!(
-          state: "completed",
-          outcome: "recovered",
-          completed_at: Time.current
-        )
+          workflow.update!(state: "ready") if workflow.performing?
 
-        workflow.update!(state: "ready") if workflow.performing?
-
-        if step_execution.step_definition&.resumable? && GenevaDrive::StepExecution.resumable_columns?
-          workflow.create_successor_execution!(step_execution)
-        else
-          workflow.reschedule_current_step!
+          if step_execution.step_definition&.resumable? && step_execution.class.resumable_columns?
+            workflow.create_successor_execution!(step_execution)
+          else
+            workflow.reschedule_current_step!
+          end
         end
       end
     end
@@ -397,22 +309,24 @@ class GenevaDrive::HousekeepingJob < ActiveJob::Base
   # @param workflow [GenevaDrive::Workflow]
   # @return [void]
   def cancel_step_execution!(step_execution, workflow)
-    # with_lock automatically reloads the record before yielding
+    # with_lock automatically reloads the record before yielding. No `return`
+    # inside the lock: on MongoDB a non-local exit out of the lock transaction
+    # aborts it instead of committing.
     workflow.with_lock do
       step_execution.with_lock do
         # Only recover if still stuck
-        return unless step_execution.scheduled? || step_execution.in_progress?
+        if step_execution.scheduled? || step_execution.in_progress?
+          step_execution.update!(
+            state: "canceled",
+            outcome: "recovered",
+            canceled_at: Time.current
+          )
 
-        step_execution.update!(
-          state: "canceled",
-          outcome: "recovered",
-          canceled_at: Time.current
-        )
-
-        workflow.update!(
-          state: "canceled",
-          transitioned_at: Time.current
-        )
+          workflow.update!(
+            state: "canceled",
+            transitioned_at: Time.current
+          )
+        end
       end
     end
   end

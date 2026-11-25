@@ -35,6 +35,43 @@ namespace :test do
     abort "Sidekiq is not in this bundle - use BUNDLE_GEMFILE=gemfiles/sidekiq_8.gemfile" unless Gem.loaded_specs["sidekiq"]
     ruby "-Itest", "bin/test", "test/sidekiq", "test/generators"
   end
+
+  # The Mongoid backend's tests. Mongoid is a soft dependency, bundled by the
+  # root Gemfile and pinned by the mongoid_* appraisals. The dummy app boots
+  # against MongoDB only (no ActiveRecord), so the suite needs a MongoDB
+  # replica set reachable at GENEVA_DRIVE_MONGODB_URL (localhost:27017,
+  # replicaSet rs0 by default):
+  #
+  #   BUNDLE_GEMFILE=gemfiles/mongoid_9.gemfile bundle exec rake test:mongoid
+  desc "Run the Mongoid tests (needs MongoDB running as a replica set)"
+  task :mongoid do
+    abort "Mongoid is not in this bundle" unless Gem.loaded_specs["mongoid"]
+    ENV["GENEVA_DRIVE_ORM"] = "mongoid"
+    ruby "-Itest", "bin/test", "test/mongoid"
+  end
+
+  # The concurrency proof pack: adversarial thread races against a live
+  # database (see test/proofs/concurrency_proofs.rb). On the SQL side the
+  # proofs need real committed transactions, so they are kept out of the
+  # default suite and run here, against whatever engine DATABASE_URL selects
+  # (SQLite by default, like the main suite). Under a mongoid_* appraisal the
+  # same proofs run against MongoDB instead - they are part of test:mongoid
+  # too, since that suite is already non-transactional.
+  desc "Run the concurrency proof pack against the selected database"
+  task :proofs do
+    mongoid_bundle = File.basename(ENV["BUNDLE_GEMFILE"].to_s).start_with?("mongoid")
+    if ENV["GENEVA_DRIVE_ORM"] == "mongoid" || mongoid_bundle
+      ENV["GENEVA_DRIVE_ORM"] = "mongoid"
+      ruby "-Itest", "bin/test", "test/mongoid/concurrency"
+    else
+      ENV["GENEVA_DRIVE_PROOFS"] = "1"
+      # Every racing thread holds its own connection; the dummy app's pool
+      # follows RAILS_MAX_THREADS (default 5), which is too small for the
+      # eight-way races.
+      ENV["RAILS_MAX_THREADS"] ||= "12"
+      ruby "-Itest", "bin/test", "test/proofs"
+    end
+  end
 end
 
 # The root Gemfile resolves to the newest released Rails and the dummy app

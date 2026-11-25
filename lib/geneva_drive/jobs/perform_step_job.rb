@@ -72,10 +72,15 @@ class GenevaDrive::PerformStepJob < ActiveJob::Base
 
   # Performs the step execution.
   #
+  # The optional second argument routes the job to the right persistence
+  # backend; jobs enqueued before it existed (and every ActiveRecord job,
+  # which omits it) default to the ActiveRecord model.
+  #
   # @param step_execution_id [Integer, String] the ID of the step execution
+  # @param step_execution_class_name [String] the step execution model class name
   # @return [void]
-  def perform(step_execution_id)
-    step_execution = find_step_execution(step_execution_id)
+  def perform(step_execution_id, step_execution_class_name = "GenevaDrive::StepExecution")
+    step_execution = find_step_execution(step_execution_id, step_execution_class_name.constantize)
 
     unless step_execution
       logger.warn("StepExecution #{step_execution_id} not found, skipping")

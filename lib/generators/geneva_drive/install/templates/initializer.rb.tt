@@ -1,5 +1,13 @@
 # frozen_string_literal: true
 
+<% if mongoid? -%>
+# Load the Mongoid (MongoDB) backend of GenevaDrive. Workflows subclass
+# GenevaDrive::MongoidWorkflow. Requires MongoDB running as a replica set
+# (single-node is fine) - create the indexes with
+# `bin/rails geneva_drive:create_indexes`.
+require "geneva_drive/mongoid"
+
+<% end -%>
 # How step jobs reach your queue.
 # - :active_job (the default) enqueues GenevaDrive::PerformStepJob through
 #   Active Job, onto whatever adapter the app uses.
@@ -79,5 +87,12 @@ GenevaDrive.dispatcher = :sidekiq
 #
 # Set to true in tests if you need strict transaction semantics for a specific
 # test suite, or if you are not using transactional tests.
+<% if mongoid? -%>
+#
+# On the Mongoid backend this flag (and GenevaDrive.with_inline_enqueue) only
+# governs enqueues made outside any transaction. Inside a transaction -
+# GenevaDrive's own or yours - deferral to the commit is mandatory, so a
+# rolled-back transition can never enqueue a job.
+<% end -%>
 #
 # GenevaDrive.enqueue_after_commit = !Rails.env.test?

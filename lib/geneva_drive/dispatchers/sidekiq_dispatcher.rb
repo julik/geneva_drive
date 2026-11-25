@@ -64,7 +64,13 @@ class GenevaDrive::SidekiqDispatcher
   # @param workflow_class_name [String, nil] added to the job's tags, for the Web UI
   # @return [String, nil] the jid, or nil if client middleware stopped the push
   def enqueue_step(step_execution_id, job_options, workflow_class_name: nil)
-    item = {"class" => job_class, "args" => [step_execution_id]}
+    args = [json_native_id(step_execution_id)]
+    # Workflows on a non-default backend (Mongoid) carry their step execution
+    # class as a second job argument - same convention as PerformStepJob.
+    execution_class_name = GenevaDrive.step_execution_class_name_for(workflow_class_name)
+    args << execution_class_name if execution_class_name
+
+    item = {"class" => job_class, "args" => args}
     item["queue"] = job_options[:queue].to_s if job_options[:queue]
 
     if (at = run_at(job_options))
@@ -95,6 +101,19 @@ class GenevaDrive::SidekiqDispatcher
   end
 
   private
+
+  # Sidekiq only accepts native JSON types as job arguments: strict args on
+  # Sidekiq 7/8 raise at push time on anything else, and with strict mode off
+  # a BSON::ObjectId would not round-trip and the step would be silently
+  # dropped. Integer (ActiveRecord) ids pass through untouched; anything else
+  # - a BSON::ObjectId, say - goes in as its string form, which both
+  # backends' lookups accept.
+  #
+  # @param id [Object]
+  # @return [String, Integer]
+  def json_native_id(id)
+    (id.is_a?(String) || id.is_a?(Integer)) ? id : id.to_s
+  end
 
   # Workflow already drops an overdue wait_until; this also covers callers that
   # pass a time in the past, which would otherwise wait for the scheduled-set poller.

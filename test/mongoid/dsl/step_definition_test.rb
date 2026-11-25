@@ -1,0 +1,558 @@
+# frozen_string_literal: true
+
+# Mongoid tests run only under `rake test:mongoid`, which boots the dummy app
+# against MongoDB (GENEVA_DRIVE_ORM=mongoid) - see test/mongoid_helper.rb
+return unless ENV["GENEVA_DRIVE_ORM"] == "mongoid"
+require "mongoid_helper"
+
+class StepDefinitionTest < ActiveSupport::TestCase
+  # Tests for step validation - requires block or method name
+  test "requires either a block or a method name" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step
+      end
+    end
+
+    assert_match(/requires either a block or a method name/, error.message)
+  end
+
+  test "accepts a block as callable" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step do
+        # step body
+      end
+    end
+
+    assert_equal 1, workflow_class.step_definitions.size
+    assert_equal "my_step", workflow_class.step_definitions.first.name
+  end
+
+  test "accepts a symbol (method name) as callable" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step
+
+      def my_step
+        # step body
+      end
+    end
+
+    assert_equal 1, workflow_class.step_definitions.size
+    assert_equal "my_step", workflow_class.step_definitions.first.name
+    assert_equal :my_step, workflow_class.step_definitions.first.callable
+  end
+
+  test "returns step definition from step DSL call" do
+    step_def = nil
+    Class.new(GenevaDrive::MongoidWorkflow) do
+      step_def = step :my_step do
+        # step body
+      end
+    end
+
+    assert_kind_of GenevaDrive::StepDefinition, step_def
+    assert_equal "my_step", step_def.name
+  end
+
+  # Tests for automatic step naming
+  test "generates automatic names for anonymous steps" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :named_step do
+        # step body
+      end
+
+      step do
+        # anonymous step 1
+      end
+
+      step do
+        # anonymous step 2
+      end
+    end
+
+    names = workflow_class.step_definitions.map(&:name)
+    assert_equal ["named_step", "step_2", "step_3"], names
+  end
+
+  # Tests for duplicate step names
+  test "forbids duplicate step names" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step do
+          # first step
+        end
+
+        step :my_step do
+          # duplicate name
+        end
+      end
+    end
+
+    assert_match(/already defined/, error.message)
+    assert_match(/my_step/, error.message)
+  end
+
+  test "forbids duplicate step names with string and symbol" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step do
+          # first step
+        end
+
+        step "my_step" do
+          # same name as string
+        end
+      end
+    end
+
+    assert_match(/already defined/, error.message)
+  end
+
+  # Tests for wait validation
+  test "accepts valid wait durations" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :immediate do
+        # no wait
+      end
+
+      step :delayed, wait: 2.hours do
+        # waits 2 hours
+      end
+
+      step :zero_wait, wait: 0 do
+        # zero is valid
+      end
+    end
+
+    assert_equal 3, workflow_class.step_definitions.size
+    assert_nil workflow_class.step_definitions[0].wait
+    assert_equal 2.hours, workflow_class.step_definitions[1].wait
+    assert_equal 0, workflow_class.step_definitions[2].wait
+  end
+
+  test "rejects negative wait values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :invalid_wait, wait: -5.minutes do
+          # negative wait
+        end
+      end
+    end
+
+    assert_match(/invalid wait value/, error.message)
+    assert_match(/non-negative/, error.message)
+  end
+
+  test "rejects job_options that can't be coerced to a Hash" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step(:invalid, job_options: :critical) {}
+      end
+    end
+
+    assert_match(/cannot coerce Symbol to a Hash/, error.message)
+  end
+
+  test "accepts anything responding to to_h as job_options" do
+    struct = Struct.new(:queue, :priority).new(:critical, 5)
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step(:from_struct, job_options: struct) {}
+    end
+
+    assert_equal({queue: :critical, priority: 5}, workflow_class.step_definitions.first.job_options)
+  end
+
+  test "rejects unknown job_options keys" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step(:typo, job_options: {piority: 10}) {}
+      end
+    end
+
+    assert_match(/unknown job_options key/, error.message)
+    assert_match(/piority/, error.message)
+  end
+
+  test "rejects non-integer priority" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step(:bad_pri, job_options: {priority: "high"}) {}
+      end
+    end
+
+    assert_match(/job_options\[:priority\]/, error.message)
+  end
+
+  test "rejects non-symbol/string queue" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step(:bad_queue, job_options: {queue: 42}) {}
+      end
+    end
+
+    assert_match(/job_options\[:queue\]/, error.message)
+  end
+
+  test "accepts valid queue and priority" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step(:ok, job_options: {queue: :critical, priority: -1, wait: 5}) {}
+    end
+
+    assert_equal({queue: :critical, priority: -1, wait: 5}, workflow_class.step_definitions.first.job_options)
+  end
+
+  test "copies, symbolizes, and freezes job options" do
+    job_options = {"queue" => :critical}
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step(:urgent, job_options: job_options) {}
+    end
+    job_options["queue"] = :default
+
+    options = workflow_class.step_definitions.first.job_options
+    assert_equal({queue: :critical}, options)
+    assert_predicate options, :frozen?
+  end
+
+  # Tests for on_exception validation
+  test "accepts valid exception handlers" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :pause_step, on_exception: :pause! do
+      end
+
+      step :cancel_step, on_exception: :cancel! do
+      end
+
+      step :reattempt_step, on_exception: :reattempt! do
+      end
+
+      step :skip_step, on_exception: :skip! do
+      end
+    end
+
+    handlers = workflow_class.step_definitions.map(&:on_exception)
+    assert_equal [:pause!, :cancel!, :reattempt!, :skip!], handlers
+  end
+
+  test "defaults to nil exception_policy when on_exception not specified" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :default_handler do
+      end
+    end
+
+    assert_nil workflow_class.step_definitions.first.exception_policy
+  end
+
+  test "rejects invalid on_exception values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :invalid_handler, on_exception: :invalid do
+        end
+      end
+    end
+
+    assert_match(/invalid on_exception/, error.message)
+    assert_match(/pause!, cancel!, reattempt!, skip!/, error.message)
+  end
+
+  # Tests for array form of on_exception:
+  test "accepts an array of ExceptionPolicy objects and wraps in CombinedExceptionPolicy" do
+    policies = [
+      GenevaDrive::ExceptionPolicy.new(:reattempt!, matching: ArgumentError, max_reattempts: 5),
+      GenevaDrive::ExceptionPolicy.new(:cancel!, matching: TypeError)
+    ]
+
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :array_step, on_exception: policies do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_kind_of GenevaDrive::CombinedExceptionPolicy, step_def.exception_policy
+    assert_equal 2, step_def.exception_policy.policies.length
+  end
+
+  test "rejects array with non-ExceptionPolicy elements" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :bad_array, on_exception: [:reattempt!, :cancel!] do
+        end
+      end
+    end
+
+    assert_match(/every element must be a GenevaDrive::ExceptionPolicy/, error.message)
+  end
+
+  test "rejects max_reattempts shortcut when on_exception is an array" do
+    policies = [GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)]
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :bad_shortcut, on_exception: policies, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+  end
+
+  test "rejects terminal_action shortcut when on_exception is an array" do
+    policies = [GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)]
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :bad_shortcut, on_exception: policies, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/terminal_action:/, error.message)
+  end
+
+  # Tests for skip_if validation
+  test "accepts valid skip_if conditions" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :symbol_condition, skip_if: :should_skip? do
+      end
+
+      step :proc_condition, skip_if: -> { hero.active? } do
+      end
+
+      step :true_condition, skip_if: true do
+      end
+
+      step :false_condition, skip_if: false do
+      end
+
+      step :nil_condition, skip_if: nil do
+      end
+
+      step :no_condition do
+      end
+    end
+
+    assert_equal 6, workflow_class.step_definitions.size
+  end
+
+  test "rejects invalid skip_if values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :invalid_skip, skip_if: "not a valid condition" do
+        end
+      end
+    end
+
+    assert_match(/invalid skip_if/, error.message)
+    assert_match(/Symbol, Proc, Boolean, or nil/, error.message)
+  end
+
+  # Tests for skip_if and if: mutual exclusion
+  test "accepts if: as alias for skip_if with inverse logic" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :with_if, if: :should_run? do
+      end
+    end
+
+    assert_equal 1, workflow_class.step_definitions.size
+  end
+
+  test "forbids specifying both skip_if and if" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :conflicting, skip_if: :skip_condition, if: :run_condition do
+        end
+      end
+    end
+
+    assert_match(/cannot specify both skip_if: and if:/, error.message)
+  end
+
+  # Tests for before_step/after_step validation
+  test "forbids specifying both before_step and after_step" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :first do
+        end
+
+        step :conflicting, before_step: :first, after_step: :first do
+        end
+      end
+    end
+
+    assert_match(/cannot specify both before_step: and after_step:/, error.message)
+  end
+
+  test "raises error for non-existent before_step reference" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :first do
+        end
+
+        step :orphan, before_step: :nonexistent do
+        end
+      end
+    end
+
+    assert_match(/references non-existent step/, error.message)
+    assert_match(/nonexistent/, error.message)
+    assert_match(/before_step/, error.message)
+    assert_match(/already been defined/, error.message)
+  end
+
+  test "raises error for non-existent after_step reference" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :first do
+        end
+
+        step :orphan, after_step: :nonexistent do
+        end
+      end
+    end
+
+    assert_match(/references non-existent step/, error.message)
+    assert_match(/nonexistent/, error.message)
+    assert_match(/after_step/, error.message)
+    assert_match(/already been defined/, error.message)
+  end
+
+  # Tests for step definition inheritance
+  test "step definitions are inherited from parent class" do
+    parent_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :parent_step do
+      end
+    end
+
+    child_class = Class.new(parent_class) do
+      step :child_step do
+      end
+    end
+
+    assert_equal 1, parent_class.step_definitions.size
+    assert_equal 2, child_class.step_definitions.size
+    assert_equal ["parent_step", "child_step"], child_class.step_definitions.map(&:name)
+  end
+
+  test "child class does not modify parent step definitions" do
+    parent_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :parent_step do
+      end
+    end
+
+    Class.new(parent_class) do
+      step :child_step do
+      end
+    end
+
+    assert_equal 1, parent_class.step_definitions.size
+    assert_equal ["parent_step"], parent_class.step_definitions.map(&:name)
+  end
+
+  # Tests for additional options passing
+  test "passes additional options to step definition" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :with_options, wait: 1.hour, skip_if: :should_skip?, on_exception: :reattempt! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal 1.hour, step_def.wait
+    assert_equal :should_skip?, step_def.skip_condition
+    assert_equal :reattempt!, step_def.on_exception
+  end
+
+  # Tests for max_reattempts validation
+  test "defaults max_reattempts to 100 when on_exception is reattempt!" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :reattempting, on_exception: :reattempt! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal 100, step_def.max_reattempts
+  end
+
+  test "defaults max_reattempts to nil when on_exception is not reattempt!" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :pausing, on_exception: :pause! do
+      end
+
+      step :canceling, on_exception: :cancel! do
+      end
+
+      step :skipping, on_exception: :skip! do
+      end
+    end
+
+    workflow_class.step_definitions.each do |step_def|
+      assert_nil step_def.max_reattempts, "#{step_def.name} should have nil max_reattempts"
+    end
+  end
+
+  test "accepts custom max_reattempts value with on_exception reattempt!" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :custom_limit, on_exception: :reattempt!, max_reattempts: 5 do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal 5, step_def.max_reattempts
+  end
+
+  test "accepts nil max_reattempts to disable limit with on_exception reattempt!" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :unlimited, on_exception: :reattempt!, max_reattempts: nil do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_nil step_def.max_reattempts
+  end
+
+  test "rejects max_reattempts when on_exception is not reattempt!" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :invalid, on_exception: :pause!, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/on_exception: is not :reattempt!/, error.message)
+  end
+
+  test "rejects non-positive max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :zero_limit, on_exception: :reattempt!, max_reattempts: 0 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
+
+  test "rejects negative max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :negative_limit, on_exception: :reattempt!, max_reattempts: -5 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
+
+  test "rejects non-integer max_reattempts values" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :float_limit, on_exception: :reattempt!, max_reattempts: 5.5 do
+        end
+      end
+    end
+
+    assert_match(/max_reattempts:/, error.message)
+    assert_match(/positive integer/, error.message)
+  end
+end

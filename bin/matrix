@@ -57,10 +57,12 @@ for rails in $RAILS_VERSIONS; do
   BUNDLE_GEMFILE=$gemfile bundle check >/dev/null 2>&1 || BUNDLE_GEMFILE=$gemfile bundle install || exit 1
   for engine in $ENGINES; do
     echo "==> $rails / $engine"
+    # MATRIX_RAKE_TASK lets the proofs workflow reuse this exact engine and
+    # DATABASE_URL wiring for `rake test:proofs` instead of the main suite.
     if [ "$engine" = sqlite ]; then
-      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine bundle exec rake test
+      env -u DATABASE_URL BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine bundle exec rake "${MATRIX_RAKE_TASK:-test}"
     else
-      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine DATABASE_URL="$(url_for "$engine")" bundle exec rake test
+      env BUNDLE_GEMFILE=$gemfile RAILS_ENV=test GENEVA_DRIVE_ENGINE=$engine DATABASE_URL="$(url_for "$engine")" bundle exec rake "${MATRIX_RAKE_TASK:-test}"
     fi
     if [ $? -eq 0 ]; then
       results+=("ok    $rails / $engine")

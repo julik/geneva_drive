@@ -1,0 +1,146 @@
+# frozen_string_literal: true
+
+# Mongoid tests run only under `rake test:mongoid`, which boots the dummy app
+# against MongoDB (GENEVA_DRIVE_ORM=mongoid) - see test/mongoid_helper.rb
+return unless ENV["GENEVA_DRIVE_ORM"] == "mongoid"
+require "mongoid_helper"
+
+class StepLevelExceptionPolicyTest < ActiveSupport::TestCase
+  # Step-level on_exception: accepts ExceptionPolicy
+  test "step accepts ExceptionPolicy as on_exception" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)
+
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step, on_exception: policy do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal :reattempt!, step_def.on_exception
+    assert_equal policy, step_def.exception_policy
+  end
+
+  # Step-level on_exception: accepts Proc
+  test "step accepts Proc as on_exception" do
+    handler = ->(e) { cancel! }
+
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step, on_exception: handler do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_nil step_def.on_exception # Proc-based policies have no action symbol
+    assert_equal handler, step_def.exception_policy.handler
+  end
+
+  # Symbol still works
+  test "step accepts symbol as on_exception" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step, on_exception: :skip! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal :skip!, step_def.on_exception
+    assert_not_nil step_def.exception_policy
+  end
+
+  # Default has no step-level policy
+  test "default on_exception has nil exception_policy" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_nil step_def.exception_policy
+  end
+
+  # exception_policy constructs from symbol
+  test "exception_policy constructs ExceptionPolicy from symbol" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step, on_exception: :reattempt!, max_reattempts: 7 do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    policy = step_def.exception_policy
+    assert_instance_of GenevaDrive::ExceptionPolicy, policy
+    assert_equal :reattempt!, policy.action
+    assert_equal 7, policy.max_reattempts
+  end
+
+  # Rejects max_reattempts with ExceptionPolicy
+  test "rejects max_reattempts when on_exception is an ExceptionPolicy" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5)
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step, on_exception: policy, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/ExceptionPolicy/, error.message)
+  end
+
+  # Rejects max_reattempts with Proc
+  test "rejects max_reattempts when on_exception is a Proc" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step, on_exception: ->(e) { cancel! }, max_reattempts: 10 do
+        end
+      end
+    end
+
+    assert_match(/ExceptionPolicy/, error.message)
+  end
+
+  # terminal_action at step level
+  test "step accepts terminal_action: :cancel! with reattempt!" do
+    workflow_class = Class.new(GenevaDrive::MongoidWorkflow) do
+      step :my_step, on_exception: :reattempt!, max_reattempts: 3, terminal_action: :cancel! do
+      end
+    end
+
+    step_def = workflow_class.step_definitions.first
+    assert_equal :cancel!, step_def.exception_policy.terminal_action
+  end
+
+  test "step rejects terminal_action with non-reattempt exception handler" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step, on_exception: :pause!, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/not :reattempt!/, error.message)
+  end
+
+  test "step rejects terminal_action when on_exception is an ExceptionPolicy" do
+    policy = GenevaDrive::ExceptionPolicy.new(:reattempt!, max_reattempts: 5, terminal_action: :cancel!)
+
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step, on_exception: policy, terminal_action: :cancel! do
+        end
+      end
+    end
+
+    assert_match(/ExceptionPolicy/, error.message)
+  end
+
+  # Rejects invalid types
+  test "rejects invalid on_exception types" do
+    error = assert_raises(GenevaDrive::StepConfigurationError) do
+      Class.new(GenevaDrive::MongoidWorkflow) do
+        step :my_step, on_exception: "invalid" do
+        end
+      end
+    end
+
+    assert_match(/invalid on_exception/, error.message)
+  end
+end

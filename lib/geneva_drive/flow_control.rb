@@ -315,7 +315,7 @@ module GenevaDrive::FlowControl
   # @param step_name [String, nil] the step being skipped past
   # @return [GenevaDrive::StepExecution, nil]
   def execution_holding_signal_claim(step_name)
-    return nil unless GenevaDrive::StepExecution.signal_columns?
+    return nil unless self.class.step_execution_class.signal_columns?
 
     candidate = current_execution
     return candidate if candidate&.signal_id.present?
@@ -323,7 +323,7 @@ module GenevaDrive::FlowControl
 
     step_executions
       .where(step_name: step_name, state: "failed")
-      .order(created_at: :desc, id: :desc)
+      .newest_first
       .first
   end
 end

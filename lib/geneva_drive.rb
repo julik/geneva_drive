@@ -1,5 +1,8 @@
 # frozen_string_literal: true
 
+require "active_support"
+require "active_support/core_ext/integer/time"
+require "active_support/core_ext/numeric/time"
 require "geneva_drive/version"
 require "geneva_drive/engine"
 require "measurometer"
@@ -41,12 +44,17 @@ module GenevaDrive
   autoload :ResumableStepDefinition, "geneva_drive/resumable_step_definition"
   autoload :RemovedStepDefinition, "geneva_drive/removed_step_definition"
   autoload :StepCollection, "geneva_drive/step_collection"
+  autoload :WorkflowDsl, "geneva_drive/workflow_dsl"
+  autoload :WorkflowBehavior, "geneva_drive/workflow_behavior"
+  autoload :StepExecutionBehavior, "geneva_drive/step_execution_behavior"
+  autoload :SignalBehavior, "geneva_drive/signal_behavior"
   autoload :Workflow, "geneva_drive/workflow"
   autoload :StepExecution, "geneva_drive/step_execution"
   autoload :Signal, "geneva_drive/signal"
   autoload :SignalMatcher, "geneva_drive/signal_matcher"
   autoload :IterableStep, "geneva_drive/iterable_step"
   autoload :Executor, "geneva_drive/executor"
+  autoload :InvalidStateTransition, "geneva_drive/executor"
   autoload :ExceptionPolicy, "geneva_drive/exception_policy"
   autoload :BackoffStrategies, "geneva_drive/backoff_strategies"
   autoload :JobOptions, "geneva_drive/job_options"
@@ -244,7 +252,61 @@ module GenevaDrive
       @exit_requested = false
     end
 
+    # Whether the Mongoid backend has been loaded via `require "geneva_drive/mongoid"`.
+    #
+    # @return [Boolean]
+    # @api private
+    def mongoid_backend_loaded?
+      @mongoid_backend_loaded == true
+    end
+
+    # Marks the Mongoid backend as loaded. Called by geneva_drive/mongoid.rb.
+    #
+    # @return [void]
+    # @api private
+    def mongoid_backend_loaded!
+      @mongoid_backend_loaded = true
+    end
+
+    # The workflow base classes of every loaded persistence backend. The
+    # ActiveRecord backend counts as loaded whenever ActiveRecord itself is;
+    # the Mongoid backend once `require "geneva_drive/mongoid"` ran.
+    #
+    # @return [Array<Class>]
+    # @api private
+    def workflow_backends
+      backends = []
+      backends << GenevaDrive::Workflow if defined?(::ActiveRecord::Base)
+      backends << GenevaDrive::MongoidWorkflow if mongoid_backend_loaded?
+      backends
+    end
+
+    # The step execution class name a job for the given workflow class must
+    # carry, or nil for the default (ActiveRecord) backend - so ActiveRecord
+    # jobs keep their one-argument form.
+    #
+    # @param workflow_class_name [String, nil]
+    # @return [String, nil]
+    # @api private
+    def step_execution_class_name_for(workflow_class_name)
+      return nil if workflow_class_name.nil?
+
+      workflow_class = workflow_class_name.safe_constantize
+      return nil unless workflow_class.respond_to?(:step_execution_class)
+
+      name = workflow_class.step_execution_class.name
+      (name == "GenevaDrive::StepExecution") ? nil : name
+    end
+
     # Returns true if job enqueueing should be deferred to after transaction commit.
+    #
+    # On the Mongoid backend the deferral inside any open transaction is
+    # owned by the transaction itself (the workflow document lock's queue, or
+    # the caller's session queue) and is mandatory regardless of this flag -
+    # that is what keeps a rolled-back transition from enqueueing. There,
+    # this flag (and with_inline_enqueue) only governs behavior outside any
+    # transaction, where there is nothing to defer to and the callback runs
+    # immediately either way.
     #
     # @return [Boolean]
     # @api private

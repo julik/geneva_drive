@@ -36,3 +36,20 @@ appraise "sidekiq-8" do
   gem "rails", "~> 8.1.0"
   gem "sidekiq", "~> 8.0"
 end
+
+# Mongoid is optional at runtime, like Sidekiq. These two run only the
+# Mongoid tests (`rake test:mongoid`), against a MongoDB single-node replica
+# set: the oldest supported Mongoid on Rails 7.2 components, and the newest
+# Mongoid on whatever Rails the root Gemfile resolves.
+appraise "mongoid-8" do
+  gem "mongoid", "~> 8.1", require: false
+  gem "railties", "~> 7.2.0"
+  gem "activejob", "~> 7.2.0"
+  gem "activemodel", "~> 7.2.0"
+  gem "activesupport", "~> 7.2.0"
+  gem "activerecord", "~> 7.2.0", require: false
+end
+
+appraise "mongoid-9" do
+  gem "mongoid", "~> 9.0", require: false
+end

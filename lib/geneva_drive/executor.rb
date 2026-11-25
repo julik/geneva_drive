@@ -348,7 +348,7 @@ class GenevaDrive::Executor
       # Resumable steps need the cursor and continues_from_id columns. Fail
       # loudly (instead of degrading) - without cursor persistence an
       # interrupted iteration would silently restart from the beginning.
-      if step_def.resumable? && !GenevaDrive::StepExecution.resumable_columns?
+      if step_def.resumable? && !step_execution.class.resumable_columns?
         error_message = "Step '#{step_execution.step_name}' is a resumable_step, but the cursor and " \
           "continues_from_id columns are missing from geneva_drive_step_executions. " \
           "Run `bin/rails generate geneva_drive:install` and migrate."
@@ -364,7 +364,7 @@ class GenevaDrive::Executor
       # Steps that wait for a signal need the signal_id and waiting_since
       # columns. Fail loudly (instead of degrading) - without them a step
       # would run without the event it was written to react to.
-      if step_def.waits_for_signal? && !GenevaDrive::StepExecution.signal_columns?
+      if step_def.waits_for_signal? && !step_execution.class.signal_columns?
         error_message = "Step '#{step_execution.step_name}' declares wait_for:, but the signal_id and " \
           "waiting_since columns are missing from geneva_drive_step_executions. " \
           "Run `bin/rails generate geneva_drive:install` and migrate."
@@ -464,7 +464,7 @@ class GenevaDrive::Executor
   #
   # @return [void]
   def resolve_attached_signal!
-    return unless GenevaDrive::StepExecution.signal_columns?
+    return unless step_execution.class.signal_columns?
     return if step_execution.signal_id.blank?
 
     signal = step_execution.signal
@@ -961,7 +961,7 @@ class GenevaDrive::Executor
       error_message: error.message,
       error_backtrace: error.backtrace&.join("\n")
     }
-    attrs[:error_class_name] = error.class.name if step_execution.has_attribute?(:error_class_name)
+    attrs[:error_class_name] = error.class.name if step_execution.class.error_class_name_column?
     write_exception_metadata(error)
     attrs
   end
@@ -972,19 +972,9 @@ class GenevaDrive::Executor
   # @param step_name [String] the step name to count reattempts for
   # @return [Integer] the number of consecutive exception-policy reattempts
   def consecutive_reattempt_count(step_name)
-    # Find the most recent non-reattempt completion for this step
-    # (success, skipped, canceled, failed - anything that isn't a reattempt)
-    last_non_reattempt_id = workflow.step_executions
-      .where(step_name: step_name, state: "completed")
-      .where.not(outcome: "reattempted")
-      .order(created_at: :desc)
-      .pick(:id)
-
-    # Count reattempts after that point (or all reattempts if no prior success)
-    scope = workflow.step_executions.where(step_name: step_name, outcome: "reattempted")
-    scope = scope.where("id > ?", last_non_reattempt_id) if last_non_reattempt_id
-
-    GenevaDrive::StepExecution.count_error_reattempts(scope)
+    # The query shape (primary-key comparison) is per-backend, so it lives on
+    # the step execution class.
+    step_execution.class.consecutive_reattempt_count(workflow, step_name)
   end
 
   # Checks if the max reattempts limit has been exceeded using policy-level max_reattempts.

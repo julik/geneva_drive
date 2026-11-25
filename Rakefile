@@ -35,6 +35,20 @@ namespace :test do
     abort "Sidekiq is not in this bundle - use BUNDLE_GEMFILE=gemfiles/sidekiq_8.gemfile" unless Gem.loaded_specs["sidekiq"]
     ruby "-Itest", "bin/test", "test/sidekiq", "test/generators"
   end
+
+  # The Mongoid backend's tests. Mongoid is a soft dependency, bundled by the
+  # root Gemfile and pinned by the mongoid_* appraisals. The dummy app boots
+  # against MongoDB only (no ActiveRecord), so the suite needs a MongoDB
+  # replica set reachable at GENEVA_DRIVE_MONGODB_URL (localhost:27017,
+  # replicaSet rs0 by default):
+  #
+  #   BUNDLE_GEMFILE=gemfiles/mongoid_9.gemfile bundle exec rake test:mongoid
+  desc "Run the Mongoid tests (needs MongoDB running as a replica set)"
+  task :mongoid do
+    abort "Mongoid is not in this bundle" unless Gem.loaded_specs["mongoid"]
+    ENV["GENEVA_DRIVE_ORM"] = "mongoid"
+    ruby "-Itest", "bin/test", "test/mongoid"
+  end
 end
 
 # The root Gemfile resolves to the newest released Rails and the dummy app

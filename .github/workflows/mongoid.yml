@@ -1,0 +1,57 @@
+name: Mongoid
+
+# The Mongoid backend's own tests, kept out of the main matrix: Mongoid is
+# optional at runtime, so it is only exercised by the mongoid_* appraisals.
+# Each runs `rake test:mongoid` against a MongoDB single-node replica set -
+# a hard requirement, since the backend's guarantees are built on
+# multi-document transactions.
+
+on:
+  pull_request:
+  push:
+    branches: [ main ]
+
+jobs:
+  test:
+    name: "Tests (${{ matrix.appraisal }})"
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # mongoid_8: Mongoid 8 on Rails 7.2 components. mongoid_9: Mongoid 9
+        # on whatever Rails the root Gemfile resolves.
+        appraisal: [mongoid_8, mongoid_9]
+    env:
+      BUNDLE_GEMFILE: ${{ github.workspace }}/gemfiles/${{ matrix.appraisal }}.gemfile
+
+    steps:
+      - name: Install packages
+        run: sudo apt-get update && sudo apt-get install --no-install-recommends -y build-essential git libyaml-dev pkg-config libsqlite3-dev libpq-dev
+
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Set up Ruby
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version-file: .ruby-version
+          bundler-cache: true
+
+      # A GitHub service container cannot take command arguments, and the
+      # replica set member must be registered at localhost:27017 - the same
+      # address the host connects to - so start it by hand.
+      - name: Start MongoDB as a single-node replica set
+        run: |
+          docker run -d --name gd-mongo -p 27017:27017 mongo:8 --replSet rs0
+          for i in $(seq 1 30); do
+            if docker exec gd-mongo mongosh --quiet --eval 'try { rs.status().ok } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "localhost:27017"}]}).ok }' >/dev/null 2>&1; then
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "MongoDB replica set did not come up" >&2
+          docker logs gd-mongo >&2
+          exit 1
+
+      - name: Run the Mongoid tests
+        run: bundle exec rake test:mongoid

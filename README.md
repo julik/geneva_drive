@@ -32,6 +32,36 @@ bin/rails generate geneva_drive:install
 bin/rails db:migrate
 ```
 
+### MongoDB (Mongoid)
+
+GenevaDrive also runs on MongoDB through Mongoid 8 or 9. Add `gem "mongoid"`
+to your Gemfile (it is not a dependency of this gem), then:
+
+```bash
+bin/rails generate geneva_drive:install --orm=mongoid
+bin/rails geneva_drive:create_indexes
+```
+
+The generated initializer starts with `require "geneva_drive/mongoid"`, which
+loads the backend; your workflows then subclass `GenevaDrive::MongoidWorkflow`
+instead of `GenevaDrive::Workflow`, and everything else in this README applies
+unchanged. There are no migrations - the `geneva_drive:create_indexes` task
+creates the indexes that carry the uniqueness guarantees, and is idempotent, so
+run it on every deploy that updates GenevaDrive.
+
+MongoDB must run as a **replica set** (a single-node replica set is fine) with
+majority write concern: the transactional guarantees are built on
+multi-document transactions. Do not connect with `directConnection=true` - the
+driver then refuses transactions.
+
+One behavioral note: on MongoDB, deferring job enqueues to the transaction's
+commit is mandatory inside any open transaction - GenevaDrive's own lock
+transactions and your own `with_session`/`with_transaction` blocks alike.
+`GenevaDrive.enqueue_after_commit` and `GenevaDrive.with_inline_enqueue` only
+govern enqueues made outside a transaction (where jobs are enqueued
+immediately either way), because enqueuing inside one would hand a worker a
+row that may never commit.
+
 You should also add the housekeeping job to your background job cron table
 (below example is for `recurring.yml` in solid_queue):
 
@@ -273,10 +303,10 @@ end
 
 ## Database Support
 
-| Feature | PostgreSQL | MySQL | SQLite |
-|---------|-----------|-------|--------|
-| Workflow Uniqueness | Partial Index | Generated Column | Partial Index |
-| Step Execution Uniqueness | Partial Index | Generated Column | Partial Index |
+| Feature | PostgreSQL | MySQL | SQLite | MongoDB |
+|---------|-----------|-------|--------|---------|
+| Workflow Uniqueness | Partial Index | Generated Column | Partial Index | Partial Unique Index |
+| Step Execution Uniqueness | Partial Index | Generated Column | Partial Index | Partial Unique Index |
 
 ## Requirements
 

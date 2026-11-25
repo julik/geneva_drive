@@ -122,12 +122,9 @@ module GenevaDrive::TestHelpers
     end
 
     # Cancel any existing scheduled or parked step executions to satisfy the
-    # uniqueness constraint
-    workflow.step_executions.where(state: %w[scheduled waiting]).update_all(
-      state: "canceled",
-      outcome: "canceled",
-      canceled_at: Time.current
-    )
+    # uniqueness constraint. The workflow backend owns the right sweep shape
+    # (the Mongoid one also clears the derived active_key).
+    workflow.send(:cancel_stray_executions!)
 
     step_execution = workflow.step_executions.create!(
       step_name: step_def.name,
@@ -152,10 +149,10 @@ module GenevaDrive::TestHelpers
   #   assert_step_executed(workflow, :optional_step, state: "skipped")
   #
   def assert_step_executed(workflow, step_name, state: "completed")
-    step_execution = workflow.step_executions.find_by(
+    step_execution = workflow.step_executions.where(
       step_name: step_name.to_s,
       state: state
-    )
+    ).first
 
     assert step_execution,
       "Expected step '#{step_name}' to be #{state}, but it was not found"
@@ -211,7 +208,7 @@ module GenevaDrive::TestHelpers
       # Follow the execution chain: a completed execution that spawned a
       # successor means the step is still going (suspend! and skip_to! create
       # successors even with interruption checks disabled).
-      if GenevaDrive::StepExecution.resumable_columns? &&
+      if workflow.class.step_execution_class.resumable_columns? &&
           step_execution.completed? && (successor = step_execution.successor)
         step_execution = successor
         next
@@ -290,7 +287,7 @@ module GenevaDrive::TestHelpers
   #
   def assert_step_has_successor(workflow, step_name)
     workflow.reload
-    completed = workflow.step_executions.find_by(step_name: step_name.to_s, state: "completed")
+    completed = workflow.step_executions.where(step_name: step_name.to_s, state: "completed").first
     assert completed, "Expected completed execution for step #{step_name}"
 
     successor = completed.successor
@@ -336,7 +333,7 @@ module GenevaDrive::TestHelpers
   #   assert_signal_state(workflow, :payment_confirmed, :consumed)
   #
   def assert_signal_state(workflow, signal_name, state)
-    signal = workflow.signals.where(name: signal_name.to_s).order(:created_at, :id).last
+    signal = workflow.signals.where(name: signal_name.to_s).oldest_first.last
 
     assert signal, "Expected a #{signal_name.inspect} signal on #{workflow.class.name}, but none was found"
     assert_equal state.to_s, signal.state,

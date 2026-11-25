@@ -28,12 +28,20 @@ module GenevaDrive::StepExecutionLookup
   # doesn't exist (e.g. it was already deleted by cleanup).
   #
   # @param id [Integer, String] the step execution ID to look up
+  # @param step_execution_class [Class] the step execution model to look in -
+  #   GenevaDrive::StepExecution or GenevaDrive::MongoidStepExecution
   # @param attempts [Integer] maximum number of lookup attempts
   # @param delay [Float] seconds to sleep between attempts
   # @return [GenevaDrive::StepExecution, nil] the step execution or nil if not found
-  def find_step_execution(id, attempts: 5, delay: 0.1)
+  def find_step_execution(id, step_execution_class, attempts: 5, delay: 0.1)
     attempts.times do |i|
-      record = GenevaDrive::StepExecution.find_by(id: id)
+      record = begin
+        step_execution_class.find_by(id: id)
+      rescue => e
+        # Mongoid's find_by raises instead of returning nil by default
+        raise unless defined?(Mongoid::Errors::DocumentNotFound) && e.is_a?(Mongoid::Errors::DocumentNotFound)
+        nil
+      end
       return record if record
       sleep(delay) if i < attempts - 1
     end

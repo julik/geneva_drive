@@ -7,6 +7,13 @@ gemspec
 
 gem "puma"
 
+# The gem soft-depends on both ORMs; the test suites need them. activerecord
+# must not be auto-required - the Mongoid dummy boot would otherwise load it
+# and defeat the "no ActiveRecord" smoke check (rails/all requires it by path
+# for the ActiveRecord suite).
+gem "activerecord", require: false
+gem "mongoid", ">= 8", "< 10", require: false
+
 # Database
 gem "pg"
 

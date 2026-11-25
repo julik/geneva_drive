@@ -140,14 +140,19 @@ class GenevaDrive::IterableStep
     end
   end
 
-  # Iterates over an ActiveRecord relation using a column as cursor.
-  # Uses find_each for memory-efficient batching.
+  # Iterates over an ActiveRecord relation (or Mongoid criteria) using a
+  # column as cursor. On ActiveRecord uses find_each for memory-efficient
+  # batching.
   #
-  # @param relation [ActiveRecord::Relation] the relation to iterate over
+  # @param relation [ActiveRecord::Relation, Mongoid::Criteria] the relation to iterate over
   # @param cursor [Symbol] the column to use as cursor (default: :id)
-  # @yield [ActiveRecord::Base] each record in the relation
+  # @yield [Object] each record in the relation
   # @return [void]
   def iterate_over_records(relation, cursor: :id)
+    if mongoid_criteria?(relation)
+      return iterate_over_mongoid_records(relation, cursor: cursor) { |record| yield record }
+    end
+
     filtered = if @cursor
       relation.where(relation.arel_table[cursor].gt(@cursor)).order(cursor => :asc)
     else
@@ -160,16 +165,20 @@ class GenevaDrive::IterableStep
     end
   end
 
-  # Iterates over an ActiveRecord relation in subrelations (batches).
-  # Each subrelation is yielded as an ActiveRecord relation with offset applied,
-  # useful for bulk operations like updates or exports.
+  # Iterates over an ActiveRecord relation (or Mongoid criteria) in
+  # subrelations (batches). Each subrelation is yielded as a relation scoped
+  # to one batch, useful for bulk operations like updates or exports.
   #
-  # @param relation [ActiveRecord::Relation] the relation to iterate over
+  # @param relation [ActiveRecord::Relation, Mongoid::Criteria] the relation to iterate over
   # @param batch_size [Integer] the number of records per subrelation
   # @param cursor [Symbol] the column to use as cursor (default: :id)
-  # @yield [ActiveRecord::Relation] each subrelation with offset applied
+  # @yield [ActiveRecord::Relation, Mongoid::Criteria] each subrelation
   # @return [void]
   def iterate_over_subrelations(relation, batch_size:, cursor: :id)
+    if mongoid_criteria?(relation)
+      return iterate_over_mongoid_subrelations(relation, batch_size: batch_size, cursor: cursor) { |batch| yield batch }
+    end
+
     filtered = if @cursor
       relation.where(relation.arel_table[cursor].gt(@cursor)).order(cursor => :asc)
     else
@@ -185,10 +194,63 @@ class GenevaDrive::IterableStep
 
   private
 
-  def persist_cursor!
-    serialized = GenevaDrive::StepExecution.serialize_cursor(@cursor)
+  # @param relation [Object]
+  # @return [Boolean] whether the relation is a Mongoid criteria
+  def mongoid_criteria?(relation)
+    defined?(::Mongoid::Criteria) && relation.is_a?(::Mongoid::Criteria)
+  end
 
-    GenevaDrive::StepExecution
+  # The Mongoid shape of iterate_over_records.
+  #
+  # @param relation [Mongoid::Criteria]
+  # @param cursor [Symbol]
+  # @yield [Mongoid::Document]
+  # @return [void]
+  def iterate_over_mongoid_records(relation, cursor:)
+    field = mongoid_cursor_field_name(cursor)
+    filtered = if @cursor
+      relation.where(field => {"$gt" => @cursor}).order(field => :asc)
+    else
+      relation.order(field => :asc)
+    end
+
+    filtered.each do |record|
+      yield record
+      set!(record.public_send(cursor))
+    end
+  end
+
+  # The Mongoid shape of iterate_over_subrelations: each batch is a criteria
+  # scoped to one page of cursor values.
+  #
+  # @param relation [Mongoid::Criteria]
+  # @param batch_size [Integer]
+  # @param cursor [Symbol]
+  # @yield [Mongoid::Criteria]
+  # @return [void]
+  def iterate_over_mongoid_subrelations(relation, batch_size:, cursor:)
+    field = mongoid_cursor_field_name(cursor)
+
+    loop do
+      scope = @cursor ? relation.where(field => {"$gt" => @cursor}) : relation
+      batch_values = scope.order(field => :asc).limit(batch_size).pluck(field)
+      break if batch_values.empty?
+
+      yield relation.where(field => {"$in" => batch_values})
+      set!(batch_values.max)
+    end
+  end
+
+  # @param cursor [Symbol]
+  # @return [String] the MongoDB field name for a cursor symbol
+  def mongoid_cursor_field_name(cursor)
+    (cursor.to_s == "id") ? "_id" : cursor.to_s
+  end
+
+  def persist_cursor!
+    serialized = @execution.class.serialize_cursor(@cursor)
+
+    @execution.class
       .where(id: @execution.id)
       .update_all(cursor: serialized)
   end

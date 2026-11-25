@@ -13,7 +13,14 @@ Rails.application.configure do
   # this is usually not necessary, and can slow down your test suite. However, it's
   # recommended that you enable it in continuous integration systems to ensure eager
   # loading is working properly before deploying your code.
-  config.eager_load = ENV["CI"].present?
+  config.eager_load = ENV["CI"].present? && ENV["GENEVA_DRIVE_ORM"] != "mongoid"
+
+  if ENV["GENEVA_DRIVE_ORM"] == "mongoid"
+    # The Mongoid test helper drains enqueued jobs off the test adapter
+    # directly; eager loading stays off above because the dummy app also
+    # carries the ActiveRecord models, which must not load without it.
+    config.active_job.queue_adapter = :test
+  end
 
   # Configure public file server for tests with cache-control for performance.
   config.public_file_server.headers = {"cache-control" => "public, max-age=3600"}

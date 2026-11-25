@@ -3,6 +3,8 @@
 source "https://rubygems.org"
 
 gem "puma"
+gem "activerecord", require: false
+gem "mongoid", ">= 8", "< 10", require: false
 gem "pg"
 gem "propshaft"
 gem "standard", "~> 1.0", require: false

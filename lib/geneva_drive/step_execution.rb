@@ -1,7 +1,7 @@
 # frozen_string_literal: true
 
-# Represents a single step execution attempt within a workflow.
-# Serves as both an audit record and an idempotency key.
+# Represents a single step execution attempt within a workflow, on
+# ActiveRecord. Serves as both an audit record and an idempotency key.
 #
 # Each step execution tracks:
 # - The step being executed
@@ -9,6 +9,9 @@
 # - When the step was scheduled, started, and completed
 # - Any errors that occurred
 # - The outcome of the execution
+#
+# The shared logic lives in {GenevaDrive::StepExecutionBehavior}; this class
+# carries the table, enum, associations and the SQL-specific pieces.
 #
 # @example Querying step executions
 #   workflow.step_executions.completed.each do |exec|
@@ -34,18 +37,6 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     canceled: "canceled",
     skipped: "skipped"
   }
-
-  # Outcome values for audit purposes
-  OUTCOMES = %w[
-    success
-    continued
-    reattempted
-    skipped
-    canceled
-    failed
-    recovered
-    workflow_paused
-  ].freeze
 
   # Associations
   belongs_to :workflow,
@@ -73,15 +64,21 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
     foreign_key: :signal_id,
     optional: true
 
-  # Validations
-  validates :step_name, presence: true
-  validates :scheduled_for, presence: true
-  validates :outcome, inclusion: {in: OUTCOMES}, allow_nil: true
+  include GenevaDrive::StepExecutionBehavior
 
   # Find executions that are ready to run
   scope :ready_to_execute, -> {
     scheduled.where("scheduled_for <= ?", Time.current)
   }
+
+  # State-set filter the shared orchestration uses (an array equality would
+  # mean something else on MongoDB, hence a scope per backend).
+  scope :in_states, ->(states) { where(state: states) }
+
+  # Chronological orderings with a stable tiebreaker (the Mongoid backend
+  # tiebreaks on _id).
+  scope :oldest_first, -> { order(created_at: :asc, id: :asc) }
+  scope :newest_first, -> { order(created_at: :desc, id: :desc) }
 
   class << self
     # Lazily checks whether the resumable-step columns (cursor and
@@ -139,180 +136,102 @@ class GenevaDrive::StepExecution < ActiveRecord::Base
       remove_instance_variable(:@_signal_columns) if defined?(@_signal_columns)
     end
 
-    # Serializes a cursor value using ActiveJob serializers (handles Date,
-    # Time, and other types) and enforces GenevaDrive.max_cursor_size on
-    # the serialized JSON. The single serialization path for cursor writes.
+    # Whether the error_class_name column has been migrated. mark_failed!
+    # degrades to the error_message/error_backtrace columns without it.
     #
-    # @param value [Object, nil] the cursor value
-    # @return [Object, nil] the serialized cursor
-    # @raise [CursorTooLargeError] if the serialized JSON exceeds the limit
-    def serialize_cursor(value)
-      return nil if value.nil?
-
-      serialized = ActiveJob::Arguments.serialize([value]).first
-
-      limit = GenevaDrive.max_cursor_size
-      if limit
-        bytesize = JSON.generate(serialized).bytesize
-        if bytesize > limit
-          raise GenevaDrive::CursorTooLargeError,
-            "Serialized cursor is #{bytesize} bytes, exceeding GenevaDrive.max_cursor_size " \
-            "(#{limit} bytes). The cursor is a position marker (an id, page number, or token), " \
-            "not a place to store the data being processed. Set GenevaDrive.max_cursor_size to " \
-            "nil to disable this check."
-        end
+    # @return [Boolean]
+    def error_class_name_column?
+      if defined?(@_error_class_name_column)
+        return @_error_class_name_column
       end
 
+      @_error_class_name_column = table_exists? && column_names.include?("error_class_name")
+    end
+
+    # Clears the cached error_class_name column detection result.
+    #
+    # @return [void]
+    def reset_error_class_name_column_cache!
+      remove_instance_variable(:@_error_class_name_column) if defined?(@_error_class_name_column)
+    end
+
+    # Counts the consecutive exception-policy reattempts of a step, looking
+    # back from the most recent execution to the last completion that was not
+    # a reattempt. The query shape is per-backend because of the primary-key
+    # comparison; the Executor calls it through step_execution.class.
+    #
+    # @param workflow [GenevaDrive::Workflow]
+    # @param step_name [String]
+    # @return [Integer]
+    def consecutive_reattempt_count(workflow, step_name)
+      # Find the most recent non-reattempt completion for this step
+      # (success, skipped, canceled, failed - anything that isn't a reattempt)
+      last_non_reattempt_id = workflow.step_executions
+        .where(step_name: step_name, state: "completed")
+        .where.not(outcome: "reattempted")
+        .order(created_at: :desc)
+        .pick(:id)
+
+      # Count reattempts after that point (or all reattempts if no prior success)
+      scope = workflow.step_executions.where(step_name: step_name, outcome: "reattempted")
+      scope = scope.where("id > ?", last_non_reattempt_id) if last_non_reattempt_id
+
+      count_error_reattempts(scope)
+    end
+
+    # Step executions stuck in "in_progress" since before the cutoff, for
+    # housekeeping recovery.
+    #
+    # @param cutoff_time [Time]
+    # @return [ActiveRecord::Relation]
+    def stuck_in_progress(cutoff_time)
+      in_progress.where("started_at < ?", cutoff_time)
+    end
+
+    # Step executions stuck in "scheduled" past their scheduled_for time,
+    # for housekeeping recovery.
+    #
+    # @param cutoff_time [Time]
+    # @return [ActiveRecord::Relation]
+    def stuck_scheduled(cutoff_time)
+      scheduled.where("scheduled_for < ?", cutoff_time)
+    end
+
+    # Step executions parked waiting since before the given time, for the
+    # waiting-overdue gauge.
+    #
+    # @param since_time [Time]
+    # @return [ActiveRecord::Relation]
+    def waiting_overdue(since_time)
+      waiting.where(waiting_since: ..since_time)
+    end
+
+    # Counts the step executions in the scope per workflow type, for the
+    # housekeeping gauges.
+    #
+    # @param scope [ActiveRecord::Relation]
+    # @return [Hash{String => Integer}]
+    def counts_by_workflow_type(scope)
+      scope.joins(:workflow).group("#{GenevaDrive::Workflow.table_name}.type").count
+    end
+
+    # How the serialized cursor is stored: through the JSON column shim,
+    # which encodes to a JSON string on databases without a JSON type.
+    #
+    # @param serialized [Object] the ActiveJob-serialized cursor
+    # @return [Object] the storable value
+    def encode_cursor(serialized)
       encode_json_column(:cursor, serialized)
     end
   end
 
-  # Transitions the step execution to 'in_progress' state.
-  # Uses pessimistic locking to prevent double execution.
-  #
-  # @return [Boolean] true if transition succeeded, false if already executed
-  def start!
-    with_lock do
-      return false unless scheduled?
-      update!(
-        state: "in_progress",
-        started_at: Time.current
-      )
-    end
-    true
-  end
+  private
 
-  # Marks the step execution as completed.
+  # Reads the stored cursor back into its ActiveJob-serialized form.
   #
-  # @param outcome [String] the outcome ('success' or 'reattempted')
-  # @return [void]
-  def mark_completed!(outcome: "success")
-    with_lock do
-      update!(
-        state: "completed",
-        completed_at: Time.current,
-        outcome: outcome
-      )
-    end
-  end
-
-  # Marks the step execution as failed and records the error.
-  #
-  # @param error [Exception] the error that occurred
-  # @param outcome [String] the outcome ('failed' or 'canceled')
-  # @return [void]
-  def mark_failed!(error, outcome: "failed")
-    with_lock do
-      attrs = {
-        state: "failed",
-        failed_at: Time.current,
-        outcome: outcome,
-        error_message: error.message,
-        error_backtrace: error.backtrace&.join("\n")
-      }
-      attrs[:error_class_name] = error.class.name if has_attribute?(:error_class_name)
-      update!(attrs)
-    end
-  end
-
-  # Marks the step execution as skipped.
-  #
-  # @param outcome [String] the outcome (defaults to 'skipped')
-  # @return [void]
-  def mark_skipped!(outcome: "skipped")
-    with_lock do
-      update!(
-        state: "skipped",
-        skipped_at: Time.current,
-        outcome: outcome
-      )
-    end
-  end
-
-  # Marks the step execution as canceled.
-  #
-  # @param outcome [String] the outcome (defaults to 'canceled')
-  # @return [void]
-  def mark_canceled!(outcome: "canceled")
-    with_lock do
-      update!(
-        state: "canceled",
-        canceled_at: Time.current,
-        outcome: outcome
-      )
-    end
-  end
-
-  # Returns the deserialized cursor value for resumable steps.
-  # Uses ActiveJob serializers to handle Date, Time, and other types.
-  # Returns nil when the cursor column has not been migrated yet.
-  #
-  # @return [Object, nil] the cursor value
-  def cursor_value
-    return nil unless self.class.resumable_columns?
+  # @return [Object, nil]
+  def raw_cursor_for_deserialization
     return nil if cursor.blank?
-    ActiveJob::Arguments.deserialize([self.class.decode_json_column(:cursor, cursor)]).first
-  end
-
-  # Sets the cursor value for resumable steps.
-  # Uses ActiveJob serializers to handle Date, Time, and other types.
-  # Silent no-op when the cursor column has not been migrated yet.
-  #
-  # @param value [Object] the cursor value to store
-  # @raise [CursorTooLargeError] if the serialized JSON exceeds GenevaDrive.max_cursor_size
-  # @return [void]
-  def cursor_value=(value)
-    return unless self.class.resumable_columns?
-    self.cursor = self.class.serialize_cursor(value)
-  end
-
-  # Returns true if this execution is resuming from a prior execution.
-  # Always false when the continues_from_id column has not been migrated yet.
-  #
-  # @return [Boolean]
-  def resuming?
-    self.class.resumable_columns? && continues_from_id.present?
-  end
-
-  # Returns the step definition for this execution.
-  #
-  # @return [StepDefinition, nil] the step definition
-  def step_definition
-    workflow.class.steps.named(step_name)
-  end
-
-  # Executes this step using the Executor.
-  #
-  # @param interruptible [Boolean] whether resumable steps respect interruption conditions
-  # @param max_iterations [Integer, nil] per-execution override of the step's max_iterations
-  # @return [void]
-  def execute!(interruptible: true, max_iterations: nil)
-    GenevaDrive::Executor.execute!(self, interruptible: interruptible, max_iterations: max_iterations)
-  end
-
-  # Same as ActiveRecord::Base#logger but supplemented with tags for step and workflow
-  #
-  # @return [Logger]
-  def logger
-    @logger ||= begin
-      workflow_tagged_logger = workflow.logger
-      workflow_tagged_logger.tagged("execution_id=#{id} step_name=#{step_name}")
-    end
-  end
-
-  # Temporarily overrides the step execution's logger for the duration of the block.
-  # The passed logger is used directly - it should already include step-specific tags.
-  # The original logger is restored after the block completes.
-  #
-  # @param logger [Logger] the logger to use (already fully tagged)
-  # @yield the block to execute with the injected logger
-  # @return [Object] the result of the block
-  # @api private
-  def with_logger(logger)
-    previous_logger = @logger
-    @logger = logger
-    yield
-  ensure
-    @logger = previous_logger
+    self.class.decode_json_column(:cursor, cursor)
   end
 end

@@ -1,0 +1,24 @@
+test:
+  clients:
+    default:
+      # NOTE: no directConnection=true - with it the driver treats the node
+      # as a standalone and refuses transactions, even on a replica set.
+      uri: <%= ENV.fetch("GENEVA_DRIVE_MONGODB_URL", "mongodb://localhost:27017/geneva_drive_test?replicaSet=rs0") %>
+      options:
+        server_selection_timeout: 5
+        # Majority write concern is required: the lock transactions read from
+        # a majority-committed snapshot, and a plain w:1 insert may not be in
+        # that snapshot yet when a transaction opens right after it.
+        write:
+          w: majority
+  options:
+    log_level: :warn
+
+development:
+  clients:
+    default:
+      uri: <%= ENV.fetch("GENEVA_DRIVE_MONGODB_URL", "mongodb://localhost:27017/geneva_drive_development?replicaSet=rs0") %>
+      options:
+        server_selection_timeout: 5
+        write:
+          w: majority
